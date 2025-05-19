@@ -1,0 +1,161 @@
+@font-face {
+  font-family: 'KievitPro';
+  src: url('/fonts/KievitPro-Bold.woff2') format('woff2'),
+       url('/fonts/KievitPro-Bold.woff') format('woff');
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'KievitPro';
+  src: url('/fonts/KievitPro-Regular.woff2') format('woff2'),
+       url('/fonts/KievitPro-Regular.woff') format('woff');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'KievitPro';
+  src: url('/fonts/KievitPro-Italic.woff2') format('woff2'),
+       url('/fonts/KievitPro-Italic.woff') format('woff');
+  font-weight: normal;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'KievitCyr';
+  src: url('/fonts/KievitCyr-Regular.woff2') format('woff2'),
+       url('/fonts/KievitCyr-Regular.woff') format('woff');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand-blue: #3054A5;
+  --brand-orange: #F47E41;
+  --brand-black: #1A1A1A;
+  --brand-cream: #F5EFEA;
+}
+
+/* Swiper custom styles */
+.swiper-button-next,
+.swiper-button-prev {
+  @apply text-brand-blue;
+}
+
+.swiper-button-disabled {
+  @apply opacity-50 cursor-not-allowed;
+}
+
+.swiper-pagination-bullet {
+  @apply bg-brand-orange opacity-50;
+}
+
+.swiper-pagination-bullet-active {
+  @apply bg-brand-orange opacity-100;
+}
+
+/* Button styles */
+.btn {
+  font-family: 'KievitPro', sans-serif !important;
+  font-size: 17px !important;
+  line-height: 22px !important;
+  font-weight: 600 !important;
+  box-sizing: border-box !important;
+  --tw-border-opacity: 1 !important;
+}
+
+/* Primary button style */
+.btn-primary {
+  background-color: var(--brand-blue) !important;
+  color: var(--brand-cream) !important;
+  border: 1px solid var(--brand-blue) !important;
+  --tw-border-color: var(--brand-blue) !important;
+}
+
+.btn-primary:hover {
+  background-color: #254384 !important;
+  color: var(--brand-cream) !important;
+  border: 1px solid #254384 !important;
+  --tw-border-color: #254384 !important;
+}
+
+/* Secondary button style */
+.btn-secondary {
+  background-color: var(--brand-orange) !important;
+  color: var(--brand-cream) !important;
+  border: 1px solid var(--brand-orange) !important;
+  --tw-border-color: var(--brand-orange) !important;
+}
+
+.btn-secondary:hover {
+  background-color: #E06832 !important;
+  color: var(--brand-cream) !important;
+  border: 1px solid #E06832 !important;
+  --tw-border-color: #E06832 !important;
+}
+
+/* Outline button style */
+.btn-outline {
+  background-color: transparent !important;
+  color: var(--brand-blue) !important;
+  border: 1px solid var(--brand-blue) !important;
+  --tw-border-color: var(--brand-blue) !important;
+}
+
+.btn-outline:hover {
+  background-color: var(--brand-blue) !important;
+  color: var(--brand-cream) !important;
+  border: 1px solid var(--brand-blue) !important;
+  --tw-border-color: var(--brand-blue) !important;
+}
+
+/* Card styles */
+.card {
+  @apply bg-base-100 shadow-md border border-base-300;
+}
+
+.card-body {
+  @apply p-4;
+}
+
+.card-title {
+  @apply text-lg font-bold;
+}
+
+/* Menu and navigation styles */
+.navbar {
+  @apply bg-brand-blue text-white;
+}
+
+.drawer-side {
+  @apply bg-base-100;
+}
+
+.menu-item {
+  @apply flex items-center px-4 py-2 rounded-lg transition-colors;
+}
+
+.menu-item-active {
+  @apply bg-brand-blue text-white;
+}
+
+.menu-item-inactive {
+  @apply text-base-content hover:bg-brand-orange hover:bg-opacity-10;
+}
+
+/* Dark theme specific overrides */
+.dark {
+  --navbar-bg: var(--brand-black);
+  --card-bg: #262626;
+  --menu-bg: var(--brand-black);
+  --menu-hover: #262626;
+}

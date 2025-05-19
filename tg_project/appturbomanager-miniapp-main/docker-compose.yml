@@ -1,0 +1,23 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=https://turboapp-api.ptel.brainex.co/api
+      - NEXT_PUBLIC_WS_HOST=turboapp-centrifugo.ptel.brainex.co
+    networks:
+      - turbomanager-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.turboapp-app.rule=Host(`turboapp-app.ptel.brainex.co`)"
+      - "traefik.http.routers.turboapp-app.entrypoints=websecure"
+      - "traefik.http.routers.turboapp-app.tls.certresolver=myresolver"
+      - "traefik.http.services.turboapp-app.loadbalancer.server.port=3000"
+networks:
+  turbomanager-network:
+    external: true

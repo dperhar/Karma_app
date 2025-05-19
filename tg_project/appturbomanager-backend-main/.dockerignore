@@ -1,0 +1,17 @@
+# Исключаем node_modules, чтобы Docker не копировал локальные зависимости
+node_modules
+data
+# Исключаем кэш Yarn
+.yarn
+
+# Исключаем локальные файлы и папки IDE
+.vscode
+.idea
+
+# Исключаем временные файлы и папки
+*.log
+__pycache__/
+*.pyc
+
+.venv
+venv

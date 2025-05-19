@@ -1,0 +1,312 @@
+'use client';
+
+import { initData, useSignal } from '@telegram-apps/sdk-react';
+import { useTranslations } from 'next-intl';
+import { useRouter } from 'next/navigation';
+import { ChangeEvent, useEffect, useMemo, useState } from 'react';
+
+import { ChatList } from '@/components/ChatList';
+import { Header } from '@/components/Header';
+import { Page } from '@/components/Page';
+import { Preloader } from '@/components/Preloader/Preloader';
+import { useChatStore } from '@/store/chatStore';
+import { useUserStore } from '@/store/userStore';
+import { TelegramChat, TelegramMessengerChatType } from '@/types/chat';
+
+// Define filter types
+type FilterType = 'all' | 'private' | 'group' | 'channel';
+
+// Default chat load limit if not set in user preferences
+const DEFAULT_CHAT_LOAD_LIMIT = 50;
+
+export default function Home() {
+  const t = useTranslations('i18n');
+  const [loading, setLoading] = useState(true);
+  const [activeFilter, setActiveFilter] = useState<FilterType>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  // Get the Telegram initialization data
+  const initDataRaw = useSignal(initData.raw);
+  const initDataState = useSignal(initData.state);
+  
+  const { fetchUser, user, isLoading: userLoading, error: userError } = useUserStore();
+  const { fetchChats, chats, isLoading: chatsLoading, error: chatsError } = useChatStore();
+
+  const [selectedChat, setSelectedChat] = useState<TelegramChat | null>(null);
+
+  const router = useRouter();
+
+  // First filter by search query
+  const searchedChats = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return chats;
+    }
+    
+    const normalizedQuery = searchQuery.toLowerCase().trim();
+    return chats.filter(chat => {
+      const title = (chat.title || `Chat ${chat.telegram_id}`).toLowerCase();
+      return title.includes(normalizedQuery);
+    });
+  }, [chats, searchQuery]);
+
+  // Then filter by category
+  const filteredChats = useMemo(() => {
+    if (activeFilter === 'all') {
+      return searchedChats;
+    } else if (activeFilter === 'private') {
+      return searchedChats.filter(chat => chat.type === TelegramMessengerChatType.PRIVATE);
+    } else if (activeFilter === 'group') {
+      return searchedChats.filter(chat => 
+        chat.type === TelegramMessengerChatType.GROUP || 
+        chat.type === TelegramMessengerChatType.SUPERGROUP
+      );
+    } else if (activeFilter === 'channel') {
+      return searchedChats.filter(chat => chat.type === TelegramMessengerChatType.CHANNEL);
+    }
+    return searchedChats;
+  }, [searchedChats, activeFilter]);
+
+  // Handle search input change
+  const handleSearchChange = (e: ChangeEvent<HTMLInputElement>) => {
+    setSearchQuery(e.target.value);
+  };
+
+  // Clear search
+  const handleClearSearch = () => {
+    setSearchQuery('');
+  };
+
+  // Initial data loading
+  useEffect(() => {
+    let isMounted = true;
+    
+    const loadData = async () => {
+      try {
+        console.log('initDataRaw value:', initDataRaw);
+        console.log('initDataState value:', initDataState);
+        
+        // Check if we have valid initialization data
+        if (!initDataRaw) {
+          console.error('No Telegram init data available');
+          return;
+        }
+        
+        // Fetch fresh user data from server first
+        console.log('Fetching fresh user data from server');
+        await fetchUser(initDataRaw);
+        
+        // Get the latest user data which includes their chat load limit preference
+        const userData = useUserStore.getState().user;
+        const limit = userData?.telegram_chats_load_limit || DEFAULT_CHAT_LOAD_LIMIT;
+        
+        // Fetch chats with the user's preferred limit
+        console.log(`Loading chats with user-defined limit: ${limit}`);
+        await fetchChats(initDataRaw, limit);
+      } catch (err) {
+        console.error('Failed to load data:', err);
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    // Only proceed with data loading if initialization data is available
+    if (initDataState && initDataRaw) {
+      loadData();
+    }
+    
+    // Cleanup function
+    return () => {
+      isMounted = false;
+    };
+  }, [fetchUser, fetchChats, initDataRaw, initDataState]);
+
+  const handleChatClick = (chat: TelegramChat) => {
+    setSelectedChat(chat);
+    // Navigate to the chat detail page
+    router.push(`/chat/${chat.telegram_id}`);
+  };
+
+  // Handle back button navigation
+  const handleBackNavigation = () => {
+    setSelectedChat(null);
+  };
+
+  // Handle settings click navigation
+  const handleSettingsClick = () => {
+    router.push('/settings');
+  };
+
+  // Get chat counts by type
+  const chatCounts = useMemo(() => {
+    // Use searchedChats to include only chats that match the search
+    const privateCount = searchedChats.filter(chat => chat.type === TelegramMessengerChatType.PRIVATE).length;
+    const groupCount = searchedChats.filter(chat => 
+      chat.type === TelegramMessengerChatType.GROUP || 
+      chat.type === TelegramMessengerChatType.SUPERGROUP
+    ).length;
+    const channelCount = searchedChats.filter(chat => chat.type === TelegramMessengerChatType.CHANNEL).length;
+    
+    return {
+      all: searchedChats.length,
+      private: privateCount,
+      group: groupCount,
+      channel: channelCount
+    };
+  }, [searchedChats]);
+
+  if (loading || userLoading || chatsLoading) {
+    return (
+      <Page back={false}>
+        <div className="flex justify-center items-center min-h-screen">
+          <Preloader />
+        </div>
+      </Page>
+    );
+  }
+
+  if (userError || chatsError) {
+    return (
+      <Page back={false}>
+        <div className="alert alert-error shadow-lg mx-4 my-6">
+          <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current flex-shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <div>
+            <h3 className="font-bold">Error</h3>
+            <div className="text-sm">{userError || chatsError}</div>
+          </div>
+        </div>
+      </Page>
+    );
+  }
+
+  return (
+    <Page 
+      back={!!selectedChat} 
+      onBack={handleBackNavigation}
+    >
+      <Header 
+        title="Your Chats"
+        onSettingsClick={handleSettingsClick}
+      />
+      <div className="container mx-auto p-4">
+        <div className="mb-6">
+
+          
+          {/* Search bar */}
+          <div className="form-control mb-4">
+            <div className="relative w-full">
+              <input 
+                type="text" 
+                placeholder="Поиск чатов..." 
+                className="input input-bordered w-full pr-20"
+                value={searchQuery}
+                onChange={handleSearchChange}
+              />
+              <div className="absolute inset-y-0 right-0 flex items-center">
+                {searchQuery && (
+                  <button 
+                    className="btn btn-ghost btn-sm px-2"
+                    onClick={handleClearSearch}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                )}
+                <button className="btn btn-ghost btn-sm px-3 mr-1">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+          
+          {/* Chat filter tabs */}
+          <div className="tabs tabs-boxed bg-base-200 mb-4">
+            <a 
+              className={`tab ${activeFilter === 'all' ? 'tab-active' : ''}`}
+              onClick={() => setActiveFilter('all')}
+            >
+              Все
+              <span className="badge badge-sm ml-1">{chatCounts.all}</span>
+            </a>
+            <a 
+              className={`tab ${activeFilter === 'private' ? 'tab-active' : ''}`}
+              onClick={() => setActiveFilter('private')}
+            >
+              Чаты
+              <span className="badge badge-sm ml-1">{chatCounts.private}</span>
+            </a>
+            <a 
+              className={`tab ${activeFilter === 'group' ? 'tab-active' : ''}`}
+              onClick={() => setActiveFilter('group')}
+            >
+              Группы
+              <span className="badge badge-sm ml-1">{chatCounts.group}</span>
+            </a>
+            <a 
+              className={`tab ${activeFilter === 'channel' ? 'tab-active' : ''}`}
+              onClick={() => setActiveFilter('channel')}
+            >
+              Каналы
+              <span className="badge badge-sm ml-1">{chatCounts.channel}</span>
+            </a>
+          </div>
+          
+          {/* No results message */}
+          {filteredChats.length === 0 && searchQuery && (
+            <div className="alert alert-info shadow-lg mb-4">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="stroke-current flex-shrink-0 w-6 h-6">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+              </svg>
+              <div>
+                <span>По запросу &ldquo;{searchQuery}&rdquo; ничего не найдено в категории &ldquo;{
+                  activeFilter === 'all' ? 'Все' : 
+                  activeFilter === 'private' ? 'Чаты' : 
+                  activeFilter === 'group' ? 'Группы' : 'Каналы'
+                }&rdquo;</span>
+              </div>
+            </div>
+          )}
+          
+          <ChatList 
+            chats={filteredChats} 
+            onChatClick={handleChatClick}
+            selectedChat={selectedChat}
+          />
+        </div>
+
+        {selectedChat && (
+          <div className="card bg-base-200 shadow-lg">
+            <div className="card-body">
+              <h3 className="card-title text-base-content flex items-center">
+                <div className="badge badge-primary mr-2">{selectedChat.type}</div>
+                {selectedChat.title || `Chat ${selectedChat.telegram_id}`}
+              </h3>
+              <div className="divider my-2"></div>
+              <div className="stats stats-vertical sm:stats-horizontal shadow bg-base-100">
+                <div className="stat">
+                  <div className="stat-title">ID</div>
+                  <div className="stat-value text-lg">{selectedChat.telegram_id}</div>
+                </div>
+                {selectedChat.member_count && (
+                  <div className="stat">
+                    <div className="stat-title">Members</div>
+                    <div className="stat-value text-lg">{selectedChat.member_count}</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </Page>
+  );
+}
+
+
+
