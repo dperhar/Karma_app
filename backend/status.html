@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Status Check</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f0f0f0; }
+        .container { background: white; padding: 20px; border-radius: 8px; max-width: 600px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        button { padding: 10px 20px; font-size: 16px; margin: 10px 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔧 Digital Twin System Status</h1>
+        
+        <button onclick="checkAPI()">Check API Health</button>
+        <button onclick="testCORS()">Test CORS</button>
+        
+        <div id="results"></div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        
+        function showResult(message, isSuccess = true) {
+            const results = document.getElementById('results');
+            const div = document.createElement('div');
+            div.className = `status ${isSuccess ? 'success' : 'error'}`;
+            div.textContent = message;
+            results.appendChild(div);
+        }
+        
+        async function checkAPI() {
+            try {
+                const response = await fetch(`${API_BASE}/health`);
+                const data = await response.json();
+                showResult(`✅ API Health: ${data.status} (HTTP ${response.status})`);
+            } catch (error) {
+                showResult(`❌ API Error: ${error.message}`, false);
+            }
+        }
+        
+        async function testCORS() {
+            try {
+                const response = await fetch(`${API_BASE}/health`, {
+                    method: 'GET',
+                    mode: 'cors'
+                });
+                const data = await response.json();
+                showResult(`✅ CORS Working: ${data.status}`);
+            } catch (error) {
+                showResult(`❌ CORS Error: ${error.message}`, false);
+            }
+        }
+        
+        // Auto-check on load
+        window.onload = function() {
+            checkAPI();
+            setTimeout(() => testCORS(), 1000);
+        };
+    </script>
+</body>
+</html> 

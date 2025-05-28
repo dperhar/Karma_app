@@ -1,0 +1,22 @@
+FROM node:18-alpine
+
+# Установка рабочей директории
+WORKDIR /app
+
+# Копирование package.json и package-lock.json
+COPY package*.json ./
+
+# Установка всех зависимостей (включая dev)
+RUN npm install
+
+# Копирование исходного кода
+COPY . .
+
+# Порт для Next.js
+EXPOSE 3000
+
+# Переменная для development
+ENV NODE_ENV=development
+
+# Команда запуска в режиме разработки
+CMD ["npm", "run", "dev", "--", "--hostname", "0.0.0.0"] 
