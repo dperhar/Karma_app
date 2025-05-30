@@ -1,0 +1,72 @@
+services:
+  turbomanager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64  # Явное указание платформы
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      IS_DEVELOP: "false"
+    depends_on:
+      - turbomanager-new-db
+      - turbomanager-redis
+    networks:
+      - turbomanager-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.turboapp-admin.rule=Host(`turboapp-api.ptel.brainex.co`)"
+      - "traefik.http.routers.turboapp-admin.entrypoints=websecure"
+      - "traefik.http.routers.turboapp-admin.tls.certresolver=myresolver"
+      - "traefik.http.services.turboapp-admin.loadbalancer.server.port=8000"
+
+  turbomanager-new-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    container_name: turbomanager-new-db
+    environment:
+      POSTGRES_USER: turbomanager
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: turbomanager
+    volumes:
+      - turbomanager-postgres_data:/var/lib/postgresql/data
+    networks:
+      - turbomanager-network
+
+  turbomanager-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    container_name: turbomanager-redis
+    command: redis-server --save 60 1 --loglevel warning
+    networks:
+      - turbomanager-network
+    volumes:
+      - turbomanager-redis_data:/data
+  centrifugo:
+    image: centrifugo/centrifugo:v6.1.0
+    container_name: turbomanager-centrifugo
+    restart: unless-stopped
+    networks:
+      - turbomanager-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.turboapp-centrifugo.rule=Host(`turboapp-centrifugo.ptel.brainex.co`)"
+      - "traefik.http.routers.turboapp-centrifugo.entrypoints=websecure"
+      - "traefik.http.routers.turboapp-centrifugo.tls.certresolver=myresolver"
+      - "traefik.http.services.turboapp-centrifugo.loadbalancer.server.port=8000"
+    volumes:
+      - ./centrifugo/config.json:/centrifugo/config.json
+    command: centrifugo --config /centrifugo/config.json
+
+volumes:
+  turbomanager-postgres_data:
+    driver: local
+  traefik-certificates:
+    driver: local
+  turbomanager-redis_data:
+    driver: local
+
+networks:
+  turbomanager-network:
+    external: true

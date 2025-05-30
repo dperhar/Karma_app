@@ -1,0 +1,76 @@
+services:
+  turbomanager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64  # Явное указание платформы
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      IS_DEVELOP: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - turbomanager-db
+      - turbomanager-redis
+      - centrifugo
+    volumes:
+      - .:/app:delegated
+      - venv:/app/.venv
+
+  turbomanager-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    container_name: turbomanager-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: turbomanager-new
+    volumes:
+      - turbomanager-new-postgres_data:/var/lib/postgresql/data
+
+  turbomanager-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    container_name: turbomanager-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - turbomanager-new-redis_data:/data
+
+  turbomanager_pgadmin:
+    image: dpage/pgadmin4
+    container_name: turbomanager_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5051:80"
+    depends_on:
+      - turbomanager-db
+    volumes:
+      - turbomanager-new-pgadmin_data:/var/lib/pgadmin
+
+  centrifugo:
+    image: centrifugo/centrifugo:v6.1.0
+    container_name: turbomanager-centrifugo
+    restart: unless-stopped
+    ports:
+      - "9000:8000"  # All endpoints (WebSocket, API, Admin, Prometheus, Health)
+    volumes:
+      - ./centrifugo/config.json:/centrifugo/config.json
+    command: centrifugo --config /centrifugo/config.json
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  turbomanager-new-postgres_data:
+  turbomanager-new-pgadmin_data:
+  turbomanager-new-redis_data:
+  venv:
+  data:

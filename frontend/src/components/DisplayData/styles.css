@@ -1,0 +1,15 @@
+.display-data__header {
+  font-weight: 400;
+}
+
+.display-data__line {
+  padding: 16px 24px;
+}
+
+.display-data__line-title {
+  color: #666666;
+}
+
+.display-data__line-value {
+  word-break: break-word;
+}
