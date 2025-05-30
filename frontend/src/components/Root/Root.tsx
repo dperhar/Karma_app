@@ -27,15 +27,33 @@ function RootInner({ children }: PropsWithChildren) {
   const isDev = process.env.NODE_ENV === 'development';
   console.log('isDev', isDev);
   
-  // Mock Telegram environment in development mode
+  // Mock Telegram environment in development mode FIRST
   // This must be called before any other Telegram SDK hooks
   if (isDev) {
     // eslint-disable-next-line react-hooks/rules-of-hooks
     useTelegramMock();
   }
   
-  const lp = useLaunchParams();
-  console.log("lp", lp);
+  // Now safely get launch params after mocking is complete
+  // Always call the hook, but handle errors gracefully
+  let lp;
+  try {
+    // Always call the hook to satisfy React rules
+    const launchParams = useLaunchParams();
+    lp = launchParams;
+    console.log("lp", lp);
+  } catch (error) {
+    console.error("Error getting launch params:", error);
+    // Fallback launch params for development
+    lp = {
+      platform: 'tdesktop' as const,
+      version: '8',
+      themeParams: {},
+      initData: null,
+      initDataRaw: '',
+      startParam: isDev ? 'debug' : undefined
+    };
+  }
 
   const debug = isDev || lp.startParam === 'debug';
 

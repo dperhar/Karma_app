@@ -6,7 +6,7 @@ services:
     image: postgres:15-alpine
     container_name: karma-postgres
     environment:
-      POSTGRES_DB: karma_app
+      POSTGRES_DB: karma
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
@@ -39,11 +39,15 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: karma-backend
+    env_file:
+      - .env
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/karma_app
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/karma
       - REDIS_URL=redis://redis:6379
       - IS_DEVELOP=true
       - FRONTEND_URL=http://localhost:3000
+      - TELETHON_API_ID=${TELETHON_API_ID}
+      - TELETHON_API_HASH=${TELETHON_API_HASH}
     ports:
       - "8000:8000"
     volumes:
@@ -62,10 +66,10 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     container_name: karma-frontend
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api
       - NODE_ENV=development
     ports:
       - "3000:3000"

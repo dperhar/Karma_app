@@ -6,8 +6,9 @@ from app.api.v1.router import api_router as api_v1_router
 from app.db.session import engine 
 from app.db.base_class import Base
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from project root
+env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+load_dotenv(env_path)
 
 # Create database tables
 Base.metadata.create_all(bind=engine)

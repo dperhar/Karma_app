@@ -3,10 +3,10 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
-from models.user.user import User
+from models.user.schemas import UserResponse
 from routes.dependencies import get_current_user
 from services.dependencies import get_telethon_service, get_telethon_client
 
@@ -27,7 +27,7 @@ class PostsResponse(BaseModel):
 async def get_posts(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=100, description="Posts per page"),
-    current_user: User = Depends(get_current_user),
+    current_user: UserResponse = Depends(get_current_user),
     telethon_service=Depends(get_telethon_service),
     telethon_client=Depends(get_telethon_client),
 ):
@@ -44,19 +44,14 @@ async def get_posts(
         PostsResponse with posts data
     """
     try:
-        # Check if user has Telegram session
-        if not current_user.telegram_session_string:
-            raise HTTPException(
-                status_code=400,
-                detail="Telegram account not connected. Please authenticate first."
-            )
-
         # Get Telegram client for the user
-        client = await telethon_client.get_client(current_user.telegram_session_string)
+        # get_current_user ensures user is authenticated with the app.
+        # get_or_create_client will check the Telegram session string from the DB.
+        client = await telethon_client.get_or_create_client(current_user.id)
         if not client:
             raise HTTPException(
-                status_code=400,
-                detail="Failed to connect to Telegram. Please re-authenticate."
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Telegram session is not active or invalid. Please log in again via Settings."
             )
 
         # Calculate offset
@@ -89,7 +84,7 @@ async def get_posts(
 async def get_post(
     post_id: int,
     channel_id: int = Query(description="Telegram channel ID"),
-    current_user: User = Depends(get_current_user),
+    current_user: UserResponse = Depends(get_current_user),
     telethon_service=Depends(get_telethon_service),
     telethon_client=Depends(get_telethon_client),
 ):
@@ -106,19 +101,12 @@ async def get_post(
         Post data dictionary
     """
     try:
-        # Check if user has Telegram session
-        if not current_user.telegram_session_string:
-            raise HTTPException(
-                status_code=400,
-                detail="Telegram account not connected. Please authenticate first."
-            )
-
         # Get Telegram client for the user
-        client = await telethon_client.get_client(current_user.telegram_session_string)
+        client = await telethon_client.get_or_create_client(current_user.id)
         if not client:
             raise HTTPException(
-                status_code=400,
-                detail="Failed to connect to Telegram. Please re-authenticate."
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Telegram session is not active or invalid. Please log in again via Settings."
             )
 
         # Get the specific message

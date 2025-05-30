@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from models.base.schemas import APIResponse
-from routes.dependencies import get_current_user
+from routes.dependencies import get_optional_user
 from services.dependencies import container
 from services.domain.telegram_messenger.auth_service import TelegramMessengerAuthService
 from services.domain.user_service import UserService
@@ -56,14 +56,16 @@ async def generate_qr_code(
 @router.post("/check", response_model=APIResponse[LoginCheckResponse])
 async def check_qr_login(
     request: CheckLoginRequest,
-    current_user: UserService = Depends(get_current_user),
+    current_user: Optional[UserService] = Depends(get_optional_user),
     auth_service: TelegramMessengerAuthService = Depends(
         lambda: container.resolve(TelegramMessengerAuthService)
     ),
 ) -> APIResponse[LoginCheckResponse]:
     """Check QR code login status."""
     try:
-        result = await auth_service.check_qr_login(request.token, current_user.id)
+        # Pass current_user.id if user is available, otherwise None
+        user_id = current_user.id if current_user else None
+        result = await auth_service.check_qr_login(request.token, user_id)
         return APIResponse(success=True, data=LoginCheckResponse(**result))
     except ValueError as e:
         return APIResponse(success=False, message=str(e), status_code=400)
@@ -75,15 +77,17 @@ async def check_qr_login(
 async def verify_qr_2fa(
     token: str,
     request: TwoFactorAuthRequest,
-    current_user: UserService = Depends(get_current_user),
+    current_user: Optional[UserService] = Depends(get_optional_user),
     auth_service: TelegramMessengerAuthService = Depends(
         lambda: container.resolve(TelegramMessengerAuthService)
     ),
 ) -> APIResponse[LoginCheckResponse]:
     """Verify 2FA password for QR code login."""
     try:
+        # Pass current_user.id if user is available, otherwise None
+        user_id = current_user.id if current_user else None
         result = await auth_service.verify_qr_2fa(
-            request.password, token, current_user.id
+            request.password, token, user_id
         )
         return APIResponse(success=True, data=LoginCheckResponse(**result))
     except ValueError as e:

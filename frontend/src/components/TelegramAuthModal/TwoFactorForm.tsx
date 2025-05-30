@@ -19,14 +19,14 @@ export const TwoFactorForm: React.FC<TwoFactorFormProps> = ({ onSubmit, loading 
     <div className="w-full max-w-md space-y-4">
       <div className="text-center">
         <h3 className="text-lg font-semibold mb-2">Two-Factor Authentication</h3>
-        <p className="text-base-content/70">Please enter the 2FA code sent to your Telegram account</p>
+        <p className="text-base-content/70">Please enter your Telegram 2FA password</p>
       </div>
       <form onSubmit={handleSubmit} className="space-y-4">
         <input
-          type="text"
+          type="password"
           value={code}
           onChange={(e) => setCode(e.target.value)}
-          placeholder="Enter 2FA code"
+          placeholder="Enter 2FA password"
           className="input input-bordered w-full"
         />
         <button 
@@ -34,7 +34,7 @@ export const TwoFactorForm: React.FC<TwoFactorFormProps> = ({ onSubmit, loading 
           disabled={loading || !code.trim()}
           className="btn btn-primary w-full"
         >
-          {loading ? <span className="loading loading-spinner"></span> : 'Verify Code'}
+          {loading ? <span className="loading loading-spinner"></span> : 'Verify Password'}
         </button>
       </form>
     </div>

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException, status
 from pydantic import BaseModel
 
 from models.base.schemas import APIResponse
@@ -69,16 +69,26 @@ class TelegramMessengerMessageResponse(BaseModel):
         json_encoders = {datetime: lambda v: v.isoformat() if v else None}
 
 
+class PaginationInfo(BaseModel):
+    """Pagination information."""
+    
+    offset: Optional[int] = None
+    offset_id: Optional[int] = None
+    has_more: bool = False
+
+
 class ChatParticipantsResponse(BaseModel):
     """Response model for chat participants."""
 
     participants: list[TelegramMessengerChatUserResponse]
+    pagination: Optional[PaginationInfo] = None
 
 
 class ChatMessagesResponse(BaseModel):
     """Response model for chat messages."""
 
     messages: list[TelegramMessengerMessageResponse]
+    pagination: Optional[PaginationInfo] = None
 
 
 @router.get(
@@ -86,8 +96,8 @@ class ChatMessagesResponse(BaseModel):
 )
 async def get_chat_participants(
     telegram_id: int,
-    limit: int = Query(default=100, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100, description="Number of participants to retrieve (max 100 for safety)"),
+    offset: int = Query(default=0, ge=0, description="Number of participants to skip"),
     current_user: UserService = Depends(get_current_user),
     chat_service: TelegramMessengerChatService = Depends(
         lambda: container.resolve(TelegramMessengerChatService)
@@ -99,13 +109,13 @@ async def get_chat_participants(
         lambda: container.resolve(TelethonClient)
     ),
 ) -> APIResponse[ChatParticipantsResponse]:
-    """Get list of chat participants."""
+    """Get list of chat participants with safe pagination."""
     try:
         client = await telethon_client.get_or_create_client(current_user.id)
         if not client:
             return APIResponse(
-                success=False,
-                message="No valid Telegram session found. Please log in first.",
+                success=False, # This path might not be hit if get_current_user raises first
+                message="Telegram session is not active or invalid. Please log in again via Settings."
             )
 
         # Get chat from database or sync from Telegram
@@ -121,15 +131,25 @@ async def get_chat_participants(
                 status_code=404,
             )
 
-        # Get participants
-        participants = await chat_user_service.get_chat_participants(
+        # Get participants with pagination
+        participants, next_pagination = await chat_user_service.get_chat_participants_paginated(
             client=client,
             chat=chat,
             limit=limit,
             offset=offset,
         )
+        
+        # Prepare pagination info for response
+        pagination_info = None
+        if next_pagination:
+            pagination_info = PaginationInfo(
+                offset=next_pagination.get('offset'),
+                has_more=True
+            )
+        
         return APIResponse(
-            success=True, data=ChatParticipantsResponse(participants=participants)
+            success=True, 
+            data=ChatParticipantsResponse(participants=participants, pagination=pagination_info)
         )
     except Exception as e:
         return APIResponse(success=False, message=str(e))
@@ -138,8 +158,9 @@ async def get_chat_participants(
 @router.get("/{telegram_id}/messages", response_model=APIResponse[ChatMessagesResponse])
 async def get_chat_messages(
     telegram_id: int,
-    limit: int = Query(default=10, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100, description="Number of messages to retrieve (max 100 for safety)"),
+    cursor_message_id: Optional[int] = Query(None, description="Message ID to start fetching from"),
+    direction: str = Query("older", regex="^(older|newer)$", description="Direction to fetch messages"),
     current_user: UserService = Depends(get_current_user),
     chat_service: TelegramMessengerChatService = Depends(
         lambda: container.resolve(TelegramMessengerChatService)
@@ -151,13 +172,13 @@ async def get_chat_messages(
         lambda: container.resolve(TelethonClient)
     ),
 ) -> APIResponse[ChatMessagesResponse]:
-    """Get list of chat messages."""
+    """Get list of chat messages with safe pagination."""
     try:
         client = await telethon_client.get_or_create_client(current_user.id)
         if not client:
             return APIResponse(
-                success=False,
-                message="No valid Telegram session found. Please log in first.",
+                success=False, # This path might not be hit if get_current_user raises first
+                message="Telegram session is not active or invalid. Please log in again via Settings."
             )
 
         # Get chat first
@@ -173,13 +194,26 @@ async def get_chat_messages(
                 status_code=404,
             )
 
-        # Get messages
-        messages = await messages_service.get_chat_messages(
+        # Get messages with pagination
+        messages, next_pagination = await messages_service.get_chat_messages_paginated(
             client=client,
             chat=chat,
             limit=limit,
-            offset=offset,
+            cursor_message_id=cursor_message_id,
+            direction=direction,
         )
-        return APIResponse(success=True, data=ChatMessagesResponse(messages=messages))
+        
+        # Prepare pagination info for response
+        pagination_info = None
+        if next_pagination:
+            pagination_info = PaginationInfo(
+                offset_id=next_pagination.get('offset_id'),
+                has_more=True
+            )
+        
+        return APIResponse(
+            success=True, 
+            data=ChatMessagesResponse(messages=messages, pagination=pagination_info)
+        )
     except Exception as e:
         return APIResponse(success=False, message=str(e))

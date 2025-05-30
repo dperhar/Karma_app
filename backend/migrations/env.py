@@ -18,8 +18,9 @@ sys.path.insert(0, project_root)
 # ruff: noqa: E402
 from models.db_base import DBBase
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env file in project root
+env_path = os.path.join(os.path.dirname(project_root), '.env')
+load_dotenv(env_path)
 
 # Load Alembic configuration
 config = context.config  # pylint: disable=no-member

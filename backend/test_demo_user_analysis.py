@@ -12,8 +12,9 @@ from services.dependencies import container
 from services.domain.user_context_analysis_service import UserContextAnalysisService
 from services.repositories.user_repository import UserRepository
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from project root
+env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+load_dotenv(env_path)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

@@ -5,7 +5,9 @@ import os
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env from parent directory (project root)
+env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+load_dotenv(env_path)
 
 # Database
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -22,11 +24,11 @@ DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", 30))
 DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", 1800))  # 30 minutes
 
 # Redis
-REDIS_HOST = os.getenv("REDIS_HOST", "doublekiss-redis")
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_DB = int(os.getenv("REDIS_DB", 0))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 # JWT
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-here")
 JWT_ALGORITHM = "HS256"
@@ -69,8 +71,8 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://your-domain.com/webhook")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
 # Telethon
-TELETHON_API_ID = os.getenv("TELETHON_API_ID")
-TELETHON_API_HASH = os.getenv("TELETHON_API_HASH")
+TELETHON_API_ID = os.getenv("TELETHON_API_ID") or os.getenv("API_ID")
+TELETHON_API_HASH = os.getenv("TELETHON_API_HASH") or os.getenv("API_HASH")
 
 # Groq
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")

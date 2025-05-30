@@ -77,7 +77,7 @@ export const TelegramAuthModal: React.FC<TelegramAuthModalProps> = ({
                 onSubmit={handle2FASubmit}
                 loading={loading}
               />
-            ) : loginStatus?.status === 'success' ? (
+            ) : loginStatus?.user_id ? (
               <div className="text-center space-y-2">
                 <div className="text-success text-lg font-semibold">
                   Login Successful!

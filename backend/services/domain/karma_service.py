@@ -328,8 +328,8 @@ class KarmaService(BaseService):
                 try:
                     interests = json.loads(user.persona_interests_json) if isinstance(user.persona_interests_json, str) else user.persona_interests_json
                 except:
-                    pass
-            system_context = f"You are {persona_name}, knowledgeable about {', '.join(interests[:5]) if interests else 'technology and innovation'}."
+                    interests = []  # Ensure interests is a list
+            system_context = f"You are {persona_name}, knowledgeable about {', '.join(str(i) for i in interests[:5]) if interests else 'technology and innovation'}."
         
         # Use user's communication style if available
         style_instruction = ""

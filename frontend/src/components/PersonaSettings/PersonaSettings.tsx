@@ -195,7 +195,7 @@ export const PersonaSettings: React.FC<PersonaSettingsProps> = ({
               placeholder="Describe how this persona communicates: tone, style, key phrases, approach to topics..."
             />
             <p className="text-xs text-muted-foreground">
-              Detailed description of the persona's communication style and approach
+              Detailed description of the persona&apos;s communication style and approach
             </p>
           </div>
 

@@ -92,49 +92,65 @@ export default function SettingsPage() {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const saveSettings = async (): Promise<boolean> => {
     setIsSaving(true);
     setSuccessMessage(null);
     setErrorMessage(null);
 
-    console.log('Submitting form with initDataRaw:', initDataRaw);
+    if (!initDataRaw) {
+      setErrorMessage("Telegram data not available. Cannot save.");
+      setIsSaving(false);
+      return false;
+    }
     
     try {
       const response = await userService.updateUser(formData, initDataRaw);
       if (response.success) {
-        // Update the user store with all form data values
-        updateUser({
-          first_name: formData.first_name,
-          last_name: formData.last_name || undefined,
-          email: formData.email,
-          telegram_chats_load_limit: formData.telegram_chats_load_limit,
-          telegram_messages_load_limit: formData.telegram_messages_load_limit,
-          preferred_ai_model: formData.preferred_ai_model,
-          preferred_message_context_size: formData.preferred_message_context_size
-        });
-        
-        setSuccessMessage('User settings updated successfully!');
-        
-        // Still fetch user data to ensure everything is in sync
-        fetchUser(initDataRaw);
+        // response.data should be the complete User object from backend
+        if (response.data) {
+          updateUser(response.data);
+        }
+        return true;
       } else {
         setErrorMessage(response.error || 'Failed to update user settings');
+        return false;
       }
     } catch (error) {
       setErrorMessage('An error occurred while updating user settings');
       console.error(error);
+      return false;
     } finally {
       setIsSaving(false);
-      // Clear success message after 3 seconds
-      if (successMessage) {
-        setTimeout(() => setSuccessMessage(null), 3000);
-      }
     }
   };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const saved = await saveSettings();
+    if (saved) {
+      setSuccessMessage('User settings updated successfully!');
+      // Clear success message after 3 seconds
+      setTimeout(() => setSuccessMessage(null), 3000);
+    }
+    // Error message is handled by saveSettings
+  };
+
   const router = useRouter();
-  const handleBackToHome = () => router.replace('/');
+
+  const handleBackNavigation = async () => {
+    const saved = await saveSettings();
+    if (saved) {
+      // Check for previous chat ID to navigate back correctly
+      const previousChatId = sessionStorage.getItem('previousChatId');
+      if (previousChatId) {
+        sessionStorage.removeItem('previousChatId');
+        router.replace(`/chat/${previousChatId}`);
+      } else {
+        router.replace('/'); // Default back to home
+      }
+    }
+    // If not saved, an error message is already set by saveSettings, user stays on page
+  };
 
   // Handle settings click navigation - since we're already on settings page, this is undefined
   const handleSettingsClick = undefined;
@@ -142,7 +158,7 @@ export default function SettingsPage() {
   // Loading state
   if (isLoading) {
     return (
-      <Page back onBack={handleBackToHome}>
+      <Page back onBack={handleBackNavigation}>
         <div className="flex justify-center items-center min-h-screen">
           <Preloader />
         </div>
@@ -151,7 +167,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <Page back onBack={handleBackToHome}>
+    <Page back onBack={handleBackNavigation}>
       <Header 
         title="Settings"
         onSettingsClick={handleSettingsClick}
@@ -161,20 +177,29 @@ export default function SettingsPage() {
           {/* Telegram Authentication Section */}
           <section className="bg-base-200 rounded-box p-4 shadow-sm">
             <h2 className="text-xl font-bold mb-4">Telegram Authentication</h2>
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-              <p className="text-base-content text-opacity-70">
-                {user ? (
-                  <span>Connected as: {user.firstName} {user.lastName}</span>
-                ) : (
-                  <span>Not connected to Telegram</span>
-                )}
-              </p>
-              <Button
-                onClick={() => setShowQRModal(true)}
-                className={user ? 'btn-outline btn-sm' : 'btn-primary btn-sm'}
-              >
-                {user ? 'Reconnect Telegram' : 'Connect Telegram'}
-              </Button>
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div className="flex flex-col">
+                  <p className="text-base-content text-opacity-70">
+                    {userData?.has_valid_tg_session ? (
+                      <span>Connected as: {userData.first_name} {userData.last_name}</span>
+                    ) : (
+                      <span>Not connected to Telegram</span>
+                    )}
+                  </p>
+                  {userData?.last_telegram_auth_at && (
+                    <p className="text-sm text-base-content text-opacity-50 mt-1">
+                      Last authorized: {new Date(userData.last_telegram_auth_at).toLocaleString()}
+                    </p>
+                  )}
+                </div>
+                <Button
+                  onClick={() => setShowQRModal(true)}
+                  className={userData?.has_valid_tg_session ? 'btn-outline btn-sm' : 'btn-primary btn-sm'}
+                >
+                  {userData?.has_valid_tg_session ? 'Reconnect Telegram' : 'Connect Telegram'}
+                </Button>
+              </div>
             </div>
           </section>
 
@@ -384,7 +409,13 @@ export default function SettingsPage() {
         {initDataRaw && (
           <TelegramAuthModal
             isOpen={showQRModal}
-            onClose={() => setShowQRModal(false)}
+            onClose={() => {
+              setShowQRModal(false);
+              // Refresh user data after modal closes (successful login)
+              if (initDataRaw) {
+                fetchUser(initDataRaw);
+              }
+            }}
             initDataRaw={initDataRaw}
           />
         )}

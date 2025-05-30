@@ -45,14 +45,27 @@ class TelegramMessengerAuthService(BaseService):
             key: Phone number or token used as storage key
         """
         try:
-            session_data = self.redis_service.get_session(f"{self.session_prefix}{key}")
+            try:
+                session_data = self.redis_service.get_session(f"{self.session_prefix}{key}")
+            except Exception:
+                # Fallback to memory storage
+                if hasattr(self, '_memory_sessions'):
+                    session_data = self._memory_sessions.get(f"{self.session_prefix}{key}")
+                else:
+                    session_data = None
+                    
             if session_data and "session_string" in session_data:
                 # No need to disconnect as we don't store the client anymore
                 pass
         except Exception as e:
             logger.error(f"Error during cleanup for {key}: {e}")
         finally:
-            self.redis_service.delete_session(f"{self.session_prefix}{key}")
+            try:
+                self.redis_service.delete_session(f"{self.session_prefix}{key}")
+            except Exception:
+                # Fallback to memory storage
+                if hasattr(self, '_memory_sessions'):
+                    self._memory_sessions.pop(f"{self.session_prefix}{key}", None)
 
     async def _delayed_cleanup(self, key: str, delay: int = 300):
         """Cleanup client after delay.
@@ -91,11 +104,18 @@ class TelegramMessengerAuthService(BaseService):
             # Don't store the client object
             data.pop("client", None)
 
-        self.redis_service.save_session(
-            f"{self.session_prefix}{key}",
-            data,
-            expire=expire,
-        )
+        try:
+            self.redis_service.save_session(
+                f"{self.session_prefix}{key}",
+                data,
+                expire=expire,
+            )
+        except Exception as e:
+            logger.warning(f"Redis not available, storing session in memory: {e}")
+            # For development, we can store in a simple dict
+            if not hasattr(self, '_memory_sessions'):
+                self._memory_sessions = {}
+            self._memory_sessions[f"{self.session_prefix}{key}"] = data
 
     async def _get_client_session(self, key: str) -> Optional[dict[str, Any]]:
         """Get client session data from Redis.
@@ -106,14 +126,23 @@ class TelegramMessengerAuthService(BaseService):
         Returns:
             Optional[Dict[str, Any]]: Session data if exists
         """
-        session_data = self.redis_service.get_session(f"{self.session_prefix}{key}")
+        try:
+            session_data = self.redis_service.get_session(f"{self.session_prefix}{key}")
+        except Exception as e:
+            logger.warning(f"Redis not available, using memory session: {e}")
+            # Fallback to memory storage
+            if hasattr(self, '_memory_sessions'):
+                session_data = self._memory_sessions.get(f"{self.session_prefix}{key}")
+            else:
+                session_data = None
+                
         if session_data and "session_string" in session_data:
             # Create a new client instance from the stored session string
             client = TelegramClient(
                 StringSession(session_data["session_string"]),
-                TELETHON_API_ID,
+                int(TELETHON_API_ID),
                 TELETHON_API_HASH,
-                device_model="TurboManager",
+                device_model="Karma Comments App",
                 system_version="9.31.19-tl-e-CUSTOM",
                 app_version="1.12.3",
                 lang_code="en",
@@ -129,12 +158,19 @@ class TelegramMessengerAuthService(BaseService):
         Returns:
             Token for checking login status
         """
+        # Check if API credentials are configured
+        if not TELETHON_API_ID or not TELETHON_API_HASH:
+            logger.error("Telethon API credentials not configured")
+            raise Exception("Telethon API credentials not configured. Please set TELETHON_API_ID and TELETHON_API_HASH in environment variables.")
+        
         try:
+            logger.info(f"Generating QR code with API_ID: {TELETHON_API_ID}")
+            
             client = TelegramClient(
                 StringSession(),
-                TELETHON_API_ID,
+                int(TELETHON_API_ID),
                 TELETHON_API_HASH,
-                device_model="TurboManager",
+                device_model="Karma Comments App",
                 system_version="9.31.19-tl-e-CUSTOM",
                 app_version="1.12.3",
                 lang_code="en",
@@ -153,6 +189,7 @@ class TelegramMessengerAuthService(BaseService):
 
             # Create token
             token = base64.b64encode(qr_login.token).decode("utf-8")
+            logger.info(f"QR token generated successfully: {token[:20]}...")
 
             # Store session data in Redis
             await self._save_client_session(
@@ -172,15 +209,15 @@ class TelegramMessengerAuthService(BaseService):
             }
 
         except Exception as err:
-            logger.error(f"Error generating QR code: {err}")
-            raise Exception("Error generating QR code") from err
+            logger.error(f"Error generating QR code: {err}", exc_info=True)
+            raise Exception(f"Error generating QR code: {str(err)}") from err
 
-    async def check_qr_login(self, token: str, current_user_id: str) -> dict[str, Any]:
+    async def check_qr_login(self, token: str, current_user_id: Optional[str]) -> dict[str, Any]:
         """Check if QR code login was successful.
 
         Args:
             token: QR code token
-            current_user_id: ID of the current user
+            current_user_id: ID of the current user (optional)
 
         Returns:
             Session response with auth data if successful
@@ -208,9 +245,16 @@ class TelegramMessengerAuthService(BaseService):
 
                         await self._cleanup_client(token)
 
-                        await self.user_service.update_user_tg_session(
-                            current_user_id, session_string
-                        )
+                        # Update user session and data if current_user_id is provided
+                        if current_user_id:
+                            await self.user_service.update_user_tg_session(
+                                current_user_id, session_string
+                            )
+                            
+                            # Update user data from Telegram
+                            await self.user_service.update_user_from_telegram(
+                                current_user_id, me
+                            )
 
                         return {
                             "requires_2fa": False,
@@ -238,14 +282,14 @@ class TelegramMessengerAuthService(BaseService):
             raise Exception("Error in QR login check") from err
 
     async def verify_qr_2fa(
-        self, password: str, token: str, current_user_id: str
+        self, password: str, token: str, current_user_id: Optional[str]
     ) -> dict[str, Any]:
         """Verify 2FA password for QR code login.
 
         Args:
             password: 2FA password
             token: QR code token
-            current_user_id: ID of the current user
+            current_user_id: ID of the current user (optional)
 
         Returns:
             Session response with auth data if successful
@@ -262,14 +306,23 @@ class TelegramMessengerAuthService(BaseService):
                 me = await client.get_me()
                 session_string = client.session.save()
 
-                await self.user_service.update_user_tg_session(
-                    current_user_id, session_string
-                )
+                # Update user session and data if current_user_id is provided
+                if current_user_id:
+                    await self.user_service.update_user_tg_session(
+                        current_user_id, session_string
+                    )
+                    
+                    # Update user data from Telegram
+                    await self.user_service.update_user_from_telegram(
+                        current_user_id, me
+                    )
 
-                return {
+                result = {
                     "requires_2fa": False,
                     "user_id": me.id,
                 }
+                logger.info(f"2FA verification successful, returning: {result}")
+                return result
 
             except PasswordHashInvalidError as exc:
                 raise ValueError("Invalid 2FA password") from exc

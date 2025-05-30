@@ -2,6 +2,7 @@
 
 import logging
 from typing import Optional
+from datetime import datetime
 
 from models.user.schemas import UserCreate, UserResponse, UserUpdate
 from services.base.base_service import BaseService
@@ -83,7 +84,7 @@ class UserService(BaseService):
             await self._send_user_update_notification(
                 user_id=user_id,
                 event="user_updated",
-                data=user_response.model_dump(exclude={"telegram_session_string"}),
+                data=user_response.model_dump(exclude={"telegram_session_string"}, mode="json"),
             )
 
             return user_response
@@ -108,7 +109,45 @@ class UserService(BaseService):
             await self._send_user_update_notification(
                 user_id=user_id,
                 event="user_updated",
-                data=user_response.model_dump(exclude={"telegram_session_string"}),
+                data=user_response.model_dump(exclude={"telegram_session_string"}, mode="json"),
             )
             return user_response
         return None
+
+    async def update_user_from_telegram(
+        self, user_id: str, telegram_user
+    ) -> Optional[UserResponse]:
+        """Update user data from Telegram user object after successful authorization."""
+        try:
+            # Extract data from Telegram user object
+            update_data = {
+                "first_name": telegram_user.first_name,
+                "last_name": getattr(telegram_user, 'last_name', None),
+                "username": getattr(telegram_user, 'username', None),
+                "telegram_id": telegram_user.id,
+                "last_telegram_auth_at": datetime.utcnow(),
+            }
+            
+            logger.info(f"Updating user {user_id} with Telegram data: {update_data}")
+            
+            user = await self.user_repository.update_user(user_id=user_id, **update_data)
+            
+            if user:
+                logger.info(f"User {user_id} updated successfully with Telegram data")
+                user_response = UserResponse.model_validate(user)
+                
+                # Send notification about user update
+                await self._send_user_update_notification(
+                    user_id=user_id,
+                    event="user_updated",
+                    data=user_response.model_dump(exclude={"telegram_session_string"}, mode="json"),
+                )
+                
+                return user_response
+            else:
+                logger.error(f"Failed to update user {user_id} with Telegram data")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error updating user {user_id} from Telegram: {e}")
+            return None

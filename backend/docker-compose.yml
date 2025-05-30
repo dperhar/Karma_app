@@ -6,7 +6,7 @@ services:
     platform: linux/amd64  # Явное указание платформы
     restart: unless-stopped
     env_file:
-      - .env
+      - ../.env
     environment:
       IS_DEVELOP: "true"
     ports:

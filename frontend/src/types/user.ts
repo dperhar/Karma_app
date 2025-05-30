@@ -5,6 +5,9 @@ export interface User {
   last_name?: string;
   email: string | null;
   telegram_id: number;
+  telegram_session_string?: string | null;
+  has_valid_tg_session?: boolean;
+  last_telegram_auth_at?: string | null;
   telegram_chats_load_limit: number | null;
   telegram_messages_load_limit: number | null;
   preferred_ai_model: string | null;

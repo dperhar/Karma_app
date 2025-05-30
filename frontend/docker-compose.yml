@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     restart: always
     env_file:
-      - .env
+      - ../.env
     environment:
       - NODE_ENV=production
       - NEXT_PUBLIC_API_URL=https://turboapp-api.ptel.brainex.co/api

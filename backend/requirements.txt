@@ -3,6 +3,7 @@ aiogram==3.19.0
 alembic
 anthropic
 asyncpg
+psycopg2-binary
 bcrypt
 boto3
 cent
@@ -17,7 +18,6 @@ Pillow
 passlib
 pydantic
 pydantic[email]
-psycopg2-binary
 PyJWT
 python-multipart
 redis

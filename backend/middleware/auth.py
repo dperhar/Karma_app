@@ -110,6 +110,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/api/ws",  # Alternative WebSocket endpoint
             "/api/users/me",  # Allow user profile endpoint for development
             "/api/telegram/chats/list",  # Allow chat list endpoint for development
+            "/api/telegram/auth/qr-code",  # QR code generation for Telegram auth
+            "/api/telegram/auth/check",  # Check QR login status
         }
         logger.info(
             "AuthMiddleware initialized with public paths: %s", self.public_paths
@@ -140,8 +142,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Skip public paths
         if path in self.public_paths:
             logger.debug(f"Public path accessed: {path}")
+            # For Telegram auth endpoints, still check for authentication but don't require it
+            if path in ["/api/telegram/auth/qr-code", "/api/telegram/auth/check"]:
+                await self._try_authenticate(request)
             return await call_next(request)
         
+        # Check for dynamic telegram verify-2fa paths
+        if path.startswith("/api/telegram/auth/verify-2fa/"):
+            logger.debug(f"Public telegram verify-2fa path accessed: {path}")
+            # Try to authenticate but don't require it
+            await self._try_authenticate(request)
+            return await call_next(request)
+
         # Debug: check public paths
         logger.debug(f"Path '{path}' not in public_paths: {self.public_paths}")
         logger.debug(f"Path exact match check: {path == '/api/users/me'}")
@@ -265,3 +277,58 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Telegram-Init-Data",
             },
         )
+
+    async def _try_authenticate(self, request: Request):
+        """Try to authenticate user but don't fail if no authentication provided."""
+        # Initialize request state
+        request.state.admin = None
+        request.state.user = None
+
+        # Check for Admin token
+        admin_token = request.headers.get("X-Admin-Token")
+        if admin_token:
+            try:
+                admin_data = validate_admin_token(admin_token)
+                request.state.admin = AdminResponse(**admin_data)
+                logger.debug(f"Admin authenticated: {request.state.admin.login}")
+                return
+            except ValueError as e:
+                logger.debug(f"Admin authentication failed: {e!s}")
+
+        # Check for Telegram WebApp init_data
+        init_data = request.headers.get("X-Telegram-Init-Data")
+        if init_data:
+            try:
+                telegram_data = self.telegram_validator.validate_telegram_data(
+                    init_data
+                )
+                request.state.user = UserTelegramResponse(**telegram_data["user"])
+                request.state.auth_date = telegram_data["auth_date"]
+                logger.debug(f"Telegram user authenticated: {request.state.user.id}")
+
+                # Get user from database to check registration status
+                user_repo = UserRepository()
+                user_model = await user_repo.get_user_by_telegram_id(
+                    request.state.user.id
+                )
+
+                if not user_model:
+                    logger.debug(f"User not found in database for telegram_id: {request.state.user.id}, creating new user")
+                    # Auto-register user on first login
+                    try:
+                        user_dict = {
+                            "telegram_id": request.state.user.id,
+                            "first_name": request.state.user.first_name,
+                            "last_name": request.state.user.last_name,
+                            "username": request.state.user.username,
+                        }
+                        user_model = await user_repo.create_user(**user_dict)
+                        logger.debug(f"Successfully created new user: {user_model.id}")
+                    except Exception as e:
+                        logger.debug(f"Failed to create user: {e!s}")
+                        
+            except ValueError as e:
+                logger.debug(f"Telegram authentication failed: {e!s}")
+
+        # If no valid authentication found, just continue without setting user/admin
+        logger.debug("No authentication provided, continuing without user/admin")

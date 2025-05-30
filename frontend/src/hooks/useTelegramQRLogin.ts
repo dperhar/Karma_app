@@ -75,6 +75,8 @@ export const useTelegramQRLogin = (initDataRaw: string) => {
       console.log('QR code generation response:', response);
       
       if (response.success && response.data) {
+        console.log('Response data:', response.data);
+        console.log('Token from response:', response.data.token);
         setQRData(response.data);
         
         const loginUrl = `tg://login?token=${response.data.token}`;
@@ -88,10 +90,14 @@ export const useTelegramQRLogin = (initDataRaw: string) => {
             light: '#ffffff'
           }
         });
-        console.log('QR code data URL generated');
+        console.log('QR code data URL generated:', qrCodeDataUrl ? 'YES' : 'NO');
+        console.log('QR code data URL length:', qrCodeDataUrl.length);
         setQRCodeUrl(qrCodeDataUrl);
         
         startPolling(response.data.token);
+      } else {
+        console.error('Response not successful or no data:', response);
+        setError(response.message || 'Failed to generate QR code');
       }
     } catch (err) {
       console.error('QR code generation error:', err);
@@ -104,7 +110,7 @@ export const useTelegramQRLogin = (initDataRaw: string) => {
   const verify2FA = useCallback(async (twoFactorCode: string) => {
     if (!qrData || !twoFactorCode || !initDataRaw) {
       setError('Required data is not available');
-      return;
+      return false;
     }
 
     try {
@@ -117,7 +123,7 @@ export const useTelegramQRLogin = (initDataRaw: string) => {
       
       if (response.success && response.data) {
         setLoginStatus(response.data);
-        return response.data.status === 'success';
+        return true; // Always return true for successful response, regardless of status
       }
       return false;
     } catch (err) {

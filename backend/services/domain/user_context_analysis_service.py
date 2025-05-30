@@ -47,25 +47,33 @@ class UserContextAnalysisService(BaseService):
             )
 
             self.logger.info(f"Starting context analysis for user {user_id}")
+            user = await self.user_repository.get_user(user_id)
+            if not user:
+                self.logger.error(f"User {user_id} not found for context analysis.")
+                return {"status": "failed", "reason": "User not found"}
 
-            # Step 1: Fetch user's Telegram data
-            user_data = await self._fetch_user_telegram_data(client, user_id)
+            # Step 1a: Fetch user's general Telegram data for topic/interest analysis
+            # (e.g., last 200 posts from their channels, last 500 messages from their group chats)
+            general_content_data = await self._fetch_content_for_topic_analysis(client, user_id)
             
-            if not user_data["messages"] and not user_data["channel_posts"]:
-                self.logger.warning(f"No data found for user {user_id}")
+            # Step 1b: Fetch user's *own* sent messages for style analysis
+            # (e.g., DMs, messages in groups, comments in channels)
+            user_sent_messages = await self._fetch_user_sent_messages_for_style(client, user_id)
+
+            if not general_content_data.get("texts") and not user_sent_messages:
+                self.logger.warning(f"No sufficient data found for user {user_id} for full analysis.")
                 await self.user_repository.update_user(
                     user_id,
                     context_analysis_status="FAILED",
                     last_context_analysis_at=datetime.utcnow()
                 )
-                return {"status": "failed", "reason": "No data found"}
+                return {"status": "failed", "reason": "Insufficient data for analysis"}
 
-            # Step 2: Analyze communication style
-            style_analysis = await self._analyze_communication_style(user_data["messages"])
-            
-            # Step 3: Extract topics and interests
+            # Step 2: Analyze communication style from user's sent messages
+            style_analysis = await self._analyze_communication_style(user_sent_messages)
+            # Step 3: Extract topics and interests from general content
             interests_analysis = await self._extract_interests_and_topics(
-                user_data["messages"] + user_data["channel_posts"]
+                general_content_data.get("texts", [])
             )
             
             # Step 4: Generate LLM-assisted descriptions
@@ -101,84 +109,127 @@ class UserContextAnalysisService(BaseService):
             )
             return {"status": "failed", "reason": str(e)}
 
-    async def _fetch_user_telegram_data(self, client: Any, user_id: str) -> Dict[str, List[Dict]]:
+    async def _fetch_content_for_topic_analysis(self, client: Any, user_id: str) -> Dict[str, List[str]]:
         """
-        Fetch user's messages from chats and channel posts.
-        
+        Fetch general content from user's chats and channels for topic/interest analysis.
+        (e.g., last 200 posts from their channels, last 500 messages from their group chats)
         Args:
             client: TelegramClient instance
             user_id: User ID
             
         Returns:
-            Dict with user's messages and channel posts
+            Dict with extracted text content for analysis
         """
+        # This is a simplified representation. Actual implementation would involve:
+        # - Iterating through user's dialogs (chats and channels).
+        # - For channels, fetching last N posts.
+        # - For group chats, fetching last M messages.
+        # - Aggregating text content.
         try:
             user = await self.user_repository.get_user(user_id)
             if not user or not user.telegram_id:
-                return {"messages": [], "channel_posts": []}
+                return {"texts": []}
 
-            # Fetch user's chats
+            all_texts: List[str] = []
+            # Fetch posts from channels (limit to ~10 channels, 20 posts each = 200 posts)
+            # Fetch messages from group chats (limit to ~5-10 active group chats, 50-100 messages each = 250-1000 messages)
+            
+            # Example: Fetching from a few dialogs (channels/supergroups)
             chats = await self.telethon_service.sync_chats(client, user_id, limit=50)
-            
-            user_messages = []
-            channel_posts = []
-            
-            # Fetch messages from each chat where user participated
-            for chat in chats:
-                try:
-                    # Get messages from this chat
-                    chat_messages = await self.telethon_service.sync_chat_messages(
-                        client, chat.telegram_id, limit=100
-                    )
-                    
-                    # Filter messages sent by the user
-                    for message in chat_messages:
-                        if message.get("sender_telegram_id") == user.telegram_id:
-                            user_messages.append({
-                                "text": message.get("text", ""),
-                                "date": message.get("date"),
-                                "chat_title": chat.title,
-                                "chat_type": chat.chat_type.value if chat.chat_type else "unknown"
-                            })
-                            
-                        # If it's a channel, collect posts for interest analysis
-                        if chat.chat_type and "channel" in chat.chat_type.value.lower():
-                            if message.get("text"):
-                                channel_posts.append({
-                                    "text": message.get("text", ""),
-                                    "date": message.get("date"),
-                                    "channel_title": chat.title
-                                })
-                    
-                    # Limit to avoid too much data
-                    if len(user_messages) >= 500:
-                        break
-                        
-                except Exception as e:
-                    self.logger.error(f"Error fetching messages from chat {chat.telegram_id}: {e}")
-                    continue
+            fetched_channel_posts = 0
+            fetched_chat_messages = 0
 
-            # Limit results
-            user_messages = user_messages[:500]
-            channel_posts = channel_posts[:200]
-            
-            self.logger.info(f"Fetched {len(user_messages)} user messages and {len(channel_posts)} channel posts")
-            
-            return {
-                "messages": user_messages,
-                "channel_posts": channel_posts
-            }
+            for chat in chats:
+                if chat.is_channel and fetched_channel_posts < 200:
+                    # Fetch last 20 posts from this channel
+                    try:
+                        channel_entity = await client.get_entity(chat.id)
+                        async for message in client.iter_messages(channel_entity, limit=20):
+                            if message.text:
+                                all_texts.append(message.text)
+                                fetched_channel_posts += 1
+                            if fetched_channel_posts >= 200:
+                                break
+                    except Exception as e:
+                        self.logger.error(f"Error fetching channel posts: {e}")
+                        continue
+                elif chat.is_group and fetched_chat_messages < 500:
+                    # Fetch last 50 messages from this group
+                    try:
+                        group_entity = await client.get_entity(chat.id)
+                        async for message in client.iter_messages(group_entity, limit=50):
+                            if message.text:
+                                all_texts.append(message.text)
+                                fetched_chat_messages += 1
+                            if fetched_chat_messages >= 500:
+                                break
+                    except Exception as e:
+                        self.logger.error(f"Error fetching group messages: {e}")
+                        continue
+                
+                if fetched_channel_posts >= 200 and fetched_chat_messages >= 500:
+                    break
+
+            self.logger.info(f"Fetched {len(all_texts)} texts for topic/interest analysis for user {user_id}")
+            return {"texts": all_texts}
 
         except Exception as e:
-            self.logger.error(f"Error fetching user Telegram data: {e}", exc_info=True)
-            return {"messages": [], "channel_posts": []}
+            self.logger.error(f"Error fetching content for topic analysis (user {user_id}): {e}", exc_info=True)
+            return {"texts": []}
+
+    async def _fetch_user_sent_messages_for_style(self, client: Any, user_id: str) -> List[Dict]:
+        """
+        Fetch user's *own* sent messages from DMs, group chats, and channel comments for style analysis.
+        Limit to a reasonable number (e.g., last 500-1000 messages).
+        """
+        # This is a placeholder. Actual implementation would be complex:
+        # - Iterate through all user's dialogs.
+        # - For DMs, fetch messages sent by the user.
+        # - For group chats, fetch messages sent by the user.
+        # - For channels, try to fetch comments made by the user (if API allows).
+        # - Collect up to N recent messages.
+        user_messages: List[Dict] = []
+        try:
+            user = await self.user_repository.get_user(user_id)
+            if not user or not user.telegram_id:
+                return []
+
+            # Example: Iterate dialogs and fetch messages if sender is the user
+            chats = await self.telethon_service.sync_chats(client, user_id, limit=50)
+            
+            for chat in chats:
+                try:
+                    if chat.is_user or chat.is_group:  # DMs and group chats
+                        # Fetch messages sent by the user from this chat
+                        chat_messages = await self.telethon_service.sync_chat_messages(
+                            client, chat.telegram_id, limit=100
+                        )
+                        
+                        # Filter messages sent by the user
+                        for message in chat_messages:
+                            if message.get("sender_telegram_id") == user.telegram_id and message.get("text"):
+                                user_messages.append({"text": message.get("text"), "date": message.get("date")})
+                            if len(user_messages) >= 500:  # Overall limit for style analysis
+                                break
+                        
+                        if len(user_messages) >= 500:
+                            break
+                except Exception as e:
+                    self.logger.error(f"Error fetching user messages from chat {chat.telegram_id}: {e}")
+                    continue
+                    
+            self.logger.info(f"Fetched {len(user_messages)} sent messages for style analysis for user {user_id}")
+        except Exception as e:
+            self.logger.error(f"Error fetching user sent messages for style analysis (user {user_id}): {e}", exc_info=True)
+        return user_messages[:500]  # Ensure limit
 
     async def _analyze_communication_style(self, messages: List[Dict]) -> Dict[str, Any]:
         """
         Analyze user's communication style from their messages.
+        This will involve detailed analysis based on the V categories provided in User Task.
         
         Args:
-            messages: List of user's messages
+            messages: List of user's messages (dictionaries with "text" and "date" keys)
             
         Returns:
             Dict with style analysis metrics
@@ -186,13 +237,19 @@ class UserContextAnalysisService(BaseService):
         if not messages:
             return self._get_default_style_analysis()
 
-        # Extract text content
         texts = [msg.get("text", "") for msg in messages if msg.get("text")]
         if not texts:
             return self._get_default_style_analysis()
 
-        # Analyze various style aspects
+        # Placeholder for detailed V-category analysis.
+        # Each of these would be a complex function.
         analysis = {
+            "lexical_parameters": self._analyze_lexical_params(texts),
+            "syntactic_parameters": self._analyze_syntactic_params(texts),
+            "punctuation_and_orthography": self._analyze_punctuation_orthography(texts),
+            "stylistic_and_semantic_parameters": self._analyze_stylistic_semantic_params(texts),
+            "digital_communication_parameters": self._analyze_digital_comm_params(texts),
+            # Simplified analysis from previous implementation for now
             "emoji_usage": self._analyze_emoji_usage(texts),
             "punctuation_patterns": self._analyze_punctuation(texts),
             "sentence_structure": self._analyze_sentence_structure(texts),
@@ -202,6 +259,51 @@ class UserContextAnalysisService(BaseService):
         }
         
         return analysis
+
+    # Placeholder methods for detailed V-category analysis
+    def _analyze_lexical_params(self, texts: List[str]) -> Dict[str, Any]:
+        # I. Лексические параметры (Словарный запас и выбор слов)
+        # - Частотный словарь, Уникальный/редкий словарь, Предпочтения в синонимах,
+        # - Специфическая лексика (жаргонизмы, профессионализмы, архаизмы, неологизмы),
+        # - Слова-паразиты, Оценочная лексика, Заимствования, Степень формальности.
+        # This would involve NLP libraries, frequency analysis, POS tagging, etc.
+        return {"status": "placeholder", "comment": "Lexical analysis not fully implemented"}
+
+    def _analyze_syntactic_params(self, texts: List[str]) -> Dict[str, Any]:
+        # II. Синтаксические параметры (Структура предложений и фраз)
+        # - Средняя длина предложения, Типы предложений (простые/сложные, типы сложных),
+        # - Вопросительные/восклицательные/повествовательные, Порядок слов, Залог,
+        # - Эллиптические конструкции, Причастные/деепричастные обороты, Способы связи, Риторические фигуры.
+        return {"status": "placeholder", "comment": "Syntactic analysis not fully implemented"}
+
+    def _analyze_punctuation_orthography(self, texts: List[str]) -> Dict[str, Any]:
+        # III. Пунктуационные и орфографические параметры
+        # - Характерные ошибки (орфографические, пунктуационные), Использование тире/дефиса,
+        # - Предпочтение кавычек, Специфические знаки (многоточия, !!!, ???, скобки),
+        # - Написание отдельных слов ("что то" vs "что-то").
+        # This would involve spell checkers, punctuation rules analysis.
+        return {"status": "placeholder", "comment": "Punctuation/Orthography analysis not fully implemented"}
+
+    def _analyze_stylistic_semantic_params(self, texts: List[str]) -> Dict[str, Any]:
+        # IV. Стилистические и семантические параметры
+        # - Общая тональность, Тропы и фигуры речи (метафоры, сравнения, ирония),
+        # - Логика изложения, Степень экспрессивности, Способы аргументации,
+        # - Предпочитаемые темы, Степень персонализации.
+        # This would involve sentiment analysis, topic modeling, rhetorical analysis.
+        return {"status": "placeholder", "comment": "Stylistic/Semantic analysis not fully implemented"}
+
+    def _analyze_digital_comm_params(self, texts: List[str]) -> Dict[str, Any]:
+        # V. Параметры, специфичные для цифровой коммуникации
+        # - Эмодзи/смайлики (частота, типы, расположение), CAPS LOCK, Сокращения,
+        # - Форматирование (абзацы, пустые строки), Отсутствие знаков препинания в конце,
+        # - Скорость ответа (косвенно), Оформление ссылок, Стикеры/GIF (не из текста),
+        # - Способ исправления опечаток, Хештеги, Приветствия/прощания, Обращения, Псевдографика, Мемы.
+        # Some of these require more than just text (e.g., stickers, GIFs, edit history).
+        return {
+            "status": "placeholder", 
+            "comment": "Digital communication parameters analysis not fully implemented",
+            "emoji_usage": self._analyze_emoji_usage(texts)  # Example, already partially done
+        }
 
     def _analyze_emoji_usage(self, texts: List[str]) -> Dict[str, Any]:
         """Analyze emoji usage patterns."""
@@ -343,31 +445,46 @@ class UserContextAnalysisService(BaseService):
             "repeated_chars_frequency": repeated_chars_count / len(texts) if texts else 0
         }
 
-    async def _extract_interests_and_topics(self, content: List[Dict]) -> Dict[str, Any]:
+    async def _extract_interests_and_topics(self, content_texts: List[str]) -> Dict[str, Any]:
         """
-        Extract user's interests and topics from their content.
+        Extract user's interests and topics from their content (channel posts, general chat messages).
         
         Args:
-            content: List of messages and channel posts
+            content_texts: List of texts from channels/chats user engages with.
             
         Returns:
             Dict with extracted interests and topics
         """
-        if not content:
+        if not content_texts:
             return {"interests": [], "topics": [], "keywords": []}
 
-        # Extract text content
-        texts = [item.get("text", "") for item in content if item.get("text")]
+        # Simple keyword extraction (can be enhanced with NLP)
+        keywords = self._extract_keywords(content_texts)
         
-        # Simple keyword extraction
-        keywords = self._extract_keywords(texts)
+        # Topic categorization (can be enhanced with ML or LLM)
+        topics = self._categorize_topics(keywords, content_texts)
         
-        # Topic categorization
-        topics = self._categorize_topics(keywords, texts)
-        
-        # Interest extraction
+        # Interest extraction (can be enhanced with LLM)
         interests = self._extract_interests(keywords, topics)
         
+        # Use LLM to refine interests/topics if available
+        if self.gemini_service:
+            try:
+                combined_text_sample = " ".join(content_texts[:20])  # Sample of content
+                prompt = f"""
+                Analyze the following text samples to identify key interests and topics for a user.
+                Provide a list of up to 15 distinct interests/topics.
+                Text samples: "{combined_text_sample[:2000]}"
+                Interests/Topics (comma-separated list):
+                """
+                response = await self.gemini_service.generate_content(prompt)
+                if response and response.get('content'):
+                    llm_interests = [i.strip() for i in response.get('content').split(',') if i.strip()]
+                    # Combine with rule-based and deduplicate
+                    interests = list(dict.fromkeys(interests + llm_interests))
+            except Exception as e:
+                self.logger.error(f"LLM refinement of interests failed: {e}")
+
         return {
             "interests": interests[:20],  # Top 20 interests
             "topics": topics,

@@ -1,4 +1,4 @@
-import Image from 'next/image';
+import { useEffect } from 'react';
 
 interface QRCodeDisplayProps {
   qrCodeUrl: string;
@@ -6,17 +6,31 @@ interface QRCodeDisplayProps {
 }
 
 export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCodeUrl, onError }) => {
+  useEffect(() => {
+    console.log('QRCodeDisplay received qrCodeUrl:', qrCodeUrl ? 'YES' : 'NO');
+    console.log('QR code URL length:', qrCodeUrl?.length || 0);
+    if (qrCodeUrl && qrCodeUrl.startsWith('data:image')) {
+      console.log('QR code URL appears to be valid base64 image');
+    } else {
+      console.log('QR code URL is not a valid base64 image:', qrCodeUrl);
+    }
+  }, [qrCodeUrl]);
+
   return (
     <div className="bg-base-100 p-4 rounded-box shadow-sm w-fit">
       {qrCodeUrl ? (
         <div className="relative w-[300px] h-[300px]">
-          <Image
+          <img
             src={qrCodeUrl}
             alt="Telegram QR Code"
-            fill
-            priority
-            className="rounded-box object-contain"
-            onError={onError}
+            className="w-full h-full rounded-box object-contain"
+            onError={(e) => {
+              console.error('Image load error:', e);
+              onError();
+            }}
+            onLoad={() => {
+              console.log('Image loaded successfully');
+            }}
           />
         </div>
       ) : (

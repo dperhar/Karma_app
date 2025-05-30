@@ -2,7 +2,6 @@ import { APIResponse } from '@/types/api';
 import { ApiClient } from '../api-client';
 
 interface QRCodeResponse {
-  qr_code: string;
   token: string;
 }
 

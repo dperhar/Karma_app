@@ -1,7 +1,6 @@
 export class ApiClient {
   private readonly baseUrl: string;
-  private redirectCount: number = 0;
-  private readonly MAX_REDIRECTS: number = 1;
+  private readonly MAX_REDIRECTS: number = 3;
   private readonly isDev: boolean;
 
   constructor(baseUrl: string = process.env.NEXT_PUBLIC_API_URL || '') {
@@ -17,7 +16,8 @@ export class ApiClient {
   protected async request<T>(
     endpoint: string,
     options: RequestInit = {},
-    initDataRaw?: string
+    initDataRaw?: string,
+    redirectCount: number = 0
   ): Promise<T> {
     console.log(`ApiClient request called with endpoint: ${endpoint}`);
     console.log('Request options:', {
@@ -71,16 +71,17 @@ export class ApiClient {
 
       if (!response.ok) {
         // Обрабатываем 401 ошибку аутентификации
-        if (response.status === 401 && typeof window !== 'undefined') {
+        if (response.status === 401) {
+          console.log(`Authentication failed for ${endpoint}. Redirect count: ${redirectCount}`);
+          
           // Предотвращаем бесконечные редиректы
-          if (this.redirectCount < this.MAX_REDIRECTS) {
-            this.redirectCount++;
-            console.log('Authentication error, redirecting to registration page');
-            return {} as T;
-          } else {
-            console.error('Maximum redirect count reached');
-            throw new Error('Authentication error: Maximum redirect count reached');
+          if (redirectCount >= this.MAX_REDIRECTS) {
+            console.error(`Maximum redirect count (${this.MAX_REDIRECTS}) reached for ${endpoint}`);
+            throw new Error(`Authentication error: Maximum redirect count reached for ${endpoint}`);
           }
+          
+          // Просто бросаем ошибку аутентификации без редиректа
+          throw new Error('Authentication required');
         }
 
         let errorMessage: string;
@@ -92,9 +93,6 @@ export class ApiClient {
         }
         throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorMessage}`);
       }
-
-      // Сбрасываем счетчик редиректов при успешном запросе
-      this.redirectCount = 0;
 
       // Пытаемся прочитать ответ как JSON
       try {
@@ -114,19 +112,7 @@ export class ApiClient {
       
       if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
         console.log('Network error detected');
-        
-        // Предотвращаем бесконечные редиректы
-        if (typeof window !== 'undefined' && this.redirectCount < this.MAX_REDIRECTS) {
-          this.redirectCount++;
-          
-          // Проверяем, не находимся ли мы уже на странице регистрации
-          if (!window.location.pathname.includes('registration-required')) {
-            console.log('Redirecting to registration page');
-            // Используем мягкий редирект вместо window.location.href
-            // window.history.pushState({}, '', '/registration-required');
-            return {} as T;
-          }
-        }
+        throw new Error('Network error: Failed to fetch');
       }
       
       throw error;

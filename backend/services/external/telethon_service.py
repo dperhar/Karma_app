@@ -1,10 +1,12 @@
 """Service module for handling Telegram client operations."""
 
 from datetime import datetime, timezone
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, Dict, Tuple
 from uuid import uuid4
+import asyncio
 
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError
 from telethon.tl.types import (
     Channel as TelethonChannel,
 )
@@ -40,38 +42,114 @@ class TelethonService(BaseService):
     def __init__(self):
         """Initialize TelethonService with dependencies."""
         super().__init__()
+        self._flood_wait_state = {}  # Track flood wait state per client
 
     def set_container(self, container: Any):
         """Set container after initialization."""
         self.container = container
 
+    # ===== Flood Control Methods =====
+
+    async def _handle_flood_wait(self, client_key: str, error: FloodWaitError):
+        """Handle FloodWaitError globally for a client."""
+        wait_time = error.seconds
+        self.logger.warning(f"FloodWaitError for client {client_key}: waiting {wait_time} seconds")
+        
+        # Mark client as in cooldown
+        self._flood_wait_state[client_key] = {
+            'cooldown_until': datetime.now().timestamp() + wait_time,
+            'wait_seconds': wait_time
+        }
+        
+        await asyncio.sleep(wait_time + 1)  # Add 1 second buffer
+        
+        # Clear cooldown state
+        if client_key in self._flood_wait_state:
+            del self._flood_wait_state[client_key]
+
+    def _is_client_in_cooldown(self, client_key: str) -> bool:
+        """Check if client is currently in cooldown."""
+        if client_key not in self._flood_wait_state:
+            return False
+        
+        cooldown_until = self._flood_wait_state[client_key]['cooldown_until']
+        return datetime.now().timestamp() < cooldown_until
+
+    async def _safe_api_call(self, client_key: str, api_call_func, *args, **kwargs):
+        """Safely execute an API call with flood wait handling."""
+        if self._is_client_in_cooldown(client_key):
+            remaining = self._flood_wait_state[client_key]['cooldown_until'] - datetime.now().timestamp()
+            self.logger.info(f"Client {client_key} still in cooldown for {remaining:.1f} seconds")
+            await asyncio.sleep(remaining + 1)
+        
+        try:
+            return await api_call_func(*args, **kwargs)
+        except FloodWaitError as e:
+            await self._handle_flood_wait(client_key, e)
+            # Retry once after waiting
+            return await api_call_func(*args, **kwargs)
+
     # ===== Public Methods =====
 
     async def sync_chats(
-        self, client: TelegramClient, user_id: str, limit: int = 100, offset: int = 0
-    ) -> list[TelegramMessengerChat]:
-        """Get user's Telegram chats data without storing.
+        self, 
+        client: TelegramClient, 
+        user_id: str, 
+        limit: int = 20,
+        offset_date: Optional[datetime] = None,
+        offset_id: Optional[int] = None,
+        offset_peer=None
+    ) -> Tuple[list[TelegramMessengerChat], Optional[Dict[str, Any]]]:
+        """Get user's Telegram chats data without storing, with pagination support.
 
         Args:
             client: Authenticated TelegramClient instance
             user_id: User ID
-            limit: Maximum number of chats to retrieve
-            offset: Number of chats to skip
+            limit: Maximum number of chats to retrieve (default: 20, max recommended: 50)
+            offset_date: Date offset for pagination
+            offset_id: Message ID offset for pagination
+            offset_peer: Peer offset for pagination
 
         Returns:
-            list of TelegramMessengerChat objects
+            Tuple of (list of TelegramMessengerChat objects, next_pagination_info)
+            next_pagination_info contains fields for next page or None if no more data
         """
+        client_key = f"user_{user_id}"
         chats = []
-        dialogs = await client.get_dialogs(limit=limit)
-        self.logger.info(f"Found {len(dialogs)} dialogs")
-        self.logger.info(f"Dialogs: {dialogs}")
-        for dialog in dialogs:
-            self.logger.info(f"Dialog: {dialog}")
-            chat = await self._create_chat_from_entity(dialog.entity, user_id)
-            if chat:
-                chats.append(chat)
+        next_pagination_info = None
+        
+        try:
+            # Safe API call with flood protection
+            dialogs = await self._safe_api_call(
+                client_key,
+                client.get_dialogs,
+                limit=limit,
+                offset_date=offset_date,
+                offset_id=offset_id,
+                offset_peer=offset_peer
+            )
+            
+            self.logger.info(f"Found {len(dialogs)} dialogs for user {user_id}")
+            
+            for dialog in dialogs:
+                chat = await self._create_chat_from_entity(dialog.entity, user_id)
+                if chat:
+                    chats.append(chat)
 
-        return chats
+            # Determine next pagination info if we got the full limit
+            if len(dialogs) == limit and dialogs:
+                last_dialog = dialogs[-1]
+                next_pagination_info = {
+                    'offset_date': last_dialog.date,
+                    'offset_id': last_dialog.top_message,
+                    'offset_peer': last_dialog.entity
+                }
+
+            return chats, next_pagination_info
+
+        except Exception as e:
+            self.logger.error(f"Error syncing chats for user {user_id}: {e!s}")
+            raise
 
     async def sync_chat(
         self, client: TelegramClient, telegram_id: int, user_id: str
@@ -99,29 +177,45 @@ class TelethonService(BaseService):
         client: TelegramClient,
         chat_id: str,
         user_id: str,
-        limit: int = 100,
+        limit: int = 50,
         offset: int = 0,
-    ) -> list[TelegramMessengerChatUser]:
-        """Get participants from a chat.
+    ) -> Tuple[list[TelegramMessengerChatUser], Optional[Dict[str, Any]]]:
+        """Get participants from a chat with pagination support.
 
         Args:
             client: Authenticated TelegramClient instance
             chat_id: Chat ID
             user_id: User ID
-            limit: Maximum number of participants to retrieve
+            limit: Maximum number of participants to retrieve (default: 50, max recommended: 100)
             offset: Number of participants to skip
 
         Returns:
-            list of TelegramMessengerChatUser objects
+            Tuple of (list of TelegramMessengerChatUser objects, next_pagination_info)
+            next_pagination_info contains offset for next page or None if no more data
         """
+        client_key = f"user_{user_id}"
+        participants = []
+        next_pagination_info = None
+        
         try:
-            participants = []
-            chat_entity = await client.get_entity(int(chat_id))
+            # Safe API call with flood protection
+            chat_entity = await self._safe_api_call(
+                client_key,
+                client.get_entity,
+                int(chat_id)
+            )
 
             if isinstance(chat_entity, (TelethonChat, TelethonChannel)):
-                # Skip participants up to the offset
+                # Use more efficient pagination with proper offset handling
                 skipped = 0
+                participant_count = 0
+                
+                # Add delay before starting to be gentle on API
+                if offset > 0:
+                    await asyncio.sleep(0.2)
+                
                 async for participant in client.iter_participants(chat_entity):
+                    # Skip participants up to the offset
                     if skipped < offset:
                         skipped += 1
                         continue
@@ -156,18 +250,33 @@ class TelethonService(BaseService):
                         join_date=join_date,
                     )
                     participants.append(chat_user)
+                    participant_count += 1
+
+                    # Add small delay every 10 participants to be gentle on API
+                    if participant_count % 10 == 0:
+                        await asyncio.sleep(0.1)
 
                     # Stop if we've reached the limit
                     if len(participants) >= limit:
                         break
 
-                return participants
+                # Determine next pagination info if we got the full limit
+                if len(participants) == limit:
+                    next_pagination_info = {
+                        'offset': offset + limit
+                    }
+
+                self.logger.info(f"Fetched {len(participants)} participants for chat {chat_id}")
+                return participants, next_pagination_info
             else:
                 self.logger.warning(
                     f"Entity with ID {chat_id} is not a group or channel"
                 )
-                return []
+                return [], None
 
+        except FloodWaitError as e:
+            await self._handle_flood_wait(client_key, e)
+            raise
         except Exception as e:
             self.logger.error(f"Error getting participants for chat {chat_id}: {e!s}")
             raise
@@ -176,48 +285,96 @@ class TelethonService(BaseService):
         self,
         client: TelegramClient,
         chat_telegram_id: int,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[dict]:
-        """Get messages from a specific chat without storing.
+        user_id: str,
+        limit: int = 50,
+        offset_id: Optional[int] = None,
+        min_id: Optional[int] = None,
+        max_id: Optional[int] = None,
+        direction: str = "older"
+    ) -> Tuple[list[dict], Optional[Dict[str, Any]]]:
+        """Get messages from a specific chat without storing, with pagination support.
 
         Args:
             client: Authenticated TelegramClient instance
             chat_telegram_id: Chat ID
-            limit: Maximum number of messages to retrieve
-            offset: Number of messages to skip
+            user_id: User ID
+            limit: Maximum number of messages to retrieve (default: 50, max recommended: 100)
+            offset_id: Message ID to start from (for pagination)
+            min_id: Minimum message ID (for getting newer messages)
+            max_id: Maximum message ID (for getting older messages)
+            direction: Direction to fetch ("older" or "newer")
 
         Returns:
-            list of message data dictionaries
+            Tuple of (list of message data dictionaries, next_pagination_info)
+            next_pagination_info contains fields for next page or None if no more data
         """
+        client_key = f"user_{user_id}"
+        messages_data = []
+        next_pagination_info = None
+        
         try:
-            messages_data = []
-            chat_entity = await client.get_entity(chat_telegram_id)
+            # Safe API call with flood protection
+            chat_entity = await self._safe_api_call(
+                client_key,
+                client.get_entity,
+                chat_telegram_id
+            )
 
-            # Get the min_id for pagination
-            min_id = 0
-            if offset > 0:
-                # Get the message at the offset position to use as min_id
-                async for message in client.iter_messages(
-                    chat_entity, limit=1, offset=offset
-                ):
-                    if message:
-                        min_id = message.id
+            # Set up pagination parameters based on direction
+            iter_params = {
+                'limit': limit,
+                'reverse': direction == "newer"
+            }
+            
+            if offset_id:
+                iter_params['offset_id'] = offset_id
+            if min_id:
+                iter_params['min_id'] = min_id
+            if max_id:
+                iter_params['max_id'] = max_id
 
-            async for message in client.iter_messages(
-                chat_entity, limit=limit, min_id=min_id
-            ):
+            self.logger.info(f"Fetching messages for chat {chat_telegram_id} with params: {iter_params}")
+
+            # Use safe iteration with small delay between batches
+            message_count = 0
+            last_message_id = None
+            
+            async for message in client.iter_messages(chat_entity, **iter_params):
                 if not isinstance(message, TelethonMessage):
                     continue
 
                 message_data = await self.process_message(
                     message, chat_entity, chat_telegram_id
                 )
-                self.logger.info(f"Message data: {message_data}")
                 messages_data.append(message_data)
+                last_message_id = message.id
+                message_count += 1
+                
+                # Add small delay every 10 messages to be gentle on API
+                if message_count % 10 == 0:
+                    await asyncio.sleep(0.1)
 
-            return messages_data
+            # Determine next pagination info if we got the full limit
+            if len(messages_data) == limit and last_message_id:
+                if direction == "older":
+                    next_pagination_info = {
+                        'offset_id': last_message_id,
+                        'max_id': last_message_id - 1,
+                        'direction': 'older'
+                    }
+                else:  # newer
+                    next_pagination_info = {
+                        'offset_id': last_message_id,
+                        'min_id': last_message_id + 1,
+                        'direction': 'newer'
+                    }
 
+            self.logger.info(f"Fetched {len(messages_data)} messages for chat {chat_telegram_id}")
+            return messages_data, next_pagination_info
+
+        except FloodWaitError as e:
+            await self._handle_flood_wait(client_key, e)
+            raise
         except Exception as e:
             self.logger.error(
                 f"Error syncing messages for chat {chat_telegram_id}: {e!s}"
@@ -266,48 +423,63 @@ class TelethonService(BaseService):
         Args:
             client: Authenticated TelegramClient instance
             user_id: User ID
-            limit: Maximum number of posts to retrieve
+            limit: Maximum number of posts to retrieve (default: 50, max recommended: 100)
             offset: Number of posts to skip
 
         Returns:
             List of post data dictionaries with reactions
         """
+        client_key = f"user_{user_id}"
+        
         try:
             posts = []
             processed_count = 0
             skipped_count = 0
 
-            # Get user's dialogs (chats/channels)
-            dialogs = await client.get_dialogs(limit=100)
+            # Get user's dialogs with safe pagination
+            chats, _ = await self.sync_chats(
+                client=client,
+                user_id=user_id,
+                limit=50  # Conservative limit for dialog fetching
+            )
             
-            for dialog in dialogs:
-                entity = dialog.entity
-                
+            for chat in chats:
                 # Only process channels and groups
-                if not isinstance(entity, (TelethonChannel, TelethonChat)):
+                if chat.type not in ['channel', 'supergroup', 'group']:
                     continue
                 
                 try:
-                    # Get messages from this channel/chat
-                    async for message in client.iter_messages(entity, limit=20):
-                        if not message.text and not message.media:
+                    # Get messages from this channel/chat with safe pagination
+                    messages_data, _ = await self.sync_chat_messages(
+                        client=client,
+                        chat_telegram_id=chat.telegram_id,
+                        user_id=user_id,
+                        limit=20,  # Small batch per chat
+                        direction="older"
+                    )
+                    
+                    for message_data in messages_data:
+                        if not message_data.get('text') and not message_data.get('media_type'):
                             continue
                             
                         if skipped_count < offset:
                             skipped_count += 1
                             continue
-                            
+                        
                         # Convert message to post data
-                        post_data = await self._create_post_from_message(message, entity)
+                        post_data = self._convert_message_data_to_post(message_data, chat)
                         if post_data:
                             posts.append(post_data)
                             processed_count += 1
                             
                         if processed_count >= limit:
                             break
+                    
+                    # Add delay between chats to be gentle on API
+                    await asyncio.sleep(0.3)
                             
                 except Exception as e:
-                    self.logger.error(f"Error getting messages from {entity.title}: {e}")
+                    self.logger.error(f"Error getting messages from chat {chat.telegram_id}: {e}")
                     continue
                     
                 if processed_count >= limit:
@@ -327,19 +499,21 @@ class TelethonService(BaseService):
         client: TelegramClient,
         user_id: str,
         chat_last_message_ids: dict[int, int] = None,
-        limit: int = 100
+        limit: int = 50
     ) -> dict:
-        """Get new posts from user's subscribed channels/chats since last fetch.
+        """Get new posts from user's subscribed channels/chats since last fetch with safe pagination.
 
         Args:
             client: Authenticated TelegramClient instance
             user_id: User ID
             chat_last_message_ids: Dict mapping chat telegram_id to last fetched message ID
-            limit: Maximum number of posts to retrieve per chat
+            limit: Maximum number of posts to retrieve per chat (default: 50, max recommended: 100)
 
         Returns:
             Dict with 'posts' list and 'updated_last_message_ids' dict
         """
+        client_key = f"user_{user_id}"
+        
         try:
             all_new_posts = []
             updated_last_message_ids = {}
@@ -347,44 +521,58 @@ class TelethonService(BaseService):
             if chat_last_message_ids is None:
                 chat_last_message_ids = {}
 
-            # Get user's dialogs (chats/channels)
-            dialogs = await client.get_dialogs(limit=100)
+            # Get user's dialogs with conservative limit
+            chats, _ = await self.sync_chats(
+                client=client,
+                user_id=user_id,
+                limit=50  # Conservative limit
+            )
             
-            for dialog in dialogs:
-                entity = dialog.entity
-                
+            for chat in chats:
                 # Only process channels and groups
-                if not isinstance(entity, (TelethonChannel, TelethonChat)):
+                if chat.type not in ['channel', 'supergroup', 'group']:
                     continue
                 
                 try:
-                    chat_telegram_id = entity.id
+                    chat_telegram_id = chat.telegram_id
                     last_message_id = chat_last_message_ids.get(chat_telegram_id, 0)
+                    
+                    # Determine if this is an initial fetch for this chat
+                    is_initial_fetch = last_message_id == 0
+                    actual_limit = min(20, limit) if is_initial_fetch else limit
+                    
+                    self.logger.info(f"Fetching {'initial' if is_initial_fetch else 'new'} messages for chat {chat_telegram_id}, limit: {actual_limit}")
+                    
+                    # Get new messages with pagination
+                    messages_data, _ = await self.sync_chat_messages(
+                        client=client,
+                        chat_telegram_id=chat_telegram_id,
+                        user_id=user_id,
+                        limit=actual_limit,
+                        min_id=last_message_id if last_message_id > 0 else None,
+                        direction="newer" if last_message_id > 0 else "older"
+                    )
                     
                     new_posts_for_chat = []
                     max_message_id = last_message_id
                     
-                    # Get new messages from this channel/chat since last_message_id
-                    async for message in client.iter_messages(
-                        entity, 
-                        limit=limit,
-                        min_id=last_message_id  # Only get messages newer than this
-                    ):
-                        if not message.text and not message.media:
+                    for message_data in messages_data:
+                        if not message_data.get('text') and not message_data.get('media_type'):
                             continue
-                            
+                        
                         # Track the highest message ID we've seen
-                        if message.id > max_message_id:
-                            max_message_id = message.id
+                        message_telegram_id = message_data.get('telegram_id', 0)
+                        if message_telegram_id > max_message_id:
+                            max_message_id = message_telegram_id
                             
                         # Convert message to post data
-                        post_data = await self._create_post_from_message(message, entity)
+                        post_data = self._convert_message_data_to_post(message_data, chat)
                         if post_data:
                             new_posts_for_chat.append(post_data)
                     
                     if new_posts_for_chat:
                         self.logger.info(
-                            f"Found {len(new_posts_for_chat)} new posts in {entity.title} "
+                            f"Found {len(new_posts_for_chat)} new posts in {chat.title} "
                             f"(chat_id: {chat_telegram_id})"
                         )
                         all_new_posts.extend(new_posts_for_chat)
@@ -392,15 +580,18 @@ class TelethonService(BaseService):
                     # Update the last message ID even if no new posts (to track progress)
                     if max_message_id > last_message_id:
                         updated_last_message_ids[chat_telegram_id] = max_message_id
+                    
+                    # Add delay between chats to be gentle on API
+                    await asyncio.sleep(0.5)
                         
                 except Exception as e:
-                    self.logger.error(f"Error getting new messages from {entity.title}: {e}")
+                    self.logger.error(f"Error getting new messages from chat {chat.telegram_id}: {e}")
                     continue
             
             # Sort all posts by date (newest first)
             all_new_posts.sort(key=lambda x: x.get('date', datetime.min), reverse=True)
             
-            self.logger.info(f"Found total {len(all_new_posts)} new posts across all chats")
+            self.logger.info(f"Found total {len(all_new_posts)} new posts across all chats for user {user_id}")
             
             return {
                 'posts': all_new_posts,
@@ -411,93 +602,37 @@ class TelethonService(BaseService):
             self.logger.error(f"Error getting new user posts: {e}")
             raise
 
-    async def _create_post_from_message(
-        self, 
-        message: TelethonMessage, 
-        entity: Union[TelethonChat, TelethonChannel]
-    ) -> Optional[dict]:
-        """Convert Telegram message to post data.
-
+    def _convert_message_data_to_post(self, message_data: dict, chat) -> Optional[dict]:
+        """Convert message data to post format.
+        
         Args:
-            message: Telegram message
-            entity: Chat/channel entity
-
+            message_data: Message data dictionary from sync_chat_messages
+            chat: TelegramMessengerChat object
+            
         Returns:
             Post data dictionary or None
         """
         try:
-            # Get media info
-            media_type, media_url = await self._get_media_info(message)
-            
-            # Get reactions
-            reactions = await self._get_message_reactions(message)
-            
-            # Get channel/chat info
-            channel_info = {
-                'id': entity.id,
-                'title': getattr(entity, 'title', None) or getattr(entity, 'first_name', 'Unknown'),
-                'username': getattr(entity, 'username', None),
-                'type': 'channel' if isinstance(entity, TelethonChannel) else 'chat'
+            return {
+                'id': message_data.get('telegram_id'),
+                'telegram_id': message_data.get('telegram_id'),
+                'channel_telegram_id': chat.telegram_id,
+                'text': message_data.get('text', ''),
+                'date': message_data.get('date'),
+                'sender_id': message_data.get('sender_id'),
+                'media_type': message_data.get('media_type'),
+                'media_url': message_data.get('media_url'),
+                'views': message_data.get('views'),
+                'reactions': message_data.get('reactions', {}),
+                'channel': {
+                    'id': chat.telegram_id,
+                    'title': chat.title,
+                    'type': chat.type
+                }
             }
-            
-            post_data = {
-                'id': message.id,
-                'telegram_id': message.id,
-                'channel_telegram_id': entity.id,
-                'channel': channel_info,
-                'text': message.text or '',
-                'date': message.date.replace(tzinfo=None) if message.date else None,
-                'views': getattr(message, 'views', None),
-                'forwards': getattr(message, 'forwards', None),
-                'replies': getattr(message, 'replies', {}).replies if hasattr(message, 'replies') and message.replies else None,
-                'reactions': reactions,
-                'media_type': media_type,
-                'media_url': media_url,
-                'is_pinned': getattr(message, 'pinned', False),
-                'sender_id': message.sender_id,
-                'reply_to_msg_id': message.reply_to_msg_id,
-                'created_at': datetime.now(),
-                'updated_at': datetime.now()
-            }
-            
-            return post_data
-            
         except Exception as e:
-            self.logger.error(f"Error creating post from message {message.id}: {e}")
+            self.logger.error(f"Error converting message data to post: {e}")
             return None
-
-    async def _get_message_reactions(self, message: TelethonMessage) -> list[dict]:
-        """Get reactions from a message.
-
-        Args:
-            message: Telegram message
-
-        Returns:
-            List of reaction data dictionaries
-        """
-        reactions = []
-        
-        try:
-            if hasattr(message, 'reactions') and message.reactions:
-                for reaction in message.reactions.results:
-                    reaction_data = {
-                        'reaction': getattr(reaction, 'reaction', None),
-                        'count': getattr(reaction, 'count', 0),
-                        'chosen': getattr(reaction, 'chosen', False)
-                    }
-                    
-                    # Handle different reaction types
-                    if hasattr(reaction.reaction, 'emoticon'):
-                        reaction_data['emoticon'] = reaction.reaction.emoticon
-                    elif hasattr(reaction.reaction, 'document_id'):
-                        reaction_data['custom_emoji_id'] = reaction.reaction.document_id
-                        
-                    reactions.append(reaction_data)
-                    
-        except Exception as e:
-            self.logger.error(f"Error getting reactions for message {message.id}: {e}")
-            
-        return reactions
 
     async def post_comment_to_telegram(
         self,

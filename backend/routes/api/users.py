@@ -10,7 +10,7 @@ from models.user.schemas import (
     UserUpdate,
 )
 from routes.dependencies import get_current_user, get_optional_user, logger
-from services.dependencies import get_user_service, get_user_context_analysis_service, get_telethon_client
+from services.dependencies import get_user_service, get_user_context_analysis_service, get_telethon_client, container
 from services.domain.user_service import UserService
 from services.domain.user_context_analysis_service import UserContextAnalysisService
 from services.external.telethon_client import TelethonClient
@@ -21,6 +21,7 @@ router = APIRouter(prefix="/users", tags=["users"])
 @router.get("/me", response_model=APIResponse[UserResponse])
 async def get_user(
     current_user: Optional[UserResponse] = Depends(get_optional_user),
+    user_service: UserService = Depends(lambda: container.resolve(UserService))
 ) -> APIResponse[UserResponse]:
     """Get current user."""
     if not current_user:
@@ -28,9 +29,33 @@ async def get_user(
         import os
         is_develop = os.getenv("IS_DEVELOP", "true").lower() == "true"
         if is_develop:
-            # Создаем mock пользователя для development
+            # Сначала попробуем найти пользователя с активной сессией
+            users = await user_service.get_users()
+            active_session_user = None
+            for user in users:
+                if user.has_valid_tg_session:
+                    active_session_user = user
+                    break
+            
+            if active_session_user:
+                return APIResponse(
+                    success=True,
+                    data=active_session_user,
+                    message="Development mode: real user returned"
+                )
+            
+            # Если пользователя с активной сессией нет, попробуем найти по telegram_id из initData
+            real_user = await user_service.get_user_by_telegram_id(118672216)
+            if real_user:
+                return APIResponse(
+                    success=True,
+                    data=real_user,
+                    message="Development mode: real user returned"
+                )
+            
+            # Если реального пользователя нет - создаем mock с реальным ID
             mock_user = UserResponse(
-                id="dev-user-1",
+                id="972e2892ea124bb08e0d638817572b58",  # Реальный ID из базы
                 telegram_id=118672216,
                 first_name="Development",
                 last_name="User",

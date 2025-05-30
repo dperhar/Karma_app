@@ -2,6 +2,7 @@
 
 import logging
 from uuid import uuid4
+from enum import Enum
 
 from sqlalchemy import BigInteger, Column, Integer, String, Text, JSON, DateTime
 from sqlalchemy import Enum as SQLEnum
@@ -11,6 +12,15 @@ from models.db_base import DBBase
 from models.mixins.timestamp_mixin import TimestampMixin
 
 logger = logging.getLogger(__name__)
+
+
+class UserInitialSyncStatus(str, Enum):
+    """User initial sync status for safe onboarding."""
+    
+    PENDING = "pending"
+    MINIMAL_COMPLETED = "minimal_completed"
+    FULL_COMPLETED = "full_completed"
+    FAILED = "failed"
 
 
 class User(TimestampMixin, DBBase):
@@ -24,9 +34,11 @@ class User(TimestampMixin, DBBase):
     last_name = Column(String, nullable=True)
     username = Column(String, nullable=True)
     telegram_session_string = Column(String, nullable=True)
+    last_telegram_auth_at = Column(DateTime, nullable=True, comment="Timestamp of the last successful Telegram authentication")
     email = Column(String, nullable=True)
-    telegram_chats_load_limit = Column(Integer, nullable=True, default=100)
-    telegram_messages_load_limit = Column(Integer, nullable=True, default=100)
+    telegram_chats_load_limit = Column(Integer, nullable=True, default=20)  # Reduced default for safety
+    telegram_messages_load_limit = Column(Integer, nullable=True, default=50)  # Reduced default for safety
+    telegram_participants_load_limit = Column(Integer, nullable=True, default=50, comment="Batch size for fetching participants")
     preferred_ai_model = Column(
         SQLEnum(AIRequestModel), nullable=True, default=AIRequestModel.GPT_4_1_MINI
     )
@@ -60,6 +72,23 @@ class User(TimestampMixin, DBBase):
         comment="Status of the user context analysis (e.g., PENDING, COMPLETED, FAILED)."
     )
 
+    # New fields for safe initial synchronization
+    initial_sync_status = Column(
+        SQLEnum(UserInitialSyncStatus), 
+        nullable=True, 
+        default=UserInitialSyncStatus.PENDING,
+        comment="Status of the user's initial safe sync process"
+    )
+    last_dialog_sync_at = Column(
+        DateTime, 
+        nullable=True, 
+        comment="Timestamp of the last successful dialog list sync"
+    )
+
     def has_valid_tg_session(self) -> bool:
         """Check if the user has a valid Telegram session."""
         return self.telegram_session_string is not None
+
+    def needs_initial_sync(self) -> bool:
+        """Check if user needs initial synchronization."""
+        return self.initial_sync_status == UserInitialSyncStatus.PENDING
