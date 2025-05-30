@@ -59,7 +59,7 @@ export class ApiClient {
     try {
       // Добавляем таймаут для предотвращения зависания запросов
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 секунд таймаут
+      const timeoutId = setTimeout(() => controller.abort(), 120000); // 120 секунд таймаут для телеграм API
       
       const response = await fetch(`${this.baseUrl}${endpoint}`, {
         ...options,

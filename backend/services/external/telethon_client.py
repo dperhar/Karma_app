@@ -98,26 +98,36 @@ class TelethonClient:
     ) -> Optional[TelegramClient]:
         """Create and setup a new Telegram client."""
         try:
-            # Create new client with session string
+            # Create new client with session string and optimized parameters
             client = TelegramClient(
                 StringSession(session_string),
                 int(TELETHON_API_ID),
                 TELETHON_API_HASH,
+                device_model="Karma Comments App",
+                system_version="9.31.19-tl-e-CUSTOM", 
+                app_version="1.12.3",
+                lang_code="en",
+                system_lang_code="en",
+                # Optimizations for faster connection
+                connection_retries=3,
+                auto_reconnect=True,
+                timeout=30,
+                retry_delay=1,
             )
 
-            # Connect and verify authorization
+            # Connect with timeout and verify authorization
             await client.connect()
             if not await client.is_user_authorized():
                 await client.disconnect()
                 return None
 
-            # Setup message handlers
+            # Setup message handlers only if needed
             await self._setup_handlers(client, user_id)
 
             return client
         except Exception as e:
             self.logger.error(f"Error creating client: {e!s}")
-            if client and client.is_connected():
+            if 'client' in locals() and client.is_connected():
                 await client.disconnect()
             return None
 
