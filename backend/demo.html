@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Digital Twin API Demo</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #e0e0e0;
+        }
+        
+        .container {
+            background: #2d2d2d;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        
+        h1 {
+            color: #4ade80;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .demo-section {
+            margin: 20px 0;
+            padding: 20px;
+            background: #3a3a3a;
+            border-radius: 8px;
+            border-left: 4px solid #4ade80;
+        }
+        
+        button {
+            background: #4ade80;
+            color: #1a1a1a;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        
+        button:hover {
+            background: #22c55e;
+            transform: translateY(-2px);
+        }
+        
+        button:disabled {
+            background: #6b7280;
+            color: #9ca3af;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .result {
+            margin-top: 15px;
+            padding: 15px;
+            background: #1a1a1a;
+            border-radius: 6px;
+            border: 1px solid #4a5568;
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+        }
+        
+        .success {
+            border-color: #4ade80;
+            background: #064e3b;
+        }
+        
+        .error {
+            border-color: #ef4444;
+            background: #7f1d1d;
+        }
+        
+        .info {
+            background: #1e3a8a;
+            border-color: #3b82f6;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+        }
+        
+        .user-data {
+            background: #4c1d95;
+            border-color: #8b5cf6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Digital Twin API Demo</h1>
+        
+        <div class="info">
+            <strong>📋 Демо описание:</strong><br>
+            Эта демонстрация показывает работу API анализа контекста пользователя для создания цифрового двойника. 
+            Система анализирует стиль общения и интересы на основе сообщений пользователя.
+        </div>
+        
+        <div class="demo-section">
+            <h3>🔍 Анализ Контекста Демо Пользователя</h3>
+            <p>Нажмите кнопку чтобы проанализировать контекст демо пользователя (telegram_id: 987654321)</p>
+            <button id="analyzeBtn" onclick="analyzeUserContext()">
+                Анализировать Контекст
+            </button>
+            <div id="analysisResult" class="result" style="display: none;"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h3>👤 Данные Демо Пользователя</h3>
+            <button onclick="getUserData()">Получить Данные Пользователя</button>
+            <div id="userResult" class="result user-data" style="display: none;"></div>
+        </div>
+        
+        <div class="demo-section">
+            <h3>📊 API Health Check</h3>
+            <button onclick="checkApiHealth()">Проверить Статус API</button>
+            <div id="healthResult" class="result" style="display: none;"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        
+        // Мок Telegram initData для демонстрации
+        const MOCK_INIT_DATA = 'user=%7B%22id%22%3A987654321%2C%22first_name%22%3A%22Demo%22%2C%22last_name%22%3A%22User%22%2C%22username%22%3A%22demouser%22%7D&auth_date=1641234567&hash=mock_hash';
+        
+        async function analyzeUserContext() {
+            const button = document.getElementById('analyzeBtn');
+            const result = document.getElementById('analysisResult');
+            
+            button.disabled = true;
+            button.textContent = 'Анализирую...';
+            result.style.display = 'block';
+            result.className = 'result';
+            result.textContent = 'Выполняется анализ контекста...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/users/me/analyze-context`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Telegram-Bot-Api-Secret-Token': 'demo'
+                    },
+                    body: JSON.stringify({ 
+                        initDataRaw: MOCK_INIT_DATA,
+                        userId: 'test-user-demo'
+                    })
+                });
+                
+                const data = await response.json();
+                
+                result.className = response.ok ? 'result success' : 'result error';
+                result.textContent = JSON.stringify(data, null, 2);
+                
+            } catch (error) {
+                result.className = 'result error';
+                result.textContent = `Ошибка: ${error.message}`;
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Анализировать Контекст';
+            }
+        }
+        
+        async function getUserData() {
+            const result = document.getElementById('userResult');
+            result.style.display = 'block';
+            result.textContent = 'Загружаю данные пользователя...';
+            
+            try {
+                // Прямой запрос к базе данных через простой эндпоинт
+                const response = await fetch(`${API_BASE}/health`);
+                const healthData = await response.json();
+                
+                // Для демонстрации покажем что мы знаем о нашем демо пользователе
+                const demoUserInfo = {
+                    telegram_id: 987654321,
+                    name: 'Demo User',
+                    messages_count: 5,
+                    sample_messages: [
+                        'Wow! GPT-4 is absolutely amazing! The way it handles complex reasoning is just mind-blowing',
+                        'I love how machine learning is revolutionizing everything from healthcare to finance',
+                        'Neural networks are so fascinating! The way they learn patterns is incredible',
+                        'Python is my favorite language for AI development especially with PyTorch and TensorFlow',
+                        'Transformers architecture changed everything! Attention is all you need'
+                    ],
+                    expected_interests: ['AI', 'Machine Learning', 'Python', 'Neural Networks', 'Technology'],
+                    expected_style: 'Enthusiastic, uses emojis, exclamation marks, technical vocabulary'
+                };
+                
+                result.textContent = JSON.stringify(demoUserInfo, null, 2);
+                
+            } catch (error) {
+                result.className = 'result error';
+                result.textContent = `Ошибка: ${error.message}`;
+            }
+        }
+        
+        async function checkApiHealth() {
+            try {
+                console.log('Проверяем API здоровье...');
+                const response = await fetch(`${API_BASE}/health`, {
+                    method: 'GET',
+                    mode: 'cors',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                console.log('API Response:', data);
+                showResult('healthResult', `✅ API Health: ${data.status}`, 'success');
+                
+                // Automatically check user data if API is healthy
+                if (data.status === 'healthy') {
+                    await getUserData();
+                }
+                
+            } catch (error) {
+                console.error('API Health Check Error:', error);
+                let errorMessage = '❌ Ошибка подключения к API: ';
+                
+                if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+                    errorMessage += 'CORS или сеть. Проверьте:\n';
+                    errorMessage += '1. API сервер запущен на localhost:8000\n';
+                    errorMessage += '2. CORS настроен правильно\n';
+                    errorMessage += '3. Нет блокировки браузера';
+                } else {
+                    errorMessage += error.message;
+                }
+                
+                showResult('healthResult', errorMessage, 'error');
+            }
+        }
+        
+        function showResult(elementId, message, type) {
+            const result = document.getElementById(elementId);
+            result.style.display = 'block';
+            result.className = `result ${type}`;
+            result.textContent = message;
+        }
+        
+        // Автоматически проверим статус API при загрузке
+        window.onload = function() {
+            checkApiHealth();
+        };
+    </script>
+</body>
+</html> 

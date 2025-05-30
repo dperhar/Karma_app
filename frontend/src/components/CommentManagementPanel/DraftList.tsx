@@ -1,0 +1,162 @@
+'use client';
+
+import { useEffect } from 'react';
+import { DraftComment, useCommentStore } from '@/store/commentStore';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
+
+interface DraftListProps {
+  initDataRaw: string | null;
+  onSelectDraft?: (draft: DraftComment) => void;
+}
+
+export const DraftList: React.FC<DraftListProps> = ({
+  initDataRaw,
+  onSelectDraft,
+}) => {
+  const { 
+    drafts,
+    currentDraft,
+    fetchDrafts,
+    setCurrentDraft,
+    error 
+  } = useCommentStore();
+
+  // Загружаем черновики при инициализации
+  useEffect(() => {
+    if (initDataRaw) {
+      fetchDrafts(initDataRaw);
+    }
+  }, [initDataRaw, fetchDrafts]);
+
+  const getStatusColor = (status: DraftComment['status']) => {
+    switch (status) {
+      case 'DRAFT':
+        return 'text-yellow-600 bg-yellow-100';
+      case 'EDITED':
+        return 'text-blue-600 bg-blue-100';
+      case 'APPROVED':
+        return 'text-green-600 bg-green-100';
+      case 'POSTED':
+        return 'text-green-800 bg-green-200';
+      case 'FAILED_TO_POST':
+        return 'text-red-600 bg-red-100';
+      case 'REJECTED':
+        return 'text-red-600 bg-red-100';
+      default:
+        return 'text-gray-600 bg-gray-100';
+    }
+  };
+
+  const handleSelectDraft = (draft: DraftComment) => {
+    setCurrentDraft(draft);
+    onSelectDraft?.(draft);
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  if (!initDataRaw) {
+    return (
+      <div className="p-4 text-center text-muted-foreground">
+        <p>Authentication required to load drafts</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="p-4 border-b border-border">
+        <h3 className="text-lg font-semibold">AI Draft Comments</h3>
+        <p className="text-sm text-muted-foreground">
+          {drafts.length} draft{drafts.length !== 1 ? 's' : ''} found
+        </p>
+      </div>
+
+      {/* Drafts list */}
+      <div className="flex-1 overflow-y-auto">
+        {drafts.length === 0 ? (
+          <div className="p-4 text-center">
+            <div className="text-muted-foreground mb-4">
+              <svg className="w-12 h-12 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            </div>
+            <p className="text-muted-foreground">
+              No AI drafts found. Select a post and generate a comment to get started.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2 p-2">
+            {drafts.map((draft) => (
+              <div
+                key={draft.id}
+                className={cn(
+                  "p-3 border rounded-lg cursor-pointer transition-colors hover:bg-muted/50",
+                  currentDraft?.id === draft.id ? "border-primary bg-primary/5" : "border-border"
+                )}
+                onClick={() => handleSelectDraft(draft)}
+              >
+                {/* Header */}
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className={cn(
+                      "px-2 py-1 rounded text-xs font-medium",
+                      getStatusColor(draft.status)
+                    )}>
+                      {draft.status}
+                    </span>
+                    {draft.persona_name && (
+                      <span className="text-xs text-blue-600 bg-blue-100 px-2 py-1 rounded">
+                        {draft.persona_name}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    {formatDate(draft.created_at)}
+                  </span>
+                </div>
+
+                {/* Original post preview */}
+                {draft.original_post_text_preview && (
+                  <div className="text-xs text-muted-foreground mb-2 p-2 bg-gray-50 rounded">
+                    <strong>Post:</strong> {draft.original_post_text_preview.substring(0, 100)}
+                    {draft.original_post_text_preview.length > 100 && '...'}
+                  </div>
+                )}
+
+                {/* Comment preview */}
+                <div className="text-sm">
+                  <p className="line-clamp-3">
+                    {draft.edited_text || draft.draft_text}
+                  </p>
+                </div>
+
+                {/* AI model info */}
+                {draft.ai_model_used && (
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    Generated by {draft.ai_model_used}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Error display */}
+      {error && (
+        <div className="p-3 bg-red-100 border-t border-red-300">
+          <p className="text-red-700 text-sm">{error}</p>
+        </div>
+      )}
+    </div>
+  );
+}; 

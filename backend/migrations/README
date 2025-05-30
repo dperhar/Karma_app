@@ -1,0 +1,58 @@
+Generic single-database configuration.
+
+"""add_default_admin
+
+Revision ID: d6fd7b4657d1
+Revises: 84b0fc22a425
+Create Date: 2025-02-18 19:03:30.330513
+
+"""
+
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+from datetime import datetime
+from uuid import uuid4
+from werkzeug.security import generate_password_hash
+
+
+# revision identifiers, used by Alembic.
+revision: str = "d6fd7b4657d1"
+down_revision: Union[str, None] = "84b0fc22a425"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    # Получаем соединение
+    conn = op.get_bind()
+
+    # Создаем запись дефолтного админа
+    admin_data = {
+        "id": uuid4().hex,
+        "login": "turbomanager",
+        "password_hash": generate_password_hash("N>zsV,~wkgy]CaEvW_6%P@"),
+        "first_name": "Default",
+        "last_name": "Admin",
+        "created_at": datetime.now(),
+        "updated_at": datetime.now(),
+    }
+
+    # Вставляем запись
+    conn.execute(
+        sa.text(
+            """
+            INSERT INTO admins (id, login, password_hash, first_name, last_name, created_at, updated_at)
+            VALUES (:id, :login, :password_hash, :first_name, :last_name, :created_at, :updated_at)
+            ON CONFLICT (login) DO NOTHING
+            """
+        ),
+        admin_data,
+    )
+
+
+def downgrade() -> None:
+    # Удаляем дефолтного админа при откате
+    conn = op.get_bind()
+    conn.execute(sa.text("DELETE FROM admins WHERE login = 'turbomanager'"))

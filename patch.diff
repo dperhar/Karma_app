@@ -1,0 +1,1497 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..3f8c290
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,16 @@
++# Byte-compiled / optimized / DLL files
++__pycache__/
++*.pyc
++*.pyo
++*.pyd
++
++# Distribution / packaging
++.Python
++build/
++develop-eggs/
++dist/
++downloads/
++eggs/
++.eggs/
++lib/
++lib64/
++parts/
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..18e8bb6
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,20 @@
++# Karma App
++
++Telegram Mini App for analyzing and managing comments in channels and chats.
++
++## Project Overview
++
++This project aims to provide a comprehensive solution for comment moderation and engagement, leveraging AI for analysis and response generation.
++
++### Features
++- Comment parsing from Telegram channels/chats
++- Sentiment and context analysis
++- AI-powered draft replies
++- Answer template management
++- Comment statistics
++- Channel access management
++- Moderator profiles
++
++## Tech Stack
++Refer to `docker-compose.yml` and individual service configurations.
++
++## Setup
++... (To be added)
+diff --git a/backend/.gitignore b/backend/.gitignore
+index 430ce48..f60c203 100644
+--- a/backend/.gitignore
++++ b/backend/.gitignore
+@@ -1,4 +1,6 @@
+ venv/
+ .env
+ *.session
++*.session-journal
+ __pycache__/
+ *.pyc
+diff --git a/backend/alembic.ini b/backend/alembic.ini
+new file mode 100644
+index 0000000..989feb6
+--- /dev/null
++++ b/backend/alembic.ini
+@@ -0,0 +1,60 @@
++# A generic, single database configuration.
++
++[alembic]
++# path to migration scripts
++script_location = alembic
++
++# template for migration file names
++# file_template = %%(rev)s_%%(slug)s
++
++# sys.path path, will be prepended to sys.path if present.
++# defaults to the current working directory.
++prepend_sys_path = .
++
++# timezone to use when rendering the date within the migration file
++# as well as the filename.
++# If specified, requires the python-dateutil library that can be
++# installed by running `pip install python-dateutil`.
++# Any timezone name that can be parsed by dateutil.tz.gettz() is valid.
++# Examples: UTC, US/Pacific
++# offset_timezone =
++
++# Logging configuration
++[loggers]
++keys = root,sqlalchemy,alembic
++
++[handlers]
++keys = console
++
++[formatters]
++keys = generic
++
++[logger_root]
++level = WARN
++handlers = console
++qualname =
++
++[logger_sqlalchemy]
++level = WARN
++handlers =
++qualname = sqlalchemy.engine
++
++[logger_alembic]
++level = INFO
++handlers =
++qualname = alembic
++
++[handler_console]
++class = StreamHandler
++args = (sys.stderr,)
++level = NOTSET
++formatter = generic
++
++[formatter_generic]
++format = %(levelname)-5.5s [%(name)s] %(message)s
++datefmt = %H:%M:%S
++
++# sqlalchemy.url = driver://user:pass@host/dbname
++# Needed for Alembic to connect to your database.
++# Replace with your actual database URL, or set via environment variable.
++sqlalchemy.url = postgresql://user:pass@host/dbname
+diff --git a/backend/alembic/env.py b/backend/alembic/env.py
+new file mode 100644
+index 0000000..182196d
+--- /dev/null
++++ b/backend/alembic/env.py
+@@ -0,0 +1,93 @@
++import os
++from logging.config import fileConfig
++
++from sqlalchemy import engine_from_config
++from sqlalchemy import pool
++
++from alembic import context
++
++# this is the Alembic Config object, which provides
++# access to the values within the .ini file in use.
++config = context.config
++
++# Interpret the config file for Python logging.
++# This line sets up loggers basically.
++if config.config_file_name is not None:
++    fileConfig(config.config_file_name)
++
++# add your model's MetaData object here
++# for 'autogenerate' support
++# from myapp import mymodel
++# target_metadata = mymodel.Base.metadata
++# For autogenerate to work, you need to import your models here
++# e.g. from app.models.user import User
++from app.db.base import Base  # Updated import
++target_metadata = Base.metadata
++
++# other values from the config, defined by the needs of env.py,
++# can be acquired:
++# my_important_option = config.get_main_option("my_important_option")
++# ... etc.
++
++
++def get_url():
++    return os.getenv("DATABASE_URL", config.get_main_option("sqlalchemy.url"))
++
++
++def run_migrations_offline() -> None:
++    """Run migrations in 'offline' mode.
++
++    This configures the context with just a URL
++    and not an Engine, though an Engine is acceptable
++    here as well.  By skipping the Engine creation
++    we don't even need a DBAPI to be available.
++
++    Calls to context.execute() here emit the given string to the
++    script output.
++
++    """
++    url = get_url()
++    context.configure(
++        url=url,
++        target_metadata=target_metadata,
++        literal_binds=True,
++        dialect_opts={"paramstyle": "named"},
++    )
++
++    with context.begin_transaction():
++        context.run_migrations()
++
++
++def run_migrations_online() -> None:
++    """Run migrations in 'online' mode.
++
++    In this scenario we need to create an Engine
++    and associate a connection with the context.
++
++    """
++    configuration = config.get_section(config.config_ini_section)
++    configuration["sqlalchemy.url"] = get_url()
++    connectable = engine_from_config(
++        configuration,
++        prefix="sqlalchemy.",
++        poolclass=pool.NullPool,
++    )
++
++    with connectable.connect() as connection:
++        context.configure(
++            connection=connection, target_metadata=target_metadata
++        )
++
++        with context.begin_transaction():
++            context.run_migrations()
++
++
++if context.is_offline_mode():
++    run_migrations_offline()
++else:
++    run_migrations_online()
+diff --git a/backend/alembic/script.py.mako b/backend/alembic/script.py.mako
+new file mode 100644
+index 0000000..e907661
+--- /dev/null
++++ b/backend/alembic/script.py.mako
+@@ -0,0 +1,24 @@
++"""${message}
++
++Revision ID: ${up_revision}
++Revises: ${down_revision | comma,n}
++Create Date: ${create_date}
++
++"""
++from typing import Sequence, Union
++
++from alembic import op
++import sqlalchemy as sa
++${imports if imports else ""}
++
++# revision identifiers, used by Alembic.
++revision: str = ${repr(up_revision)}
++down_revision: Union[str, None] = ${repr(down_revision)}
++branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
++depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
++
++
++def upgrade() -> None:
++    ${upgrades if upgrades else "pass"}
++
++
++def downgrade() -> None:
++    ${downgrades if downgrades else "pass"}
+diff --git a/backend/alembic/versions/.gitkeep b/backend/alembic/versions/.gitkeep
+new file mode 100644
+index 0000000..e69de29
+--- /dev/null
++++ b/backend/alembic/versions/.gitkeep
+@@ -0,0 +1 @@
+diff --git a/backend/app/__init__.py b/backend/app/__init__.py
+new file mode 100644
+index 0000000..e69de29
+--- /dev/null
++++ b/backend/app/__init__.py
+diff --git a/backend/app/api/__init__.py b/backend/app/api/__init__.py
+new file mode 100644
+index 0000000..e69de29
+--- /dev/null
++++ b/backend/app/api/__init__.py
+diff --git a/backend/app/api/v1/__init__.py b/backend/app/api/v1/__init__.py
+new file mode 100644
+index 0000000..e69de29
+--- /dev/null
++++ b/backend/app/api/v1/__init__.py
+diff --git a/backend/app/api/v1/api.py b/backend/app/api/v1/api.py
+new file mode 100644
+index 0000000..93064e0
+--- /dev/null
++++ b/backend/app/api/v1/api.py
+@@ -0,0 +1,8 @@
++from fastapi import APIRouter
++
++from app.api.v1.endpoints import auth
++
++api_router = APIRouter()
++api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
++# Add other endpoint routers here
++# e.g. api_router.include_router(comments.router, prefix="/comments", tags=["comments"])
+diff --git a/backend/app/api/v1/endpoints/__init__.py b/backend/app/api/v1/endpoints/__init__.py
+new file mode 100644
+index 0000000..e69de29
+--- /dev/null
++++ b/backend/app/api/v1/endpoints/__init__.py
+diff --git a/backend/app/api/v1/endpoints/auth.py b/backend/app/api/v1/endpoints/auth.py
+new file mode 100644
+index 0000000..377169d
+--- /dev/null
++++ b/backend/app/api/v1/endpoints/auth.py
+@@ -0,0 +1,27 @@
++from fastapi import APIRouter, Depends, HTTPException, status
++from fastapi.security import OAuth2PasswordRequestForm
++from sqlalchemy.orm import Session
++
++from app import schemas, crud, security
++from app.db.session import get_db
++
++router = APIRouter()
++
++@router.post("/token", response_model=schemas.Token)
++async def login_for_access_token(
++    form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)
++):
++    user = crud.user.authenticate(
++        db, email=form_data.username, password=form_data.password
++    )
++    if not user:
++        raise HTTPException(
++            status_code=status.HTTP_401_UNAUTHORIZED,
++            detail="Incorrect username or password",
++            headers={"WWW-Authenticate": "Bearer"},
++        )
++    access_token = security.create_access_token(
++        data={"sub": user.email}
++    )
++    return {"access_token": access_token, "token_type": "bearer"}
++
+diff --git a/backend/app/core/__init__.py b/backend/app/core/__init__.py
+new file mode 100644
+index 0000000..e69de29
+--- /dev/null
++++ b/backend/app/core/__init__.py
+diff --git a/backend/app/core/config.py b/backend/app/core/config.py
+new file mode 100644
+index 0000000..3874770
+--- /dev/null
++++ b/backend/app/core/config.py
+@@ -0,0 +1,34 @@
++import os
++from dotenv import load_dotenv
++from pydantic_settings import BaseSettings
++from typing import List, Union
++
++load_dotenv()
++
++class Settings(BaseSettings):
++    PROJECT_NAME: str = "Karma App API"
++    API_V1_STR: str = "/api/v1"
++
++    # Telegram
++    API_ID: int
++    API_HASH: str
++    PHONE_NUMBER: str
++
++    # Database
++    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/karma")
++
++    # JWT
++    SECRET_KEY: str = os.getenv("SECRET_KEY", "a_very_secret_key")
++    ALGORITHM: str = "HS256"
++    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
++
++    # Redis
++    REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
++    REDIS_PORT: int = int(os.getenv("REDIS_PORT", 6379))
++
++    # Centrifugo
++    CENTRIFUGO_API_KEY: str = os.getenv("CENTRIFUGO_API_KEY", "your_centrifugo_api_key")
++    CENTRIFUGO_API_URL: str = os.getenv("CENTRIFUGO_API_URL", "http://localhost:8001/api") # Port 8001 for Centrifugo API
++
++    class Config:
++        case_sensitive = True
++
++settings = Settings()
+diff --git a/backend/app/crud/__init__.py b/backend/app/crud/__init__.py
+new file mode 100644
+index 0000000..1550380
+--- /dev/null
++++ b/backend/app/crud/__init__.py
+@@ -0,0 +1,2 @@
++from .crud_user import user
++# from .crud_comment import comment
+diff --git a/backend/app/crud/base.py b/backend/app/crud/base.py
+new file mode 100644
+index 0000000..3c1e01f
+--- /dev/null
++++ b/backend/app/crud/base.py
+@@ -0,0 +1,54 @@
++from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, Union
++
++from fastapi.encoders import jsonable_encoder
++from pydantic import BaseModel
++from sqlalchemy.orm import Session
++
++from app.db.base import Base
++
++ModelType = TypeVar("ModelType", bound=Base)
++CreateSchemaType = TypeVar("CreateSchemaType", bound=BaseModel)
++UpdateSchemaType = TypeVar("UpdateSchemaType", bound=BaseModel)
++
++
++class CRUDBase(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
++    def __init__(self, model: Type[ModelType]):
++        self.model = model
++
++    def get(self, db: Session, id: Any) -> Optional[ModelType]:
++        return db.query(self.model).filter(self.model.id == id).first()
++
++    def get_multi(
++        self, db: Session, *, skip: int = 0, limit: int = 100
++    ) -> List[ModelType]:
++        return db.query(self.model).offset(skip).limit(limit).all()
++
++    def create(self, db: Session, *, obj_in: CreateSchemaType) -> ModelType:
++        obj_in_data = jsonable_encoder(obj_in)
++        db_obj = self.model(**obj_in_data)
++        db.add(db_obj)
++        db.commit()
++        db.refresh(db_obj)
++        return db_obj
++
++    def update(
++        self,
++        db: Session,
++        *,
++        db_obj: ModelType,
++        obj_in: Union[UpdateSchemaType, Dict[str, Any]]
++    ) -> ModelType:
++        obj_data = jsonable_encoder(db_obj)
++        if isinstance(obj_in, dict):
++            update_data = obj_in
++        else:
++            update_data = obj_in.model_dump(exclude_unset=True)
++        for field in obj_data:
++            if field in update_data:
++                setattr(db_obj, field, update_data[field])
++        db.add(db_obj)
++        db.commit()
++        db.refresh(db_obj)
++        return db_obj
++
++    def remove(self, db: Session, *, id: int) -> ModelType:
++        obj = db.query(self.model).get(id)
++        db.delete(obj)
++        db.commit()
++        return obj
+diff --git a/backend/app/crud/crud_comment.py b/backend/app/crud/crud_comment.py
+new file mode 100644
+index 0000000..e69de29
+--- /dev/null
++++ b/backend/app/crud/crud_comment.py
+diff --git a/backend/app/crud/crud_user.py b/backend/app/crud/crud_user.py
+new file mode 100644
+index 0000000..157415d
+--- /dev/null
++++ b/backend/app/crud/crud_user.py
+@@ -0,0 +1,32 @@
++from typing import Optional
++
++from sqlalchemy.orm import Session
++
++from app.crud.base import CRUDBase
++from app.models.user import User
++from app.schemas.user import UserCreate, UserUpdate
++from app.security import get_password_hash, verify_password
++
++
++class CRUDUser(CRUDBase[User, UserCreate, UserUpdate]):
++    def get_by_email(self, db: Session, *, email: str) -> Optional[User]:
++        return db.query(User).filter(User.email == email).first()
++
++    def create(self, db: Session, *, obj_in: UserCreate) -> User:
++        db_obj = User(
++            email=obj_in.email,
++            hashed_password=get_password_hash(obj_in.password),
++            full_name=obj_in.full_name,
++            is_active=obj_in.is_active,
++            is_superuser=obj_in.is_superuser,
++        )
++        db.add(db_obj)
++        db.commit()
++        db.refresh(db_obj)
++        return db_obj
++
++    def authenticate(self, db: Session, *, email: str, password: str) -> Optional[User]:
++        user = self.get_by_email(db, email=email)
++        if not user or not verify_password(password, user.hashed_password):
++            return None
++        return user
++
++user = CRUDUser(User)
+diff --git a/backend/app/db/__init__.py b/backend/app/db/__init__.py
+new file mode 100644
+index 0000000..e69de29
+--- /dev/null
++++ b/backend/app/db/__init__.py
+diff --git a/backend/app/db/base.py b/backend/app/db/base.py
+new file mode 100644
+index 0000000..08a932c
+--- /dev/null
++++ b/backend/app/db/base.py
+@@ -0,0 +1,10 @@
++from sqlalchemy.ext.declarative import as_declarative, declared_attr
++
++@as_declarative()
++class Base:
++    id: any
++    __name__: str
++
++    # Generate __tablename__ automatically
++    @declared_attr
++    def __tablename__(cls) -> str:
++        return cls.__name__.lower() + "s"
+diff --git a/backend/app/db/session.py b/backend/app/db/session.py
+new file mode 100644
+index 0000000..4787010
+--- /dev/null
++++ b/backend/app/db/session.py
+@@ -0,0 +1,18 @@
++from sqlalchemy import create_engine
++from sqlalchemy.orm import sessionmaker
++
++from app.core.config import settings
++
++engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
++SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
++
++def get_db():
++    db = SessionLocal()
++    try:
++        yield db
++    finally:
++        db.close()
++
++# Optional: For creating tables initially if not using Alembic
++# from .base import Base
++# Base.metadata.create_all(bind=engine)
+diff --git a/backend/app/models/__init__.py b/backend/app/models/__init__.py
+new file mode 100644
+index 0000000..646105c
+--- /dev/null
++++ b/backend/app/models/__init__.py
+@@ -0,0 +1,3 @@
++from .user import User
++from .comment import Comment
++# Import other models here
+diff --git a/backend/app/models/comment.py b/backend/app/models/comment.py
+new file mode 100644
+index 0000000..3437147
+--- /dev/null
++++ b/backend/app/models/comment.py
+@@ -0,0 +1,17 @@
++from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
++from sqlalchemy.orm import relationship
++from sqlalchemy.sql import func
++
++from app.db.base import Base
++
++class Comment(Base):
++    id = Column(Integer, primary_key=True, index=True)
++    text = Column(Text, nullable=False)
++    telegram_message_id = Column(String, unique=True, index=True)
++    telegram_chat_id = Column(String, index=True)
++    author_id = Column(Integer, ForeignKey("users.id")) # Assuming a User model
++    created_at = Column(DateTime(timezone=True), server_default=func.now())
++    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
++
++    author = relationship("User") # Relationship to User model
++
+diff --git a/backend/app/models/user.py b/backend/app/models/user.py
+new file mode 100644
+index 0000000..9370170
+--- /dev/null
++++ b/backend/app/models/user.py
+@@ -0,0 +1,13 @@
++from sqlalchemy import Column, Integer, String, Boolean
++
++from app.db.base import Base
++
++class User(Base):
++    id = Column(Integer, primary_key=True, index=True)
++    full_name = Column(String, index=True)
++    email = Column(String, unique=True, index=True, nullable=False)
++    hashed_password = Column(String, nullable=False)
++    is_active = Column(Boolean(), default=True)
++    is_superuser = Column(Boolean(), default=False)
++    # Add other fields like telegram_user_id, etc.
++
+diff --git a/backend/app/schemas/__init__.py b/backend/app/schemas/__init__.py
+new file mode 100644
+index 0000000..001705c
+--- /dev/null
++++ b/backend/app/schemas/__init__.py
+@@ -0,0 +1,4 @@
++from .user import User, UserCreate, UserUpdate
++from .comment import Comment, CommentCreate, CommentUpdate
++from .token import Token, TokenData
++# Import other schemas here
+diff --git a/backend/app/schemas/comment.py b/backend/app/schemas/comment.py
+new file mode 100644
+index 0000000..8884316
+--- /dev/null
++++ b/backend/app/schemas/comment.py
+@@ -0,0 +1,23 @@
++from pydantic import BaseModel
++from typing import Optional
++from datetime import datetime
++
++# Shared properties
++class CommentBase(BaseModel):
++    text: str
++    telegram_message_id: Optional[str] = None
++    telegram_chat_id: Optional[str] = None
++    author_id: Optional[int] = None
++
++# Properties to receive on item creation
++class CommentCreate(CommentBase):
++    pass
++
++# Properties to receive on item update
++class CommentUpdate(CommentBase):
++    pass
++
++# Properties shared by models stored in DB
++class CommentInDBBase(CommentBase):
++    id: int
++    created_at: datetime
++    updated_at: Optional[datetime] = None
++
++    class Config:
++        from_attributes = True
++
++# Properties to return to client
++class Comment(CommentInDBBase):
++    pass
+diff --git a/backend/app/schemas/token.py b/backend/app/schemas/token.py
+new file mode 100644
+index 0000000..1c9608e
+--- /dev/null
++++ b/backend/app/schemas/token.py
+@@ -0,0 +1,10 @@
++from typing import Optional
++from pydantic import BaseModel
++
++class Token(BaseModel):
++    access_token: str
++    token_type: str
++
++class TokenData(BaseModel):
++    username: Optional[str] = None
++
+diff --git a/backend/app/schemas/user.py b/backend/app/schemas/user.py
+new file mode 100644
+index 0000000..837857b
+--- /dev/null
++++ b/backend/app/schemas/user.py
+@@ -0,0 +1,30 @@
++from typing import Optional
++from pydantic import BaseModel, EmailStr
++
++# Shared properties
++class UserBase(BaseModel):
++    email: Optional[EmailStr] = None
++    is_active: Optional[bool] = True
++    is_superuser: bool = False
++    full_name: Optional[str] = None
++
++# Properties to receive via API on creation
++class UserCreate(UserBase):
++    email: EmailStr
++    password: str
++
++# Properties to receive via API on update
++class UserUpdate(UserBase):
++    password: Optional[str] = None
++
++class UserInDBBase(UserBase):
++    id: Optional[int] = None
++
++    class Config:
++        from_attributes = True
++
++# Additional properties to return via API
++class User(UserInDBBase):
++    pass
++
++# Additional properties stored in DB
++class UserInDB(UserInDBBase):
++    hashed_password: str
+diff --git a/backend/app/security.py b/backend/app/security.py
+new file mode 100644
+index 0000000..8880034
+--- /dev/null
++++ b/backend/app/security.py
+@@ -0,0 +1,33 @@
++from datetime import datetime, timedelta, timezone
++from typing import Optional
++
++from jose import JWTError, jwt
++from passlib.context import CryptContext
++
++from app.core.config import settings
++
++pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
++
++
++def verify_password(plain_password: str, hashed_password: str) -> bool:
++    return pwd_context.verify(plain_password, hashed_password)
++
++
++def get_password_hash(password: str) -> str:
++    return pwd_context.hash(password)
++
++
++def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
++    to_encode = data.copy()
++    if expires_delta:
++        expire = datetime.now(timezone.utc) + expires_delta
++    else:
++        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
++    to_encode.update({"exp": expire})
++    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
++    return encoded_jwt
++
++def decode_access_token(token: str):
++    # Placeholder for token decoding logic, usually involves checking signature and expiry
++    # For simplicity, not fully implemented here.
++    pass
+diff --git a/backend/app/services/__init__.py b/backend/app/services/__init__.py
+new file mode 100644
+index 0000000..e69de29
+--- /dev/null
++++ b/backend/app/services/__init__.py
+diff --git a/backend/app/services/ai_analyzer.py b/backend/app/services/ai_analyzer.py
+new file mode 100644
+index 0000000..330466d
+--- /dev/null
++++ b/backend/app/services/ai_analyzer.py
+@@ -0,0 +1,7 @@
++# Placeholder for AI analysis service using LangChain
++
++class AIAnalyzer:
++    def __init__(self):
++        # Initialize LangChain components here
++        pass
++
++    async def analyze_comment(self, text: str) -> dict:
++        # Placeholder for sentiment and context analysis
++        return {"sentiment": "neutral", "context_summary": "N/A"}
+diff --git a/backend/app/services/storage_service.py b/backend/app/services/storage_service.py
+new file mode 100644
+index 0000000..380782d
+--- /dev/null
++++ b/backend/app/services/storage_service.py
+@@ -0,0 +1,7 @@
++# Placeholder for S3 storage service
++
++class StorageService:
++    def __init__(self):
++        # Initialize S3 client (e.g., boto3)
++        pass
++
++    async def upload_media(self, file_path: str, object_name: str) -> str:
++        # Placeholder for S3 upload logic
++        return f"s3_url_for_{object_name}"
+diff --git a/backend/app/services/telegram_parser.py b/backend/app/services/telegram_parser.py
+new file mode 100644
+index 0000000..1336091
+--- /dev/null
++++ b/backend/app/services/telegram_parser.py
+@@ -0,0 +1,14 @@
++from telethon import TelegramClient
++from app.core.config import settings
++
++class TelegramParser:
++    def __init__(self):
++        self.client = TelegramClient(
++            'karma_app_session', 
++            settings.API_ID, 
++            settings.API_HASH
++        )
++
++    async def connect(self):
++        # await self.client.connect()
++        # if not await self.client.is_user_authorized():
++        #     # Handle authorization flow (e.g. QR code, phone number + code)
++        #     pass
++        pass # Placeholder
+diff --git a/backend/env.template b/backend/env.template
+index 8079094..0395a83 100644
+--- a/backend/env.template
++++ b/backend/env.template
+@@ -1,3 +1,13 @@
+ # .env - Store sensitive Telegram credentials here
+ API_ID=YOUR_API_ID_HERE
+ API_HASH=YOUR_API_HASH_HERE
+-PHONE_NUMBER=+YOUR_PHONE_NUMBER_WITH_COUNTRY_CODE 
++PHONE_NUMBER=+YOUR_PHONE_NUMBER_WITH_COUNTRY_CODE
++
++# Database URL (e.g., for PostgreSQL)
++DATABASE_URL=postgresql://postgres:postgres@db:5432/karma
++
++# JWT Secret Key
++SECRET_KEY=your_very_secret_jwt_key_here
++
++# Redis
++REDIS_HOST=redis
++REDIS_PORT=6379
++
++# Centrifugo
++CENTRIFUGO_API_KEY=your_centrifugo_api_key
++CENTRIFUGO_API_URL=http://centrifugo:8000/api # Internal Docker network URL
+diff --git a/backend/main.py b/backend/main.py
+index 1148392..7459509 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -1,13 +1,15 @@
+ from fastapi import FastAPI
+ from fastapi.middleware.cors import CORSMiddleware
+ import os
+-from dotenv import load_dotenv
+ 
+-# Загружаем переменные окружения
+-load_dotenv()
++# Assuming settings are loaded via app.core.config
++from app.core.config import settings
++from app.api.v1.api import api_router
++from app.db.session import engine # For Alembic, if tables are created here
++# from app.db.base import Base # If creating tables directly without Alembic
+ 
+-app = FastAPI(title="Karma App API")
++app = FastAPI(title=settings.PROJECT_NAME, openapi_url=f"{settings.API_V1_STR}/openapi.json")
+ 
+ # Настройка CORS
+ app.add_middleware(
+@@ -18,6 +20,11 @@
+     allow_headers=["*"],
+ )
+ 
++# Base.metadata.create_all(bind=engine) # Uncomment if you want to create tables on startup without Alembic
++
++app.include_router(api_router, prefix=settings.API_V1_STR)
++
++
+ @app.get("/")
+ async def root():
+     return {"message": "Karma App API is running"}
+diff --git a/backend/requirements.txt b/backend/requirements.txt
+index 3780813..4707484 100644
+--- a/backend/requirements.txt
++++ b/backend/requirements.txt
+@@ -4,10 +4,13 @@
+ psycopg2-binary==2.9.9
+ python-dotenv==1.0.1
+ pydantic==2.6.1
+-python-jose==3.3.0
+-passlib==1.7.4
++pydantic-settings==2.2.1 # For settings management
++python-jose[cryptography]==3.3.0 # For JWT
++passlib[bcrypt]==1.7.4 # For password hashing
+ python-multipart==0.0.9
+ google-generativeai==0.3.2
+ telethon==1.34.0
+-python-socketio==5.11.1 
++python-socketio==5.11.1
++redis==5.0.3 # For Redis cache and queues
++# httpx for making requests to Centrifugo API if not using a specific client library
++httpx==0.27.0
+diff --git a/backend/scripts/run_migrations.sh b/backend/scripts/run_migrations.sh
+new file mode 100755
+index 0000000..3977898
+--- /dev/null
++++ b/backend/scripts/run_migrations.sh
+@@ -0,0 +1,5 @@
++#!/bin/sh
++set -e
++
++# Run Alembic migrations
++alembic upgrade head
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 1610602..0300313 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -1,5 +1,9 @@
+ version: '3.8'
+ 
++networks:
++  karma-net:
++    driver: bridge
++
+ services:
+   backend:
+     build: 
+@@ -10,10 +14,16 @@
+     volumes:
+       - ./backend:/app
+     environment:
+-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/karma
++      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@db:5432/karma}
+       - GEMINI_API_KEY=${GEMINI_API_KEY}
+-      - DEMO_MODE=true
++      - DEMO_MODE=${DEMO_MODE:-true}
++      - SECRET_KEY=${SECRET_KEY:-supersecretkey}
++      - API_ID=${API_ID}
++      - API_HASH=${API_HASH}
++      - PHONE_NUMBER=${PHONE_NUMBER}
++      - REDIS_HOST=redis
++      - CENTRIFUGO_API_URL=http://centrifugo:8000/api # Centrifugo API endpoint
+     depends_on:
+       - db
++      - redis
++    networks:
++      - karma-net
+ 
+   frontend:
+     build:
+@@ -25,9 +35,11 @@
+       - ./frontend:/app
+       - /app/node_modules
+     environment:
+-      - VITE_API_URL=http://localhost:8000
++      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1 # Adjusted for Next.js and API versioning
+     depends_on:
+       - backend
++    networks:
++      - karma-net
+ 
+   db:
+     image: postgres:15
+@@ -39,6 +51,26 @@
+       - POSTGRES_DB=karma
+     volumes:
+       - postgres_data:/var/lib/postgresql/data
++    networks:
++      - karma-net
++
++  redis:
++    image: redis:7-alpine
++    ports:
++      - "6379:6379"
++    volumes:
++      - redis_data:/data
++    networks:
++      - karma-net
++
++  centrifugo:
++    image: centrifugo/centrifugo:v5
++    ports:
++      - "8001:8000" # Port 8000 inside container for client connections, 8001 exposed for API if needed directly
++    command: centrifugo --config=/centrifugo/config.json --admin --health
++    volumes:
++      - ./centrifugo_config.json:/centrifugo/config.json # Mount config file
++    networks:
++      - karma-net
+ 
+ volumes:
+-  postgres_data: 
++  postgres_data:
++  redis_data:
+diff --git a/frontend/.gitignore b/frontend/.gitignore
+new file mode 100644
+index 0000000..1333b31
+--- /dev/null
++++ b/frontend/.gitignore
+@@ -0,0 +1,16 @@
++# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
++
++# dependencies
++/node_modules
++/.pnp
++.pnp.js
++
++# testing
++/coverage
++
++# next.js
++/.next/
++/out/
++
++# production
++/build
++
++# misc
++.DS_Store
++*.pem
++
++# debug
++npm-debug.log*
++yarn-debug.log*
++yarn-error.log*
++
++# local env files
++.env*.local
+diff --git a/frontend/Dockerfile b/frontend/Dockerfile
+new file mode 100644
+index 0000000..88f2758
+--- /dev/null
++++ b/frontend/Dockerfile
+@@ -0,0 +1,28 @@
++# Install dependencies only when needed
++FROM node:18-alpine AS deps
++# Check https://github.com/nodejs/docker-node/tree/b4117f9333da4138b03a546ec926ef50a31506c3#nodealpine to understand why libc6-compat might be needed.
++RUN apk add --no-cache libc6-compat
++WORKDIR /app
++
++# Install dependencies based on the preferred package manager
++COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
++RUN \
++  if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
++  elif [ -f package-lock.json ]; then npm ci; \
++  elif [ -f pnpm-lock.yaml ]; then yarn global add pnpm && pnpm i --frozen-lockfile; \
++  else echo "Lockfile not found." && exit 1; \
++  fi
++
++
++# Rebuild the source code only when needed
++FROM node:18-alpine AS builder
++WORKDIR /app
++COPY --from=deps /app/node_modules ./node_modules
++COPY . .
++
++RUN yarn build
++
++# Production image, copy all the files and run next
++FROM node:18-alpine AS runner
++WORKDIR /app
++COPY --from=builder /app/public ./public
++COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
++COPY --from=builder /app/node_modules ./node_modules
++COPY --from=builder /app/package.json ./package.json
++
++EXPOSE 3000
++CMD ["yarn", "start"]
+diff --git a/frontend/next.config.mjs b/frontend/next.config.mjs
+new file mode 100644
+index 0000000..111a15a
+--- /dev/null
++++ b/frontend/next.config.mjs
+@@ -0,0 +1,5 @@
++/** @type {import('next').NextConfig} */
++const nextConfig = {
++  reactStrictMode: true,
++};
++
++export default nextConfig;
+diff --git a/frontend/package.json b/frontend/package.json
+new file mode 100644
+index 0000000..8868999
+--- /dev/null
++++ b/frontend/package.json
+@@ -0,0 +1,31 @@
++{
++  "name": "karma-frontend",
++  "version": "0.1.0",
++  "private": true,
++  "scripts": {
++    "dev": "next dev",
++    "build": "next build",
++    "start": "next start",
++    "lint": "next lint"
++  },
++  "dependencies": {
++    "@radix-ui/react-slot": "^1.0.2",
++    "@twa-dev/sdk": "^7.0.0",
++    "class-variance-authority": "^0.7.0",
++    "clsx": "^2.1.0",
++    "lucide-react": "^0.344.0",
++    "next": "14.1.0",
++    "next-themes": "^0.2.1",
++    "react": "^18",
++    "react-dom": "^18",
++    "tailwind-merge": "^2.2.1",
++    "zustand": "^4.5.1"
++  },
++  "devDependencies": {
++    "@types/node": "^20",
++    "@types/react": "^18",
++    "@types/react-dom": "^18",
++    "autoprefixer": "^10.0.1",
++    "eslint": "^8",
++    "eslint-config-next": "14.1.0",
++    "postcss": "^8",
++    "tailwindcss": "^3.3.0",
++    "typescript": "^5"
++  }
++}
+diff --git a/frontend/postcss.config.js b/frontend/postcss.config.js
+new file mode 100644
+index 0000000..2999ba5
+--- /dev/null
++++ b/frontend/postcss.config.js
+@@ -0,0 +1,8 @@
++module.exports = {
++  plugins: {
++    tailwindcss: {},
++    autoprefixer: {},
++  },
++}
++
+diff --git a/frontend/public/favicon.ico b/frontend/public/favicon.ico
+new file mode 100644
+index 0000000..29b39a5
+Binary files /dev/null and b/frontend/public/favicon.ico differ
+diff --git a/frontend/public/vercel.svg b/frontend/public/vercel.svg
+new file mode 100644
+index 0000000..1c39470
+--- /dev/null
++++ b/frontend/public/vercel.svg
+@@ -0,0 +1,2 @@
++<svg width="280" height="64" viewBox="0 0 75 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M37.5928 13.9445C38.6619 13.9445 39.5355 13.0709 39.5355 12.0018C39.5355 10.9327 38.6619 10.0591 37.5928 10.0591C36.5237 10.0591 35.6501 10.9327 35.6501 12.0018C35.6501 13.0709 36.5237 13.9445 37.5928 13.9445Z" fill="black"/><path fill-rule="evenodd" clip-rule="evenodd" d="M0 19.999V0H75V19.999H0ZM37.5 4.00102L12.5 15.999H62.5L37.5 4.00102Z" fill="black"/></svg>
++
+diff --git a/frontend/src/app/globals.css b/frontend/src/app/globals.css
+new file mode 100644
+index 0000000..7c3019a
+--- /dev/null
++++ b/frontend/src/app/globals.css
+@@ -0,0 +1,20 @@
++@tailwind base;
++@tailwind components;
++@tailwind utilities;
++
++:root {
++  --foreground-rgb: 0, 0, 0;
++  --background-start-rgb: 214, 219, 220;
++  --background-end-rgb: 255, 255, 255;
++}
++
++@media (prefers-color-scheme: dark) {
++  :root {
++    --foreground-rgb: 255, 255, 255;
++    --background-start-rgb: 0, 0, 0;
++    --background-end-rgb: 0, 0, 0;
++  }
++}
++
++body {
++  color: rgb(var(--foreground-rgb));
++  background: linear-gradient(to bottom, transparent, rgb(var(--background-end-rgb))) rgb(var(--background-start-rgb));
++}
+diff --git a/frontend/src/app/layout.tsx b/frontend/src/app/layout.tsx
+new file mode 100644
+index 0000000..667502a
+--- /dev/null
++++ b/frontend/src/app/layout.tsx
+@@ -0,0 +1,26 @@
++import type { Metadata } from "next";
++import { Inter } from "next/font/google";
++import "./globals.css";
++import { ThemeProvider } from "@/components/theme-provider";
++
++const inter = Inter({ subsets: ["latin"] });
++
++export const metadata: Metadata = {
++  title: "Karma App",
++  description: "Manage Telegram comments with ease.",
++};
++
++export default function RootLayout({
++  children,
++}: Readonly<{
++  children: React.ReactNode;
++}>) {
++  return (
++    <html lang="en" suppressHydrationWarning>
++      <body className={inter.className}>
++        <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
++          {children}
++        </ThemeProvider>
++      </body>
++    </html>
++  );
++}
+diff --git a/frontend/src/app/page.tsx b/frontend/src/app/page.tsx
+new file mode 100644
+index 0000000..7418116
+--- /dev/null
++++ b/frontend/src/app/page.tsx
+@@ -0,0 +1,21 @@
++import { ThemeToggle } from "@/components/theme-toggle";
++import { Button } from "@/components/ui/button";
++
++export default function Home() {
++  return (
++    <main className="flex min-h-screen flex-col items-center justify-between p-24">
++      <div className="z-10 max-w-5xl w-full items-center justify-between font-mono text-sm lg:flex">
++        <p className="fixed left-0 top-0 flex w-full justify-center border-b border-gray-300 bg-gradient-to-b from-zinc-200 pb-6 pt-8 backdrop-blur-2xl dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:p-4 lg:dark:bg-zinc-800/30">
++          Welcome to Karma App 
++        </p>
++        <div className="fixed bottom-0 left-0 flex h-48 w-full items-end justify-center bg-gradient-to-t from-white via-white dark:from-black dark:via-black lg:static lg:h-auto lg:w-auto lg:bg-none">
++          <ThemeToggle />
++        </div>
++      </div>
++
++      <div className="relative flex place-items-center">
++        <h1 className="text-4xl font-bold">Karma App Frontend</h1>
++      </div>
++      <Button>Click Me</Button>
++    </main>
++  );
++}
+diff --git a/frontend/src/components/theme-provider.tsx b/frontend/src/components/theme-provider.tsx
+new file mode 100644
+index 0000000..0e5e922
+--- /dev/null
++++ b/frontend/src/components/theme-provider.tsx
+@@ -0,0 +1,10 @@
++"use client"
++
++import * as React from "react"
++import { ThemeProvider as NextThemesProvider } from "next-themes"
++import { type ThemeProviderProps } from "next-themes/dist/types"
++
++export function ThemeProvider({ children, ...props }: ThemeProviderProps) {
++  return <NextThemesProvider {...props}>{children}</NextThemesProvider>
++}
++
+diff --git a/frontend/src/components/theme-toggle.tsx b/frontend/src/components/theme-toggle.tsx
+new file mode 100644
+index 0000000..573001c
+--- /dev/null
++++ b/frontend/src/components/theme-toggle.tsx
+@@ -0,0 +1,27 @@
++"use client"
++
++import * as React from "react"
++import { Moon, Sun } from "lucide-react"
++import { useTheme } from "next-themes"
++
++import { Button } from "@/components/ui/button"
++
++export function ThemeToggle() {
++  const { setTheme, theme } = useTheme()
++
++  return (
++    <Button
++      variant="outline"
++      size="icon"
++      onClick={() => setTheme(theme === "light" ? "dark" : "light")}
++    >
++      <Sun className="h-[1.2rem] w-[1.2rem] rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
++      <Moon className="absolute h-[1.2rem] w-[1.2rem] rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
++      <span className="sr-only">Toggle theme</span>
++    </Button>
++  )
++}
++
+diff --git a/frontend/src/components/ui/button.tsx b/frontend/src/components/ui/button.tsx
+new file mode 100644
+index 0000000..8096181
+--- /dev/null
++++ b/frontend/src/components/ui/button.tsx
+@@ -0,0 +1,53 @@
++import * as React from "react"
++import { Slot } from "@radix-ui/react-slot"
++import { cva, type VariantProps } from "class-variance-authority"
++
++import { cn } from "@/lib/utils"
++
++const buttonVariants = cva(
++  "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
++  {
++    variants: {
++      variant: {
++        default: "bg-primary text-primary-foreground hover:bg-primary/90",
++        destructive:
++          "bg-destructive text-destructive-foreground hover:bg-destructive/90",
++        outline:
++          "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
++        secondary:
++          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
++        ghost: "hover:bg-accent hover:text-accent-foreground",
++        link: "text-primary underline-offset-4 hover:underline",
++      },
++      size: {
++        default: "h-10 px-4 py-2",
++        sm: "h-9 rounded-md px-3",
++        lg: "h-11 rounded-md px-8",
++        icon: "h-10 w-10",
++      },
++    },
++    defaultVariants: {
++      variant: "default",
++      size: "default",
++    },
++  }
++)
++
++export interface ButtonProps
++  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
++    VariantProps<typeof buttonVariants> {
++  asChild?: boolean
++}
++
++const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
++  ({ className, variant, size, asChild = false, ...props }, ref) => {
++    const Comp = asChild ? Slot : "button"
++    return (
++      <Comp
++        className={cn(buttonVariants({ variant, size, className }))}
++        ref={ref}
++        {...props}
++      />
++    )
++  }
++)
++Button.displayName = "Button"
++
++export { Button, buttonVariants }
+diff --git a/frontend/src/lib/telegram.ts b/frontend/src/lib/telegram.ts
+new file mode 100644
+index 0000000..3848049
+--- /dev/null
++++ b/frontend/src/lib/telegram.ts
+@@ -0,0 +1,11 @@
++import WebApp from '@twa-dev/sdk'
++
++export const initTelegramSDK = () => {
++  if (typeof window !== 'undefined') {
++    WebApp.ready();
++    // You can perform other SDK initializations here
++    // For example, setting up theme parameters listener
++    // WebApp.onEvent('themeChanged', function() { document.body.setAttribute('style', '--bg-color:' + WebApp.backgroundColor); });
++  }
++};
++
++// Call initialization, perhaps in a top-level component or _app.tsx
++// initTelegramSDK();
+diff --git a/frontend/src/lib/utils.ts b/frontend/src/lib/utils.ts
+new file mode 100644
+index 0000000..a1a00e1
+--- /dev/null
++++ b/frontend/src/lib/utils.ts
+@@ -0,0 +1,7 @@
++import { type ClassValue, clsx } from "clsx"
++import { twMerge } from "tailwind-merge"
++
++export function cn(...inputs: ClassValue[]) {
++  return twMerge(clsx(inputs))
++}
++
+diff --git a/frontend/src/store/useAppStore.ts b/frontend/src/store/useAppStore.ts
+new file mode 100644
+index 0000000..7293035
+--- /dev/null
++++ b/frontend/src/store/useAppStore.ts
+@@ -0,0 +1,16 @@
++import { create } from 'zustand';
++
++interface AppState {
++  userProfile: any; // Replace 'any' with a proper UserProfile type
++  setUserProfile: (profile: any) => void;
++  // Add other state and actions here
++}
++
++export const useAppStore = create<AppState>((set) => ({
++  userProfile: null,
++  setUserProfile: (profile) => set({ userProfile: profile }),
++  // Example:
++  // comments: [],
++  // addComment: (comment) => set((state) => ({ comments: [...state.comments, comment] })),
++}));
++
+diff --git a/frontend/src/types/telegram.d.ts b/frontend/src/types/telegram.d.ts
+new file mode 100644
+index 0000000..729c112
+--- /dev/null
++++ b/frontend/src/types/telegram.d.ts
+@@ -0,0 +1,10 @@
++// This file can be used to declare global types for Telegram WebApp SDK
++// if you are not using @twa-dev/sdk or need to augment its types.
++
++/*
++declare global {
++  interface Window {
++    Telegram: any; // Or a more specific type for Telegram.WebApp
++  }
++}
++*/
+diff --git a/frontend/tailwind.config.ts b/frontend/tailwind.config.ts
+new file mode 100644
+index 0000000..90a3757
+--- /dev/null
++++ b/frontend/tailwind.config.ts
+@@ -0,0 +1,46 @@
++import type { Config } from "tailwindcss"
++
++const config = {
++  darkMode: ["class"],
++  content: [
++    './pages/**/*.{ts,tsx}',
++    './components/**/*.{ts,tsx}',
++    './app/**/*.{ts,tsx}',
++    './src/**/*.{ts,tsx}',
++	],
++  prefix: "",
++  theme: {
++    container: {
++      center: true,
++      padding: "2rem",
++      screens: {
++        "2xl": "1400px",
++      },
++    },
++    extend: {
++      colors: {
++        border: "hsl(var(--border))",
++        input: "hsl(var(--input))",
++        ring: "hsl(var(--ring))",
++        background: "hsl(var(--background))",
++        foreground: "hsl(var(--foreground))",
++        primary: {
++          DEFAULT: "hsl(var(--primary))",
++          foreground: "hsl(var(--primary-foreground))",
++        },
++        secondary: {
++          DEFAULT: "hsl(var(--secondary))",
++          foreground: "hsl(var(--secondary-foreground))",
++        },
++        destructive: {
++          DEFAULT: "hsl(var(--destructive))",
++          foreground: "hsl(var(--destructive-foreground))",
++        },
++        muted: {
++          DEFAULT: "hsl(var(--muted))",
++          foreground: "hsl(var(--muted-foreground))",
++        },
++        accent: {
++          DEFAULT: "hsl(var(--accent))",
++          foreground: "hsl(var(--accent-foreground))",
++        },
++        popover: {
++          DEFAULT: "hsl(var(--popover))",
++          foreground: "hsl(var(--popover-foreground))",
++        },
++        card: {
++          DEFAULT: "hsl(var(--card))",
++          foreground: "hsl(var(--card-foreground))",
++        },
++      },
++      borderRadius: {
++        lg: "var(--radius)",
++        md: "calc(var(--radius) - 2px)",
++        sm: "calc(var(--radius) - 4px)",
++      },
++      keyframes: {
++        "accordion-down": {
++          from: { height: "0" },
++          to: { height: "var(--radix-accordion-content-height)" },
++        },
++        "accordion-up": {
++          from: { height: "var(--radix-accordion-content-height)" },
++          to: { height: "0" },
++        },
++      },
++      animation: {
++        "accordion-down": "accordion-down 0.2s ease-out",
++        "accordion-up": "accordion-up 0.2s ease-out",
++      },
++    },
++  },
++  plugins: [require("tailwindcss-animate")],
++} satisfies Config
++
++export default config
+diff --git a/frontend/tsconfig.json b/frontend/tsconfig.json
+new file mode 100644
+index 0000000..62c4a00
+--- /dev/null
++++ b/frontend/tsconfig.json
+@@ -0,0 +1,26 @@
++{
++  "compilerOptions": {
++    "target": "es5",
++    "lib": ["dom", "dom.iterable", "esnext"],
++    "allowJs": true,
++    "skipLibCheck": true,
++    "strict": true,
++    "noEmit": true,
++    "esModuleInterop": true,
++    "module": "esnext",
++    "moduleResolution": "bundler",
++    "resolveJsonModule": true,
++    "isolatedModules": true,
++    "jsx": "preserve",
++    "incremental": true,
++    "plugins": [
++      {
++        "name": "next"
++      }
++    ],
++    "paths": {
++      "@/*": ["./src/*"]
++    }
++  },
++  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts", "next.config.mjs"],
++  "exclude": ["node_modules"]
++}
