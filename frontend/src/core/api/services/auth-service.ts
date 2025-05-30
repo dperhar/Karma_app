@@ -70,10 +70,10 @@ export class AuthService extends ApiClient {
     console.log('verify2FA called for token:', token);
     try {
       const response = await this.request<APIResponse<LoginCheckResponse>>(
-        `${this.endpoint}/verify-2fa/${token}`,
+        `${this.endpoint}/verify-2fa`,
         {
           method: 'POST',
-          body: JSON.stringify({ password }),
+          body: JSON.stringify({ token, password }),
           headers: {
             'Content-Type': 'application/json',
             'X-Telegram-Init-Data': initDataRaw

@@ -119,36 +119,78 @@ class TelethonService(BaseService):
         next_pagination_info = None
         
         try:
+            self.logger.info(f"User {user_id}: Attempting to fetch dialogs. Client authorized: {await client.is_user_authorized()}")
+            
+            # Prepare parameters for get_dialogs, excluding None values
+            dialog_params = {'limit': limit}
+            if offset_date is not None:
+                dialog_params['offset_date'] = offset_date
+            if offset_id is not None:
+                dialog_params['offset_id'] = offset_id
+            if offset_peer is not None:
+                dialog_params['offset_peer'] = offset_peer
+            
+            self.logger.info(f"User {user_id}: Calling get_dialogs with params: {dialog_params}")
+            
             # Safe API call with flood protection
             dialogs = await self._safe_api_call(
                 client_key,
                 client.get_dialogs,
-                limit=limit,
-                offset_date=offset_date,
-                offset_id=offset_id,
-                offset_peer=offset_peer
+                **dialog_params
             )
             
-            self.logger.info(f"Found {len(dialogs)} dialogs for user {user_id}")
+            self.logger.info(f"User {user_id}: Successfully fetched {len(dialogs)} dialogs")
             
-            for dialog in dialogs:
-                chat = await self._create_chat_from_entity(dialog.entity, user_id)
-                if chat:
-                    chats.append(chat)
+            for i, dialog in enumerate(dialogs):
+                try:
+                    # Дополнительная проверка entity перед обработкой
+                    if not dialog or not hasattr(dialog, 'entity') or dialog.entity is None:
+                        self.logger.warning(f"User {user_id}: Skipping dialog {i} - no entity or dialog is None")
+                        continue
+                        
+                    entity = dialog.entity
+                    self.logger.debug(f"User {user_id}: Processing dialog {i}: entity_type={type(entity)}, entity_id={getattr(entity, 'id', 'N/A')}")
+                    
+                    # Проверяем что entity имеет нужные атрибуты
+                    if not hasattr(entity, 'id') or entity.id is None:
+                        self.logger.warning(f"User {user_id}: Skipping dialog {i} - entity has no valid ID")
+                        continue
+                        
+                    chat = await self._create_chat_from_entity(entity, user_id)
+                    if chat:
+                        chats.append(chat)
+                        self.logger.debug(f"User {user_id}: Successfully created chat: {chat.title} (ID: {chat.telegram_id})")
+                    else:
+                        self.logger.debug(f"User {user_id}: _create_chat_from_entity returned None for dialog {i}")
+                        
+                except Exception as dialog_error:
+                    self.logger.error(f"User {user_id}: Error processing dialog {i}: {dialog_error}", exc_info=True)
+                    # Продолжаем обработку других диалогов
+                    continue
 
             # Determine next pagination info if we got the full limit
             if len(dialogs) == limit and dialogs:
-                last_dialog = dialogs[-1]
-                next_pagination_info = {
-                    'offset_date': last_dialog.date,
-                    'offset_id': last_dialog.top_message,
-                    'offset_peer': last_dialog.entity
-                }
+                try:
+                    last_dialog = dialogs[-1]
+                    if last_dialog and hasattr(last_dialog, 'date') and hasattr(last_dialog, 'top_message') and hasattr(last_dialog, 'entity'):
+                        next_pagination_info = {
+                            'offset_date': last_dialog.date,
+                            'offset_id': last_dialog.top_message,
+                            'offset_peer': last_dialog.entity
+                        }
+                        self.logger.debug(f"User {user_id}: Created pagination info for next page")
+                except Exception as pagination_error:
+                    self.logger.warning(f"User {user_id}: Could not create pagination info: {pagination_error}")
 
+            self.logger.info(f"User {user_id}: Successfully processed {len(chats)} chats out of {len(dialogs)} dialogs")
             return chats, next_pagination_info
 
+        except TypeError as te:
+            self.logger.error(f"User {user_id}: TypeError during get_dialogs (likely NoneType Peer issue): {te}", exc_info=True)
+            # Возвращаем пустой список вместо падения
+            return [], None
         except Exception as e:
-            self.logger.error(f"Error syncing chats for user {user_id}: {e!s}")
+            self.logger.error(f"User {user_id}: Error syncing chats: {e!s}", exc_info=True)
             raise
 
     async def sync_chat(
@@ -694,28 +736,48 @@ class TelethonService(BaseService):
             TelegramMessengerChat object or None if entity type is not supported
         """
         try:
+            # Дополнительные проверки для безопасности
+            if chat_entity is None:
+                self.logger.warning(f"User {user_id}: chat_entity is None")
+                return None
+                
+            if not hasattr(chat_entity, 'id') or chat_entity.id is None:
+                self.logger.warning(f"User {user_id}: chat_entity has no valid ID: {type(chat_entity)}")
+                return None
+                
+            self.logger.debug(f"User {user_id}: Processing entity: {chat_entity}, type: {type(chat_entity)}, id: {getattr(chat_entity, 'id', 'N/A')}")
+            
             if isinstance(chat_entity, TelethonUser):
+                first_name = getattr(chat_entity, 'first_name', '') or ''
+                last_name = getattr(chat_entity, 'last_name', '') or ''
+                title = f"{first_name} {last_name}".strip()
+                if not title:
+                    # Если нет имени, используем username или "Unknown User"
+                    title = getattr(chat_entity, 'username', '') or "Unknown User"
+                    
                 return TelegramMessengerChat(
                     id=uuid4().hex,
                     telegram_id=int(chat_entity.id),
                     user_id=user_id,
                     type=TelegramMessengerChatType.PRIVATE,
-                    title=f"{chat_entity.first_name or ''} {chat_entity.last_name or ''}".strip(),
+                    title=title,
                     member_count=None,
                 )
 
             elif isinstance(chat_entity, TelethonChat):
+                title = getattr(chat_entity, 'title', '') or "Unknown Group"
                 return TelegramMessengerChat(
                     id=uuid4().hex,
                     telegram_id=int(chat_entity.id),
                     user_id=user_id,
                     type=TelegramMessengerChatType.GROUP,
-                    title=chat_entity.title,
+                    title=title,
                     member_count=getattr(chat_entity, "participants_count", None),
                 )
 
             elif isinstance(chat_entity, TelethonChannel):
                 is_broadcast = getattr(chat_entity, "broadcast", False)
+                title = getattr(chat_entity, 'title', '') or "Unknown Channel"
                 return TelegramMessengerChat(
                     id=uuid4().hex,
                     telegram_id=int(chat_entity.id),
@@ -725,13 +787,15 @@ class TelethonService(BaseService):
                         if is_broadcast
                         else TelegramMessengerChatType.SUPERGROUP
                     ),
-                    title=chat_entity.title,
+                    title=title,
                     member_count=getattr(chat_entity, "participants_count", None),
                 )
+            else:
+                self.logger.warning(f"User {user_id}: Unsupported entity type: {type(chat_entity)}")
 
             return None
         except Exception as e:
-            self.logger.error(f"Error creating chat from entity: {e!s}")
+            self.logger.error(f"User {user_id}: Error creating chat from entity {type(chat_entity)}: {e!s}", exc_info=True)
             return None
 
     async def _get_sender_telegram_id(

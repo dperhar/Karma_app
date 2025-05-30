@@ -18,6 +18,7 @@ from routes import admin_router, miniapp_router
 from routes.api.karma import router as karma_router
 from routes.api.draft_comments import router as draft_comments_router
 from routes.api.telegram.auth import router as telegram_auth_router
+from routes.api.auth.tokens import router as tokens_router
 from services.dependencies import container
 from services.domain.data_fetching_service import DataFetchingService
 from services.domain.scheduler_service import SchedulerService
@@ -157,7 +158,8 @@ app.include_router(miniapp_router)
 app.include_router(admin_router)
 app.include_router(karma_router)
 app.include_router(draft_comments_router)
-app.include_router(telegram_auth_router)
+app.include_router(telegram_auth_router, prefix="/api")
+app.include_router(tokens_router)
 
 
 if __name__ == "__main__":

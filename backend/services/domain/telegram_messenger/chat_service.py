@@ -1,6 +1,7 @@
 """Service for Telegram Messenger chat operations."""
 
-from typing import Any, Optional
+from typing import Any, Optional, Dict
+from datetime import datetime
 
 from models.telegram_messenger.chat import TelegramMessengerChat
 from services.base.base_service import BaseService
@@ -21,6 +22,38 @@ class TelegramMessengerChatService(BaseService):
         self.telethon_service = telethon_service
         self.chat_repository = chat_repository
 
+    async def get_chats_paginated(
+        self, 
+        client: Any, 
+        user_id: str, 
+        limit: int = 20,
+        offset_date: Optional[datetime] = None,
+        offset_id: Optional[int] = None,
+        offset_peer=None
+    ) -> tuple[list[TelegramMessengerChat], Optional[Dict[str, Any]]]:
+        """Get user's Telegram chats with pagination support.
+
+        Args:
+            client: Authenticated TelegramClient instance
+            user_id: User ID
+            limit: Maximum number of chats to retrieve
+            offset_date: Date offset for pagination
+            offset_id: Message ID offset for pagination
+            offset_peer: Peer offset for pagination
+
+        Returns:
+            Tuple of (list of TelegramMessengerChat objects, next_pagination_info)
+        """
+        chats, next_pagination = await self.telethon_service.sync_chats(
+            client=client,
+            user_id=user_id,
+            limit=limit,
+            offset_date=offset_date,
+            offset_id=offset_id,
+            offset_peer=offset_peer,
+        )
+        return chats, next_pagination
+
     async def get_chats(
         self, client: Any, user_id: str, limit: int = 10, offset: int = 0
     ) -> list[TelegramMessengerChat]:
@@ -35,11 +68,10 @@ class TelegramMessengerChatService(BaseService):
         Returns:
             list of TelegramMessengerChat objects
         """
-        chats = await self.telethon_service.sync_chats(
+        chats, _ = await self.telethon_service.sync_chats(
             client=client,
             user_id=user_id,
             limit=limit,
-            offset=offset,
         )
         if chats:
             return await self.chat_repository.create_or_update_chats(chats)

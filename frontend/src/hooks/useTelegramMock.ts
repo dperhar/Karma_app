@@ -28,7 +28,7 @@ export function useTelegramMock(): void {
   let lp: LaunchParams | undefined;
   try {
     lp = retrieveLaunchParams();
-    console.log('Retrieved launch params:', lp);
+    console.log('useTelegramMock.ts:31 Retrieved launch params:', lp);
   } catch (e) {
     console.log('Failed to retrieve launch params, applying mock data');
     const initDataRaw = new URLSearchParams([
@@ -36,27 +36,22 @@ export function useTelegramMock(): void {
         "user",
         JSON.stringify({
           id: 118672216,
-          first_name: "Pavel",
-          last_name: "Telitchenko",
-          username: "pivlikk",
-          language_code: "en",
+          first_name: "🔥A1🔥",
+          last_name: "",
+          username: "a1turbotop",
+          language_code: "ru",
           is_premium: true,
           allows_write_to_pm: true,
         }),
       ],
-      ["auth_date", "1716922846"],
-      [
-        "signature",
-        "SignaturePkdisAdGwQepp8pmdCeUM6k_NKjxU5aiofGrn_SomeRandomSigna-UzResG0mLxuPcQZT5rlnWDw",
-      ],
-      [
-        "hash",
-        "89d6079ad6762351f38c6dbbc41bb53048019256a9443988af7a48bcad16ba31",
-      ],
+      ["auth_date", "1735583847"],
+      ["hash", "abcd1234"],
       ["start_param", "debug"],
       ["chat_type", "sender"],
-      ["chat_instance", "8428209589180549439"],
+      ["chat_instance", "-1000000000000000000"],
     ]).toString();
+
+    console.log('useTelegramMock.ts:52 Created mock initDataRaw:', initDataRaw);
 
     lp = {
       themeParams: {

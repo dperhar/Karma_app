@@ -7,6 +7,7 @@ from datetime import datetime
 from models.user.schemas import UserCreate, UserResponse, UserUpdate
 from services.base.base_service import BaseService
 from services.repositories.user_repository import UserRepository
+from config import SESSION_COOKIE_NAME, SESSION_EXPIRY_SECONDS, IS_DEVELOP
 from services.websocket_service import WebSocketService
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,10 @@ class UserService(BaseService):
         super().__init__()
         self.user_repository = user_repository
         self.websocket_service = WebSocketService()
+        # Make config values accessible to the service if needed elsewhere
+        self.SESSION_COOKIE_NAME = SESSION_COOKIE_NAME
+        self.SESSION_EXPIRY_SECONDS = SESSION_EXPIRY_SECONDS
+        self.IS_DEVELOP = IS_DEVELOP
 
     async def _send_user_update_notification(
         self, user_id: str, event: str, data: dict
@@ -60,15 +65,23 @@ class UserService(BaseService):
     async def update_user(
         self,
         user_id: str,
-        user_data: UserUpdate,
+        user_data: Optional[UserUpdate] = None,
+        **kwargs
     ) -> Optional[UserResponse]:
         """Update user data."""
         logger = logging.getLogger(__name__)
         logger.info(
-            f"UserService.update_user called with: user_id={user_id}, user_data={user_data.model_dump()}"
+            f"UserService.update_user called with: user_id={user_id}, user_data={user_data}, kwargs={kwargs}"
         )
 
-        update_data = user_data.model_dump(exclude_unset=True)
+        if user_data is not None:
+            update_data = user_data.model_dump(exclude_unset=True)
+        else:
+            update_data = kwargs
+        
+        if "last_telegram_auth_at" in update_data and update_data["last_telegram_auth_at"] is None: # Pydantic might convert unset to None
+            update_data["last_telegram_auth_at"] = datetime.utcnow()
+
         logger.info(f"Calling repository.update_user with data: {update_data}")
 
         user = await self.user_repository.update_user(user_id=user_id, **update_data)
@@ -100,7 +113,10 @@ class UserService(BaseService):
     async def update_user_tg_session(
         self, user_id: str, session_string: str
     ) -> Optional[UserResponse]:
-        """Update user's Telegram session string."""
+        """Update user's Telegram session string and last_telegram_auth_at."""
+        # This method is called upon successful TG auth, so it's a "login" event
+        # Update last_telegram_auth_at as well
+        # The actual web session cookie is set by the calling route/middleware
         user = await self.user_repository.update_user(
             user_id=user_id, telegram_session_string=session_string
         )
@@ -124,9 +140,19 @@ class UserService(BaseService):
                 "first_name": telegram_user.first_name,
                 "last_name": getattr(telegram_user, 'last_name', None),
                 "username": getattr(telegram_user, 'username', None),
-                "telegram_id": telegram_user.id,
                 "last_telegram_auth_at": datetime.utcnow(),
             }
+            
+            # Only update telegram_id if it's not already set for this user
+            # This prevents unique constraint violations
+            current_user = await self.user_repository.get_user(user_id)
+            if current_user and not current_user.telegram_id:
+                # Check if this telegram_id is already used by another user
+                existing_user = await self.user_repository.get_user_by_telegram_id(telegram_user.id)
+                if not existing_user:
+                    update_data["telegram_id"] = telegram_user.id
+                else:
+                    logger.warning(f"Telegram ID {telegram_user.id} already exists for another user")
             
             logger.info(f"Updating user {user_id} with Telegram data: {update_data}")
             

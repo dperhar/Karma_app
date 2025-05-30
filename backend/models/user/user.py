@@ -6,6 +6,7 @@ from enum import Enum
 
 from sqlalchemy import BigInteger, Column, Integer, String, Text, JSON, DateTime
 from sqlalchemy import Enum as SQLEnum
+from sqlalchemy.orm import relationship
 
 from models.ai.ai_request import AIRequestModel
 from models.db_base import DBBase
@@ -84,6 +85,9 @@ class User(TimestampMixin, DBBase):
         nullable=True, 
         comment="Timestamp of the last successful dialog list sync"
     )
+
+    # Relationships
+    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
 
     def has_valid_tg_session(self) -> bool:
         """Check if the user has a valid Telegram session."""

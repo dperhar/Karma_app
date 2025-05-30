@@ -54,26 +54,43 @@ class TelethonClient:
     async def get_or_create_client(self, user_id: str) -> Optional[TelegramClient]:
         """Get existing client or create new one."""
         try:
+            self.logger.info(f"TelethonClient.get_or_create_client called for user {user_id}")
+            
             # Check if client exists and is connected
             client = await self.has_client(user_id)
             if client:
+                self.logger.info(f"TelethonClient: Existing valid client found for user {user_id}")
                 return client
 
+            self.logger.info(f"TelethonClient: No existing client, creating new one for user {user_id}")
+            
             # Get user from UserRepository
             user = await self.user_repository.get_user(user_id)
-            if not user or not user.has_valid_tg_session():
-                self.logger.warning(f"User {user_id!s} has no valid Telegram session")
+            if not user:
+                self.logger.warning(f"TelethonClient: User {user_id} not found in repository")
+                return None
+                
+            self.logger.info(f"TelethonClient: User {user_id} found, checking session validity")
+            
+            if not user.has_valid_tg_session():
+                self.logger.warning(f"TelethonClient: User {user_id} has no valid Telegram session")
+                self.logger.debug(f"TelethonClient: User {user_id} session_string exists: {bool(user.telegram_session_string)}")
                 return None
 
+            self.logger.info(f"TelethonClient: User {user_id} has valid session, creating client")
+            
             # Create new client
             client = await self._create_client(user_id, user.telegram_session_string)
             if client:
+                self.logger.info(f"TelethonClient: Successfully created client for user {user_id}")
                 self.clients[user_id] = client
                 return client
+            else:
+                self.logger.warning(f"TelethonClient: Failed to create client for user {user_id}")
 
             return None
         except Exception as e:
-            self.logger.error(f"Error getting or creating client: {e!s}")
+            self.logger.error(f"TelethonClient: Error getting or creating client for user {user_id}: {e!s}", exc_info=True)
             return None
 
     async def _create_client(

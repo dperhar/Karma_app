@@ -14,14 +14,29 @@ services:
     networks:
       - karma-dev-network
 
+  # Redis for sessions and caching
+  redis:
+    image: redis:7-alpine
+    container_name: karma-redis-dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+    networks:
+      - karma-dev-network
+    restart: unless-stopped
+
   # Backend API (Development mode with hot reload)
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: karma-backend-dev
+    env_file:
+      - .env
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/karma_app_dev
+      - REDIS_URL=redis://redis:6379
       - IS_DEVELOP=true
       - FRONTEND_URL=http://localhost:3000
     ports:
@@ -31,6 +46,7 @@ services:
       - backend_logs:/app/logs
     depends_on:
       - postgres
+      - redis
     networks:
       - karma-dev-network
     restart: unless-stopped
@@ -42,6 +58,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile.dev
     container_name: karma-frontend-dev
+    env_file:
+      - .env
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000/api
       - NODE_ENV=development
@@ -59,6 +77,8 @@ services:
 
 volumes:
   postgres_dev_data:
+    driver: local
+  redis_dev_data:
     driver: local
   backend_logs:
     driver: local

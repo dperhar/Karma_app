@@ -189,17 +189,18 @@ class TelegramMessengerAuthService(BaseService):
 
             # Create token
             token = base64.b64encode(qr_login.token).decode("utf-8")
-            logger.info(f"QR token generated successfully: {token[:20]}...")
+            logger.info(f"QR token generated successfully for session")
 
-            # Store session data in Redis
-            await self._save_client_session(
-                token,
-                {
-                    "session_string": client.session.save(),
-                    "created_at": asyncio.get_event_loop().time(),
-                    "token": token,
-                },
-            )
+            # Store session data in Redis with enhanced metadata
+            session_metadata = {
+                "session_string": client.session.save(),
+                "created_at": asyncio.get_event_loop().time(),
+                "token": token,
+                "ip_address": "unknown",  # Should be passed from request context
+                "user_agent": "unknown",  # Should be passed from request context
+            }
+
+            await self._save_client_session(token, session_metadata)
 
             # Set 5-minute timeout
             self._create_cleanup_task(token)
@@ -223,8 +224,27 @@ class TelegramMessengerAuthService(BaseService):
             Session response with auth data if successful
         """
         try:
+            # Validate token format
+            if not token or len(token) < 10:
+                raise ValueError("Invalid token format")
+            
+            # Validate base64 format
+            try:
+                base64.b64decode(token)
+            except Exception:
+                raise ValueError("Invalid token encoding")
+
             session_data = await self._get_client_session(token)
             if not session_data:
+                logger.warning(f"Session expired or not found for token")
+                raise ValueError("Session expired")
+
+            # Check if session is too old (additional safety check)
+            created_at = session_data.get("created_at", 0)
+            current_time = asyncio.get_event_loop().time()
+            if current_time - created_at > 300:  # 5 minutes
+                logger.warning(f"Session too old, rejecting")
+                await self._cleanup_client(token)
                 raise ValueError("Session expired")
 
             client = session_data["client"]
@@ -243,18 +263,26 @@ class TelegramMessengerAuthService(BaseService):
                         me = await client.get_me()
                         session_string = client.session.save()
 
+                        logger.info(f"Successful QR login for Telegram user: {me.id}")
                         await self._cleanup_client(token)
 
                         # Update user session and data if current_user_id is provided
                         if current_user_id:
                             await self.user_service.update_user_tg_session(
-                                current_user_id, session_string
+                                current_user_id, session_string # current_user_id is db_id
                             )
                             
-                            # Update user data from Telegram
-                            await self.user_service.update_user_from_telegram(
-                                current_user_id, me
-                            )
+                            # Update user data from Telegram (handle errors gracefully)
+                            try:
+                                await self.user_service.update_user_from_telegram(
+                                    current_user_id, me
+                                )
+                            except Exception as e:
+                                logger.warning(f"Failed to update user data from Telegram: {e}")
+                                # Continue with the flow even if user update fails
+                            
+                            # Pass db_user_id back for session creation
+                            return {"requires_2fa": False, "user_id": me.id, "status": "success", "db_user_id": current_user_id}
 
                         return {
                             "requires_2fa": False,
@@ -262,6 +290,7 @@ class TelegramMessengerAuthService(BaseService):
                             "status": "success",
                         }
                     except SessionPasswordNeededError:
+                        logger.info(f"2FA required for QR login")
                         return {
                             "requires_2fa": True,
                             "user_id": None,
@@ -271,12 +300,16 @@ class TelegramMessengerAuthService(BaseService):
                     return {"requires_2fa": None, "user_id": None, "status": "waiting"}
 
             except SessionPasswordNeededError:
+                logger.info(f"2FA required for QR login")
                 return {"requires_2fa": True, "user_id": None, "status": "2fa_required"}
             except Exception as err:
                 logger.error(f"Error checking QR login: {err}")
                 await self._cleanup_client(token)
                 raise ValueError(str(err)) from err
 
+        except ValueError:
+            # Re-raise ValueError with original message
+            raise
         except Exception as err:
             logger.error(f"Error in QR login check: {err}")
             raise Exception("Error in QR login check") from err
@@ -295,8 +328,30 @@ class TelegramMessengerAuthService(BaseService):
             Session response with auth data if successful
         """
         try:
+            # Validate inputs
+            if not password or len(password) < 3:
+                raise ValueError("Invalid 2FA password format")
+            
+            if not token or len(token) < 10:
+                raise ValueError("Invalid token format")
+            
+            # Validate base64 format
+            try:
+                base64.b64decode(token)
+            except Exception:
+                raise ValueError("Invalid token encoding")
+
             session_data = await self._get_client_session(token)
             if not session_data:
+                logger.warning(f"Session expired or not found for 2FA verification")
+                raise ValueError("Session expired")
+
+            # Check if session is too old
+            created_at = session_data.get("created_at", 0)
+            current_time = asyncio.get_event_loop().time()
+            if current_time - created_at > 300:  # 5 minutes
+                logger.warning(f"Session too old for 2FA verification")
+                await self._cleanup_client(token)
                 raise ValueError("Session expired")
 
             client = session_data["client"]
@@ -306,27 +361,28 @@ class TelegramMessengerAuthService(BaseService):
                 me = await client.get_me()
                 session_string = client.session.save()
 
-                # Update user session and data if current_user_id is provided
+                logger.info(f"Successful 2FA verification for Telegram user: {me.id}")
+
+                # Only update telegram session, like in the working project
                 if current_user_id:
                     await self.user_service.update_user_tg_session(
                         current_user_id, session_string
                     )
-                    
-                    # Update user data from Telegram
-                    await self.user_service.update_user_from_telegram(
-                        current_user_id, me
-                    )
 
-                result = {
+                # Return simple response like in the working project
+                return {
                     "requires_2fa": False,
                     "user_id": me.id,
+                    "status": "success"
                 }
-                logger.info(f"2FA verification successful, returning: {result}")
-                return result
 
             except PasswordHashInvalidError as exc:
+                logger.warning(f"Invalid 2FA password attempt")
                 raise ValueError("Invalid 2FA password") from exc
 
+        except ValueError:
+            # Re-raise ValueError with original message
+            raise
         except Exception as err:
             logger.error(f"Error verifying 2FA: {err}")
             raise Exception("Error verifying 2FA") from err

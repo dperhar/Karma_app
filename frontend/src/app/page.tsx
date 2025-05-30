@@ -82,17 +82,17 @@ export default function Home() {
     
     const loadData = async () => {
       try {
-        console.log('initDataRaw value:', initDataRaw);
-        console.log('initDataState value:', initDataState);
+        console.log('[Page] loadData started - initDataRaw value:', initDataRaw?.substring(0, 50) + '...');
+        console.log('[Page] loadData started - initDataState value:', initDataState);
         
         // Check if we have valid initialization data
         if (!initDataRaw) {
-          console.error('No Telegram init data available');
+          console.error('[Page] No Telegram init data available');
           return;
         }
         
         // Fetch fresh user data from server first
-        console.log('Fetching fresh user data from server');
+        console.log('[Page] Fetching fresh user data from server');
         await fetchUser(initDataRaw);
         
         // Get the latest user data which includes their chat load limit preference
@@ -100,12 +100,23 @@ export default function Home() {
         const limit = userData?.telegram_chats_load_limit || DEFAULT_CHAT_LOAD_LIMIT;
         
         // Fetch chats with the user's preferred limit
-        console.log(`Loading chats with user-defined limit: ${limit}`);
+        console.log(`[Page] Loading chats with user-defined limit: ${limit}`);
         await fetchChats(initDataRaw, limit);
+        
+        // Log current state after fetch
+        const chatState = useChatStore.getState();
+        console.log('[Page] After fetchChats - chatState:', {
+          chatsCount: chatState.chats?.length || 0,
+          isLoading: chatState.isLoading,
+          error: chatState.error,
+          firstFewChats: chatState.chats?.slice(0, 3)
+        });
+        
       } catch (err) {
-        console.error('Failed to load data:', err);
+        console.error('[Page] Failed to load data:', err);
       } finally {
         if (isMounted) {
+          console.log('[Page] Setting loading to false');
           setLoading(false);
         }
       }
@@ -113,7 +124,10 @@ export default function Home() {
 
     // Only proceed with data loading if initialization data is available
     if (initDataState && initDataRaw) {
+      console.log('[Page] Starting data load...');
       loadData();
+    } else {
+      console.log('[Page] Not loading data - missing initData:', { initDataState, hasInitDataRaw: !!initDataRaw });
     }
     
     // Cleanup function
@@ -150,6 +164,7 @@ export default function Home() {
 
   // Get chat counts by type
   const chatCounts = useMemo(() => {
+    console.log('[Page] Calculating chatCounts - searchedChats:', searchedChats?.length || 0);
     // Use searchedChats to include only chats that match the search
     const privateCount = searchedChats.filter(chat => chat.type === TelegramMessengerChatType.PRIVATE).length;
     const groupCount = searchedChats.filter(chat => 
@@ -158,15 +173,31 @@ export default function Home() {
     ).length;
     const channelCount = searchedChats.filter(chat => chat.type === TelegramMessengerChatType.CHANNEL).length;
     
-    return {
+    const counts = {
       all: searchedChats.length,
       private: privateCount,
       group: groupCount,
       channel: channelCount
     };
+    
+    console.log('[Page] Chat counts:', counts);
+    return counts;
   }, [searchedChats]);
 
+  console.log('[Page] Render - Current state:', {
+    loading,
+    userLoading,
+    chatsLoading,
+    userError,
+    chatsError,
+    chatsCount: chats?.length || 0,
+    filteredChatsCount: filteredChats?.length || 0,
+    activeFilter,
+    searchQuery
+  });
+
   if (loading || userLoading || chatsLoading) {
+    console.log('[Page] Showing loading state');
     return (
       <Page back={false}>
         <div className="flex justify-center items-center min-h-screen">
@@ -177,6 +208,7 @@ export default function Home() {
   }
 
   if (userError || chatsError) {
+    console.log('[Page] Showing error state:', { userError, chatsError });
     return (
       <Page back={false}>
         <div className="alert alert-error shadow-lg mx-4 my-6">
@@ -192,6 +224,19 @@ export default function Home() {
     );
   }
 
+  console.log('[Page] Rendering main content with filteredChats:', filteredChats?.length || 0);
+
+  // Test function to force reload chats
+  const handleForceReloadChats = async () => {
+    console.log('[Page] Force reload chats button clicked');
+    if (initDataRaw) {
+      console.log('[Page] initDataRaw available, calling fetchChats');
+      await fetchChats(initDataRaw, 20);
+    } else {
+      console.log('[Page] No initDataRaw available');
+    }
+  };
+
   return (
     <Page 
       back={!!selectedChat} 
@@ -202,6 +247,33 @@ export default function Home() {
         onSettingsClick={handleSettingsClick}
       />
       <div className="container mx-auto p-4">
+        {/* Диагностическая информация */}
+        <div className="alert alert-info mb-4">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="stroke-current shrink-0 w-6 h-6">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+          <div>
+            <h3 className="font-bold">Диагностика:</h3>
+            <div className="text-xs">
+              <p>Всего чатов: {chats?.length || 0}</p>
+              <p>Отфильтрованных чатов: {filteredChats?.length || 0}</p>
+              <p>Поисковый запрос: "{searchQuery}"</p>
+              <p>Активный фильтр: {activeFilter}</p>
+              <p>Загрузка: {loading ? 'да' : 'нет'} | Загрузка чатов: {chatsLoading ? 'да' : 'нет'}</p>
+              <p>Ошибки: {chatsError || 'нет'}</p>
+              <p>initDataRaw доступен: {initDataRaw ? 'да' : 'нет'}</p>
+              <p>initDataState: {initDataState ? 'да' : 'нет'}</p>
+            </div>
+            <button 
+              className="btn btn-sm btn-primary mt-2"
+              onClick={handleForceReloadChats}
+              disabled={chatsLoading}
+            >
+              {chatsLoading ? 'Загружаем...' : 'Принудительно загрузить чаты'}
+            </button>
+          </div>
+        </div>
+        
         {/* Navigation buttons */}
         <div className="flex gap-2 mb-6">
           <button 

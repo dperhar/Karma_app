@@ -10,6 +10,7 @@ from fastapi import Request
 from services.domain.admin_service import AdminService
 from services.domain.ai_dialog_service import AIDialogService
 from services.domain.data_fetching_service import DataFetchingService
+from services.domain.jwt_service import JWTService
 from services.domain.karma_service import KarmaService
 from services.domain.menu_service import MenuService
 from services.domain.message_service import MessageService
@@ -42,6 +43,7 @@ from services.repositories.ai_dialog_repository import AIDialogRepository
 from services.repositories.ai_request_repository import AIRequestRepository
 from services.repositories.draft_comment_repository import DraftCommentRepository
 from services.repositories.management.person_repository import PersonRepository
+from services.repositories.refresh_token_repository import RefreshTokenRepository
 from services.repositories.telegram.message_repository import (
     MessageRepository as TelegramMessageRepository,
 )
@@ -116,6 +118,7 @@ container.register(PersonRepository, PersonRepository)
 container.register(AIDialogRepository, AIDialogRepository)
 container.register(AIRequestRepository, AIRequestRepository)
 container.register(DraftCommentRepository, DraftCommentRepository)
+container.register(RefreshTokenRepository, RefreshTokenRepository)
 
 # Register external services
 container.register(GeminiService, GeminiService)
@@ -323,6 +326,12 @@ def get_transcribe_service() -> TranscribeService:
     return TranscribeService()
 
 
+def get_jwt_service() -> JWTService:
+    """Get JWTService instance with dependencies."""
+    refresh_token_repository = container.resolve(RefreshTokenRepository)
+    return JWTService(refresh_token_repository=refresh_token_repository)
+
+
 # Register services
 container.register(WebSocketService, get_websocket_service)
 container.register(TelegramBotService, get_telegram_bot_service)
@@ -349,6 +358,7 @@ container.register(
 )
 container.register(RedisDataService, get_redis_data_service)
 container.register(TranscribeService, get_transcribe_service)
+container.register(JWTService, get_jwt_service)
 
 # Initialize repositories and services
 container.initialize()

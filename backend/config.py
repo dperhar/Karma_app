@@ -32,8 +32,15 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 # JWT
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-here")
 JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 600
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
 REFRESH_TOKEN_EXPIRE_DAYS = 30
+REFRESH_TOKEN_SECRET_KEY = os.getenv("REFRESH_TOKEN_SECRET_KEY", "refresh-token-secret-key-here")
+
+# Session configuration
+SESSION_COOKIE_NAME = "karma_session_id"
+SESSION_SECRET_KEY = os.getenv("SESSION_SECRET_KEY", "another-super-secret-key-for-sessions") # For potential future use if signing session data
+SESSION_EXPIRY_SECONDS = 90 * 24 * 60 * 60 # 3 months
+
 # Telegram
 
 
