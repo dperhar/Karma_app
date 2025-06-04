@@ -31,6 +31,7 @@ from services.external.s3_client import S3Client
 from services.external.telegram_bot_service import TelegramBotService
 from services.external.telethon_client import TelethonClient
 from services.external.telethon_service import TelethonService
+from services.external.telethon.refactored_client_service import RefactoredTelethonClientService
 from services.external.transcribe_service import TranscribeService
 from services.repositories import (
     AdminRepository,
@@ -332,6 +333,15 @@ def get_jwt_service() -> JWTService:
     return JWTService(refresh_token_repository=refresh_token_repository)
 
 
+def get_refactored_telethon_client_service() -> RefactoredTelethonClientService:
+    """Get RefactoredTelethonClientService instance with dependencies."""
+    user_repository = container.resolve(UserRepository)
+    return RefactoredTelethonClientService(
+        user_repository=user_repository,
+        container=container
+    )
+
+
 # Register services
 container.register(WebSocketService, get_websocket_service)
 container.register(TelegramBotService, get_telegram_bot_service)
@@ -359,6 +369,7 @@ container.register(
 container.register(RedisDataService, get_redis_data_service)
 container.register(TranscribeService, get_transcribe_service)
 container.register(JWTService, get_jwt_service)
+container.register(RefactoredTelethonClientService, get_refactored_telethon_client_service)
 
 # Initialize repositories and services
 container.initialize()
