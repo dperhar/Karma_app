@@ -12,6 +12,9 @@ from services.base.base_service import BaseService
 from services.external.gemini_service import GeminiService
 from services.external.telethon_service import TelethonService
 from services.repositories.user_repository import UserRepository
+from services.repositories.ai_profile_repository import AIProfileRepository
+from services.dependencies import container
+from models.ai.ai_profile import AnalysisStatus
 
 
 class UserContextAnalysisService(BaseService):
@@ -30,7 +33,7 @@ class UserContextAnalysisService(BaseService):
 
     async def analyze_user_context(self, client: Any, user_id: str) -> Dict[str, Any]:
         """
-        Analyze user's Telegram activity to build their digital twin.
+        Analyze user's Telegram activity to build their vibe profile.
         
         Args:
             client: TelegramClient instance
@@ -40,73 +43,85 @@ class UserContextAnalysisService(BaseService):
             Dict with analysis results and status
         """
         try:
-            # Update status to PENDING
-            await self.user_repository.update_user(
-                user_id,
-                context_analysis_status="PENDING"
+            ai_profile_repo = container.resolve(AIProfileRepository)
+            
+            # Get or create AI profile
+            ai_profile = await ai_profile_repo.get_ai_profile_by_user(user_id)
+            if not ai_profile:
+                ai_profile = await ai_profile_repo.create_ai_profile(user_id=user_id)
+            
+            # Mark analysis as started
+            await ai_profile_repo.update_ai_profile(
+                ai_profile.id,
+                analysis_status=AnalysisStatus.ANALYZING,
+                ai_model_used="gemini-pro"
             )
 
-            self.logger.info(f"Starting context analysis for user {user_id}")
+            self.logger.info(f"Starting vibe profile analysis for user {user_id}")
             user = await self.user_repository.get_user(user_id)
             if not user:
                 self.logger.error(f"User {user_id} not found for context analysis.")
+                await ai_profile_repo.update_ai_profile(
+                    ai_profile.id,
+                    analysis_status=AnalysisStatus.FAILED,
+                    last_error_message="User not found"
+                )
                 return {"status": "failed", "reason": "User not found"}
 
-            # Step 1a: Fetch user's general Telegram data for topic/interest analysis
-            # (e.g., last 200 posts from their channels, last 500 messages from their group chats)
-            general_content_data = await self._fetch_content_for_topic_analysis(client, user_id)
-            
-            # Step 1b: Fetch user's *own* sent messages for style analysis
-            # (e.g., DMs, messages in groups, comments in channels)
+            # Step 1: Fetch user's own sent messages for style analysis
             user_sent_messages = await self._fetch_user_sent_messages_for_style(client, user_id)
+            
+            # Step 2: Fetch general content for topic/interest analysis
+            general_content_data = await self._fetch_content_for_topic_analysis(client, user_id)
 
-            if not general_content_data.get("texts") and not user_sent_messages:
-                self.logger.warning(f"No sufficient data found for user {user_id} for full analysis.")
-                await self.user_repository.update_user(
-                    user_id,
-                    context_analysis_status="FAILED",
-                    last_context_analysis_at=datetime.utcnow()
+            if not user_sent_messages and not general_content_data.get("texts"):
+                self.logger.warning(f"No sufficient data found for user {user_id} for analysis.")
+                await ai_profile_repo.update_ai_profile(
+                    ai_profile.id,
+                    analysis_status=AnalysisStatus.FAILED,
+                    last_error_message="Insufficient data for analysis"
                 )
                 return {"status": "failed", "reason": "Insufficient data for analysis"}
 
-            # Step 2: Analyze communication style from user's sent messages
+            # Step 3: Analyze communication style from user's sent messages
             style_analysis = await self._analyze_communication_style(user_sent_messages)
-            # Step 3: Extract topics and interests from general content
+            
+            # Step 4: Extract topics and interests from general content
             interests_analysis = await self._extract_interests_and_topics(
                 general_content_data.get("texts", [])
             )
             
-            # Step 4: Generate LLM-assisted descriptions
-            style_description = await self._generate_style_description(style_analysis)
-            system_prompt = await self._generate_user_system_prompt(interests_analysis)
+            # Step 5: Generate structured vibe profile
+            vibe_profile = await self._generate_vibe_profile(style_analysis, interests_analysis, user_sent_messages)
             
-            # Step 5: Update user model
-            await self.user_repository.update_user(
-                user_id,
-                persona_style_description=style_description,
-                persona_interests_json=json.dumps(interests_analysis["interests"]),
-                user_system_prompt=system_prompt,
-                context_analysis_status="COMPLETED",
-                last_context_analysis_at=datetime.utcnow()
+            # Step 6: Update AI profile with vibe profile
+            await ai_profile_repo.update_ai_profile(
+                ai_profile.id,
+                vibe_profile_json=vibe_profile,
+                analysis_status=AnalysisStatus.COMPLETED,
+                messages_analyzed_count=str(len(user_sent_messages)),
+                last_analyzed_at=datetime.now()
             )
 
-            self.logger.info(f"Context analysis completed for user {user_id}")
+            self.logger.info(f"Vibe profile analysis completed for user {user_id}")
             
             return {
                 "status": "completed",
-                "style_analysis": style_analysis,
-                "interests_analysis": interests_analysis,
-                "style_description": style_description,
-                "system_prompt": system_prompt
+                "vibe_profile": vibe_profile,
+                "messages_analyzed": len(user_sent_messages)
             }
 
         except Exception as e:
-            self.logger.error(f"Error analyzing user context: {e}", exc_info=True)
-            await self.user_repository.update_user(
-                user_id,
-                context_analysis_status="FAILED",
-                last_context_analysis_at=datetime.utcnow()
-            )
+            self.logger.error(f"Error analyzing user vibe profile: {e}", exc_info=True)
+            try:
+                if 'ai_profile' in locals() and ai_profile:
+                    await ai_profile_repo.update_ai_profile(
+                        ai_profile.id,
+                        analysis_status=AnalysisStatus.FAILED,
+                        last_error_message=str(e)
+                    )
+            except:
+                pass
             return {"status": "failed", "reason": str(e)}
 
     async def _fetch_content_for_topic_analysis(self, client: Any, user_id: str) -> Dict[str, List[str]]:
@@ -567,144 +582,120 @@ class UserContextAnalysisService(BaseService):
         
         return unique_interests
 
-    async def _generate_style_description(self, style_analysis: Dict[str, Any]) -> str:
-        """Generate human-readable style description using LLM."""
+    async def _generate_vibe_profile(
+        self, 
+        style_analysis: Dict[str, Any], 
+        interests_analysis: Dict[str, Any],
+        user_messages: List[Dict]
+    ) -> Dict[str, Any]:
+        """Generate structured vibe profile matching the vision document structure."""
         try:
-            # Prepare style summary for LLM
-            style_summary = self._prepare_style_summary(style_analysis)
+            # Extract style characteristics
+            emoji_freq = style_analysis.get("emoji_usage", {}).get("frequency", 0)
+            avg_length = style_analysis.get("message_length", {}).get("avg_length", 0)
+            informal_score = style_analysis.get("slang_and_informal", {})
+            contraction_freq = informal_score.get("contractions_frequency", 0)
+            excl_freq = style_analysis.get("punctuation_patterns", {}).get("exclamation_frequency", 0)
             
-            prompt = f"""Based on the following communication style analysis, write a concise description (2-3 sentences) of this person's communication style:
-
-{style_summary}
-
-Write a description that captures their unique way of communicating, suitable for instructing an AI to mimic their style. Focus on tone, formality level, emoji usage, and sentence structure.
-
-Description:"""
-
-            response = await self.gemini_service.generate_content(prompt)
-            if response and response.get('content'):
-                return response.get('content', '').strip()
+            # Determine tone
+            tone = "formal"
+            if contraction_freq > 0.5:
+                tone = "casual"
+            elif excl_freq > 0.5:
+                tone = "enthusiastic"
+            elif style_analysis.get("tone_indicators", {}).get("positive_sentiment_indicators", 0) > 0.3:
+                tone = "friendly"
+                
+            # Determine verbosity
+            verbosity = "brief"
+            if avg_length > 200:
+                verbosity = "verbose"
+            elif avg_length > 100:
+                verbosity = "moderate"
+                
+            # Determine emoji usage
+            emoji_usage = "none"
+            if emoji_freq > 1.5:
+                emoji_usage = "heavy"
+            elif emoji_freq > 0.5:
+                emoji_usage = "light"
+                
+            # Extract common phrases (simplified - would need more sophisticated NLP)
+            common_phrases = await self._extract_common_phrases(user_messages)
             
-            # Fallback to rule-based description
-            return self._generate_fallback_style_description(style_analysis)
-
-        except Exception as e:
-            self.logger.error(f"Error generating style description: {e}")
-            return self._generate_fallback_style_description(style_analysis)
-
-    def _prepare_style_summary(self, style_analysis: Dict[str, Any]) -> str:
-        """Prepare style analysis summary for LLM."""
-        summary_parts = []
-        
-        # Emoji usage
-        emoji_freq = style_analysis.get("emoji_usage", {}).get("frequency", 0)
-        if emoji_freq > 1:
-            summary_parts.append(f"Uses emojis frequently ({emoji_freq:.1f} per message)")
-        elif emoji_freq > 0.5:
-            summary_parts.append("Uses emojis moderately")
-        else:
-            summary_parts.append("Rarely uses emojis")
-        
-        # Message length
-        avg_length = style_analysis.get("message_length", {}).get("avg_length", 0)
-        if avg_length > 100:
-            summary_parts.append("Writes long, detailed messages")
-        elif avg_length > 50:
-            summary_parts.append("Writes medium-length messages")
-        else:
-            summary_parts.append("Writes short, concise messages")
-        
-        # Punctuation
-        excl_freq = style_analysis.get("punctuation_patterns", {}).get("exclamation_frequency", 0)
-        if excl_freq > 0.5:
-            summary_parts.append("Uses exclamation marks frequently (enthusiastic tone)")
-        
-        # Informal language
-        informal_score = style_analysis.get("slang_and_informal", {})
-        contraction_freq = informal_score.get("contractions_frequency", 0)
-        slang_freq = informal_score.get("slang_frequency", 0)
-        
-        if contraction_freq > 0.5 or slang_freq > 0.1:
-            summary_parts.append("Uses informal language and contractions")
-        else:
-            summary_parts.append("Uses formal language")
-        
-        return "; ".join(summary_parts)
-
-    def _generate_fallback_style_description(self, style_analysis: Dict[str, Any]) -> str:
-        """Generate style description using rules when LLM is unavailable."""
-        description_parts = []
-        
-        # Determine formality
-        informal_score = style_analysis.get("slang_and_informal", {})
-        contraction_freq = informal_score.get("contractions_frequency", 0)
-        
-        if contraction_freq > 0.5:
-            description_parts.append("casual and conversational")
-        else:
-            description_parts.append("formal and structured")
-        
-        # Emoji usage
-        emoji_freq = style_analysis.get("emoji_usage", {}).get("frequency", 0)
-        if emoji_freq > 1:
-            description_parts.append("expressive with frequent emoji use")
-        elif emoji_freq > 0.5:
-            description_parts.append("occasionally uses emojis")
-        
-        # Message length preference
-        avg_length = style_analysis.get("message_length", {}).get("avg_length", 0)
-        if avg_length > 100:
-            description_parts.append("prefers detailed explanations")
-        else:
-            description_parts.append("concise and to-the-point")
-        
-        return f"Communication style is {', '.join(description_parts)}."
-
-    async def _generate_user_system_prompt(self, interests_analysis: Dict[str, Any]) -> str:
-        """Generate system prompt based on user's interests and topics."""
-        try:
-            interests = interests_analysis.get("interests", [])
-            topics = interests_analysis.get("topics", [])
-            
-            if not interests and not topics:
-                return "You are a knowledgeable person interested in technology and current events."
-            
-            # Prepare context for LLM
-            context = {
-                "main_topics": topics[:5],
-                "key_interests": interests[:10]
+            # Build vibe profile
+            vibe_profile = {
+                "tone": tone,
+                "verbosity": verbosity,
+                "emoji_usage": emoji_usage,
+                "common_phrases": common_phrases[:10],  # Limit to top 10
+                "topics_of_interest": interests_analysis.get("topics", [])[:10],
+                "communication_patterns": {
+                    "avg_message_length": avg_length,
+                    "contraction_frequency": contraction_freq,
+                    "emoji_frequency": emoji_freq,
+                    "exclamation_frequency": excl_freq,
+                    "formality_score": 1.0 - contraction_freq  # Inverse relationship
+                }
             }
             
-            prompt = f"""Create a brief system prompt (1-2 sentences) for an AI that should act as someone with these interests and topic preferences:
-
-Main Topics: {', '.join(context['main_topics'])}
-Key Interests: {', '.join(context['key_interests'])}
-
-The prompt should establish the AI's knowledge focus and perspective for generating comments that would be authentic to someone with these interests.
-
-System Prompt:"""
-
-            response = await self.gemini_service.generate_content(prompt)
-            if response and response.get('content'):
-                return response.get('content', '').strip()
+            return vibe_profile
             
-            # Fallback to rule-based prompt
-            return self._generate_fallback_system_prompt(interests, topics)
-
         except Exception as e:
-            self.logger.error(f"Error generating system prompt: {e}")
-            return self._generate_fallback_system_prompt(interests_analysis.get("interests", []), interests_analysis.get("topics", []))
+            self.logger.error(f"Error generating vibe profile: {e}", exc_info=True)
+            # Return default vibe profile
+            return {
+                "tone": "neutral",
+                "verbosity": "moderate", 
+                "emoji_usage": "light",
+                "common_phrases": [],
+                "topics_of_interest": interests_analysis.get("topics", [])[:5],
+                "communication_patterns": {
+                    "avg_message_length": 50,
+                    "contraction_frequency": 0.3,
+                    "emoji_frequency": 0.2,
+                    "exclamation_frequency": 0.1,
+                    "formality_score": 0.7
+                }
+            }
 
-    def _generate_fallback_system_prompt(self, interests: List[str], topics: List[str]) -> str:
-        """Generate system prompt using rules when LLM is unavailable."""
-        if topics:
-            main_topics = topics[:3]
-            return f"You are knowledgeable about {', '.join(main_topics)} and actively follow developments in these areas."
-        elif interests:
-            main_interests = interests[:5]
-            return f"You are interested in {', '.join(main_interests)} and engage with content related to these topics."
-        else:
-            return "You are a knowledgeable person with diverse interests in technology and current events."
+    async def _extract_common_phrases(self, user_messages: List[Dict]) -> List[str]:
+        """Extract common phrases and expressions from user messages."""
+        try:
+            if not user_messages:
+                return []
+                
+            # Extract text from messages
+            texts = [msg.get('text', '') for msg in user_messages if msg.get('text')]
+            combined_text = ' '.join(texts).lower()
+            
+            # Simple phrase extraction (would be enhanced with proper NLP)
+            import re
+            from collections import Counter
+            
+            # Find repeated multi-word expressions
+            phrases = []
+            
+            # Extract 2-4 word phrases
+            for phrase_length in [2, 3, 4]:
+                words = combined_text.split()
+                for i in range(len(words) - phrase_length + 1):
+                    phrase = ' '.join(words[i:i + phrase_length])
+                    # Filter meaningful phrases
+                    if (len(phrase) > 8 and 
+                        not re.match(r'^(the|and|but|or|so|if|when|where|what|how)', phrase) and
+                        not re.match(r'.*[0-9].*', phrase)):
+                        phrases.append(phrase)
+            
+            # Count and return most common
+            phrase_counts = Counter(phrases)
+            common_phrases = [phrase for phrase, count in phrase_counts.most_common(20) if count > 1]
+            
+            return common_phrases
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting common phrases: {e}", exc_info=True)
+            return []
 
     def _get_default_style_analysis(self) -> Dict[str, Any]:
         """Return default style analysis when no data is available."""

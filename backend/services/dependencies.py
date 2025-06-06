@@ -25,6 +25,7 @@ from services.domain.telegram_messenger.messages_service import (
 )
 from services.domain.user_context_analysis_service import UserContextAnalysisService
 from services.domain.user_service import UserService
+from services.domain.draft_generation_service import DraftGenerationService
 from services.external.gemini_service import GeminiService
 from services.external.langchain_service import LangChainService
 from services.external.s3_client import S3Client
@@ -42,7 +43,9 @@ from services.repositories import (
 )
 from services.repositories.ai_dialog_repository import AIDialogRepository
 from services.repositories.ai_request_repository import AIRequestRepository
+from services.repositories.ai_profile_repository import AIProfileRepository
 from services.repositories.draft_comment_repository import DraftCommentRepository
+from services.repositories.negative_feedback_repository import NegativeFeedbackRepository
 from services.repositories.management.person_repository import PersonRepository
 from services.repositories.refresh_token_repository import RefreshTokenRepository
 from services.repositories.telegram.message_repository import (
@@ -118,7 +121,9 @@ container.register(ParticipantRepository, ParticipantRepository)
 container.register(PersonRepository, PersonRepository)
 container.register(AIDialogRepository, AIDialogRepository)
 container.register(AIRequestRepository, AIRequestRepository)
+container.register(AIProfileRepository, AIProfileRepository)
 container.register(DraftCommentRepository, DraftCommentRepository)
+container.register(NegativeFeedbackRepository, NegativeFeedbackRepository)
 container.register(RefreshTokenRepository, RefreshTokenRepository)
 
 # Register external services
@@ -334,11 +339,22 @@ def get_jwt_service() -> JWTService:
 
 
 def get_refactored_telethon_client_service() -> RefactoredTelethonClientService:
-    """Get RefactoredTelethonClientService instance with dependencies."""
+    """Get RefactoredTelethonClientService instance."""
+    return RefactoredTelethonClientService()
+
+
+def get_draft_generation_service() -> DraftGenerationService:
+    """Get DraftGenerationService instance with dependencies."""
     user_repository = container.resolve(UserRepository)
-    return RefactoredTelethonClientService(
+    karma_service = get_karma_service()
+    telethon_service = container.resolve(TelethonService)
+    websocket_service = get_websocket_service()
+    
+    return DraftGenerationService(
         user_repository=user_repository,
-        container=container
+        karma_service=karma_service,
+        telethon_service=telethon_service,
+        websocket_service=websocket_service
     )
 
 
@@ -370,6 +386,7 @@ container.register(RedisDataService, get_redis_data_service)
 container.register(TranscribeService, get_transcribe_service)
 container.register(JWTService, get_jwt_service)
 container.register(RefactoredTelethonClientService, get_refactored_telethon_client_service)
+container.register(DraftGenerationService, get_draft_generation_service)
 
 # Initialize repositories and services
 container.initialize()

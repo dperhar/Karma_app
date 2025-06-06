@@ -212,64 +212,259 @@ class KarmaService(BaseService):
             drafts = await self.draft_comment_repository.get_drafts_by_user(user_id, status)
             return [DraftCommentResponse.model_validate(draft) for draft in drafts]
         except Exception as e:
-            self.logger.error(f"Error getting drafts for user: {e}", exc_info=True)
+            self.logger.error(f"Error getting drafts for user {user_id}: {e}", exc_info=True)
             return []
 
-    def _is_post_relevant(self, post_data: Dict[str, Any], user: User) -> bool:
-        """Check if post is relevant to user's persona interests."""
-        if not user.persona_interests_json:
-            return True  # If no interests specified, consider all posts relevant
-
+    async def regenerate_draft_with_feedback(
+        self,
+        draft_id: str,
+        regenerate_request: Any  # RegenerateRequest
+    ) -> Optional[DraftCommentResponse]:
+        """Regenerate a draft comment incorporating negative feedback (Not My Vibe)."""
         try:
-            interests = json.loads(user.persona_interests_json) if isinstance(user.persona_interests_json, str) else user.persona_interests_json
-            if not interests:
+            # Get the original draft
+            draft = await self.draft_comment_repository.get_draft_comment(draft_id)
+            if not draft:
+                self.logger.error(f"Draft comment not found: {draft_id}")
+                return None
+
+            # Save negative feedback
+            await self._save_negative_feedback(draft, regenerate_request)
+
+            # Get user and context
+            user = await self.user_repository.get_user(draft.user_id)
+            if not user:
+                self.logger.error(f"User not found: {draft.user_id}")
+                return None
+
+            # Reconstruct post data from draft
+            post_data = {
+                'text': draft.original_post_content or draft.original_post_text_preview,
+                'url': draft.original_post_url,
+                'channel': {'title': 'Unknown'}  # Would need to be stored/retrieved
+            }
+
+            # Get negative feedback context for this user
+            negative_feedback_context = await self._get_negative_feedback_context(draft.user_id)
+
+            # Generate new AI comment with negative feedback incorporated
+            new_draft_text = await self._generate_ai_comment_with_feedback(
+                post_data, 
+                user, 
+                negative_feedback_context,
+                regenerate_request
+            )
+
+            if not new_draft_text:
+                self.logger.error("Failed to regenerate AI comment")
+                return None
+
+            # Update the draft with new text
+            updated_draft = await self.draft_comment_repository.update_draft_comment(
+                draft_id,
+                draft_text=new_draft_text,
+                status=DraftStatus.DRAFT,  # Reset to draft status
+                generation_params={
+                    **draft.generation_params,
+                    "regenerated_at": datetime.now().isoformat(),
+                    "negative_feedback_incorporated": True,
+                    "rejection_reason": regenerate_request.rejection_reason
+                }
+            )
+
+            if not updated_draft:
+                return None
+
+            response = DraftCommentResponse.model_validate(updated_draft)
+
+            # Send WebSocket notification
+            await self._send_draft_notification(
+                draft.user_id, 
+                "draft_regenerated", 
+                response.model_dump(mode='json')
+            )
+
+            self.logger.info(f"Regenerated draft comment {draft_id} for user {draft.user_id}")
+            return response
+
+        except Exception as e:
+            self.logger.error(f"Error regenerating draft comment: {e}", exc_info=True)
+            return None
+
+    async def _save_negative_feedback(self, draft: Any, regenerate_request: Any):
+        """Save negative feedback to improve future generations."""
+        try:
+            from services.repositories.negative_feedback_repository import NegativeFeedbackRepository
+            from services.dependencies import container
+            
+            feedback_repo = container.resolve(NegativeFeedbackRepository)
+            
+            await feedback_repo.create_negative_feedback(
+                user_id=draft.user_id,
+                rejected_comment_text=draft.draft_text,
+                original_post_content=draft.original_post_content,
+                original_post_url=draft.original_post_url,
+                rejection_reason=regenerate_request.rejection_reason,
+                ai_model_used=draft.ai_model_used,
+                draft_comment_id=draft.id
+            )
+            
+            self.logger.info(f"Saved negative feedback for draft {draft.id}")
+            
+        except Exception as e:
+            self.logger.error(f"Error saving negative feedback: {e}", exc_info=True)
+
+    async def _get_negative_feedback_context(self, user_id: str) -> List[Dict[str, Any]]:
+        """Get negative feedback context for improving AI generation."""
+        try:
+            from services.repositories.negative_feedback_repository import NegativeFeedbackRepository
+            from services.dependencies import container
+            
+            feedback_repo = container.resolve(NegativeFeedbackRepository)
+            
+            # Get recent negative feedback (last 10-20 examples)
+            negative_feedback = await feedback_repo.get_negative_feedback_by_user(
+                user_id, 
+                limit=20
+            )
+            
+            return [
+                {
+                    "rejected_comment": fb.rejected_comment_text,
+                    "original_post": fb.original_post_content,
+                    "reason": fb.rejection_reason
+                }
+                for fb in negative_feedback
+            ]
+            
+        except Exception as e:
+            self.logger.error(f"Error getting negative feedback context: {e}", exc_info=True)
+            return []
+
+    async def _generate_ai_comment_with_feedback(
+        self,
+        post_data: Dict[str, Any],
+        user: User,
+        negative_feedback_context: List[Dict[str, Any]],
+        regenerate_request: Any
+    ) -> Optional[str]:
+        """Generate AI comment incorporating negative feedback."""
+        try:
+            # Construct enhanced prompt with negative feedback
+            prompt = self._construct_prompt_with_feedback(
+                post_data, 
+                user, 
+                negative_feedback_context,
+                regenerate_request
+            )
+
+            # Use preferred AI model
+            if user.preferred_ai_model == AIRequestModel.GEMINI_PRO:
+                result = await self.gemini_service.generate_text(prompt)
+                return result.get('text') if result.get('success') else None
+            else:
+                # Fallback or other models
+                result = await self.langchain_service.generate_response(prompt)
+                return result.get('content') if result.get('success') else None
+
+        except Exception as e:
+            self.logger.error(f"Error generating AI comment with feedback: {e}", exc_info=True)
+            return None
+
+    def _construct_prompt_with_feedback(
+        self,
+        post_data: Dict[str, Any],
+        user: User,
+        negative_feedback_context: List[Dict[str, Any]],
+        regenerate_request: Any
+    ) -> str:
+        """Construct AI prompt incorporating negative feedback."""
+        base_prompt = self._construct_prompt(post_data, user)
+        
+        # Add negative feedback section
+        if negative_feedback_context:
+            feedback_section = "\n\n## IMPORTANT: Learn from Previous Rejections\n"
+            feedback_section += "The user has rejected these types of responses in the past. DO NOT generate similar content:\n\n"
+            
+            for i, feedback in enumerate(negative_feedback_context[:10], 1):
+                feedback_section += f"### Rejection Example {i}:\n"
+                feedback_section += f"Original Post: {feedback['original_post'][:200]}...\n"
+                feedback_section += f"REJECTED Response: {feedback['rejected_comment']}\n"
+                if feedback['reason']:
+                    feedback_section += f"Rejection Reason: {feedback['reason']}\n"
+                feedback_section += "\n"
+            
+            feedback_section += "Based on these rejections, avoid similar tone, style, or approach.\n"
+            base_prompt += feedback_section
+
+        # Add specific regeneration instructions
+        if regenerate_request.rejection_reason:
+            base_prompt += f"\n\n## Specific Issue to Fix:\n{regenerate_request.rejection_reason}\n"
+        
+        if regenerate_request.custom_instructions:
+            base_prompt += f"\n\n## Additional Instructions:\n{regenerate_request.custom_instructions}\n"
+
+        base_prompt += "\n\nGenerate a NEW comment that addresses the feedback above and avoids the rejected patterns."
+        
+        return base_prompt
+
+    def _is_post_relevant(self, post_data: Dict[str, Any], user: User) -> bool:
+        """Check if post is relevant to user's vibe profile interests."""
+        try:
+            # Get post content
+            post_text = post_data.get('text', '').lower()
+            if not post_text or len(post_text) < 10:
+                return False
+
+            # Get user's AI profile
+            if not user.ai_profile:
+                self.logger.warning(f"User {user.id} has no AI profile for relevance check")
+                # For users without AI profile, accept all posts (they need to build their profile)
                 return True
 
-            post_text = post_data.get('text', '').lower()
-            channel_title = post_data.get('channel', {}).get('title', '').lower()
-            combined_text = post_text + ' ' + channel_title
-            
-            # Check for direct keyword matches
-            for interest in interests:
-                if isinstance(interest, str) and interest.lower() in combined_text:
-                    return True
-            
-            # Check for related technology terms if user is interested in technology
-            tech_interests = ['technology', 'artificial intelligence', 'programming', 'ai', 'machine learning']
-            user_has_tech_interests = any(interest.lower() in [ti.lower() for ti in tech_interests] for interest in interests if isinstance(interest, str))
-            
-            if user_has_tech_interests:
-                tech_keywords = [
-                    'ai', 'artificial intelligence', 'machine learning', 'ml', 'deep learning',
-                    'neural network', 'algorithm', 'programming', 'code', 'coding', 'software',
-                    'tech', 'technology', 'computer', 'digital', 'innovation', 'startup',
-                    'openai', 'gpt', 'llm', 'model', 'training', 'data science', 'python',
-                    'development', 'breakthrough', 'advancement', 'computing', 'processor'
-                ]
-                
-                for keyword in tech_keywords:
-                    if keyword in combined_text:
-                        return True
-            
-            # Check for business-related terms if user is interested in business/startups
-            business_interests = ['business', 'startup', 'startups', 'entrepreneur', 'finance', 'investment']
-            user_has_business_interests = any(interest.lower() in [bi.lower() for bi in business_interests] for interest in interests if isinstance(interest, str))
-            
-            if user_has_business_interests:
-                business_keywords = [
-                    'business', 'startup', 'company', 'entrepreneur', 'investment', 'funding',
-                    'venture', 'market', 'industry', 'revenue', 'growth', 'scale', 'enterprise'
-                ]
-                
-                for keyword in business_keywords:
-                    if keyword in combined_text:
-                        return True
+            vibe_profile = user.ai_profile.vibe_profile_json
+            if not vibe_profile:
+                self.logger.warning(f"User {user.id} has AI profile but no vibe profile data")
+                return True
 
+            # Get topics of interest from vibe profile
+            topics_of_interest = vibe_profile.get('topics_of_interest', [])
+            if not topics_of_interest:
+                # If no specific topics, accept the post (let user decide)
+                return True
+
+            # Check if post content matches any of the user's interests
+            for topic in topics_of_interest:
+                if topic.lower() in post_text:
+                    self.logger.info(f"Post relevant to user {user.id}: matches topic '{topic}'")
+                    return True
+
+            # Check for keyword overlap (more sophisticated matching)
+            post_keywords = set(post_text.split())
+            interest_keywords = set()
+            for topic in topics_of_interest:
+                interest_keywords.update(topic.lower().split())
+
+            # If there's some overlap, consider it relevant
+            overlap = post_keywords.intersection(interest_keywords)
+            if len(overlap) >= 2:  # At least 2 matching keywords
+                self.logger.info(f"Post relevant to user {user.id}: keyword overlap {overlap}")
+                return True
+
+            # If channel is in user's preferred topics, consider it relevant
+            channel_name = post_data.get('channel', {}).get('title', '').lower()
+            for topic in topics_of_interest:
+                if topic.lower() in channel_name:
+                    self.logger.info(f"Post relevant to user {user.id}: channel '{channel_name}' matches topic '{topic}'")
+                    return True
+
+            self.logger.debug(f"Post not relevant to user {user.id} interests: {topics_of_interest}")
             return False
 
         except Exception as e:
-            self.logger.error(f"Error checking post relevance: {e}")
-            return True  # Default to relevant if check fails
+            self.logger.error(f"Error checking post relevance: {e}", exc_info=True)
+            # On error, default to accepting the post
+            return True
 
     async def _generate_ai_comment(
         self,
@@ -316,49 +511,93 @@ class KarmaService(BaseService):
         user: User,
         context_data: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Construct AI prompt for comment generation using user's personalized context."""
-        # Use user's system prompt if available, otherwise fallback
-        if user.user_system_prompt:
-            system_context = user.user_system_prompt
-        else:
-            # Fallback for users without analyzed context
-            persona_name = user.persona_name or "a tech enthusiast"
-            interests = []
-            if user.persona_interests_json:
-                try:
-                    interests = json.loads(user.persona_interests_json) if isinstance(user.persona_interests_json, str) else user.persona_interests_json
-                except:
-                    interests = []  # Ensure interests is a list
-            system_context = f"You are {persona_name}, knowledgeable about {', '.join(str(i) for i in interests[:5]) if interests else 'technology and innovation'}."
+        """Construct AI prompt using user's vibe profile."""
+        # Base system context
+        prompt = "You are an AI assistant helping to generate authentic social media comments.\n\n"
         
-        # Use user's communication style if available
-        style_instruction = ""
-        if user.persona_style_description:
-            style_instruction = f"\nYour communication style: {user.persona_style_description}"
+        # Add vibe profile context if available
+        if user.ai_profile and user.ai_profile.vibe_profile_json:
+            vibe_profile = user.ai_profile.vibe_profile_json
+            
+            prompt += "## User Vibe Profile\n"
+            prompt += f"Tone: {vibe_profile.get('tone', 'neutral')}\n"
+            prompt += f"Verbosity: {vibe_profile.get('verbosity', 'moderate')}\n"
+            prompt += f"Emoji Usage: {vibe_profile.get('emoji_usage', 'light')}\n"
+            
+            topics = vibe_profile.get('topics_of_interest', [])
+            if topics:
+                prompt += f"Topics of Interest: {', '.join(topics[:5])}\n"
+                
+            phrases = vibe_profile.get('common_phrases', [])
+            if phrases:
+                prompt += f"Common Phrases: {', '.join(phrases[:3])}\n"
+                
+            # Communication patterns
+            comm_patterns = vibe_profile.get('communication_patterns', {})
+            if comm_patterns:
+                avg_length = comm_patterns.get('avg_message_length', 50)
+                formality = comm_patterns.get('formality_score', 0.5)
+                prompt += f"Typical message length: {int(avg_length)} characters\n"
+                prompt += f"Formality level: {'formal' if formality > 0.7 else 'casual' if formality < 0.3 else 'balanced'}\n"
         else:
-            style_instruction = "\nYour communication style: concise and insightful"
+            # Fallback to basic persona if no vibe profile
+            prompt += f"## User Persona\n"
+            prompt += f"Name: {user.persona_name or 'Default User'}\n"
+            if user.persona_style_description:
+                prompt += f"Style: {user.persona_style_description}\n"
 
+        # Add post context
+        prompt += f"\n## Post to Comment On\n"
         post_text = post_data.get('text', '')
-        channel_name = post_data.get('channel', {}).get('title', 'a channel')
+        prompt += f"Post: {post_text}\n"
         
-        # Enhanced prompt using user's digital twin data
-        prompt = f"""{system_context}
+        if post_data.get('channel'):
+            channel_info = post_data['channel']
+            prompt += f"Channel: {channel_info.get('title', 'Unknown')}\n"
+            
+        # Add any additional context
+        if context_data:
+            prompt += f"\n## Additional Context\n"
+            if context_data.get('recent_messages'):
+                prompt += "Recent channel activity:\n"
+                for msg in context_data['recent_messages'][-3:]:  # Last 3 messages
+                    prompt += f"- {msg.get('text', '')[:100]}...\n"
 
-You are writing a comment on a Telegram post.{style_instruction}
+        # Instructions
+        prompt += f"\n## Instructions\n"
+        prompt += "Generate a comment that:\n"
+        prompt += "1. Matches the user's communication style and tone\n"
+        prompt += "2. Is relevant and adds value to the conversation\n"
+        prompt += "3. Feels authentic and natural\n"
+        prompt += "4. Is appropriate for the platform and context\n"
+        
+        if user.ai_profile and user.ai_profile.vibe_profile_json:
+            vibe_profile = user.ai_profile.vibe_profile_json
+            tone = vibe_profile.get('tone', 'neutral')
+            verbosity = vibe_profile.get('verbosity', 'moderate')
+            emoji_usage = vibe_profile.get('emoji_usage', 'light')
+            
+            if tone == 'casual':
+                prompt += "5. Use a casual, conversational tone\n"
+            elif tone == 'formal':
+                prompt += "5. Use a formal, professional tone\n"
+            elif tone == 'enthusiastic':
+                prompt += "5. Show enthusiasm and energy\n"
+                
+            if verbosity == 'brief':
+                prompt += "6. Keep the comment concise and to the point\n"
+            elif verbosity == 'verbose':
+                prompt += "6. Provide detailed thoughts and explanations\n"
+                
+            if emoji_usage == 'heavy':
+                prompt += "7. Use emojis liberally to express emotions\n"
+            elif emoji_usage == 'light':
+                prompt += "7. Use emojis sparingly but appropriately\n"
+            elif emoji_usage == 'none':
+                prompt += "7. Avoid using emojis\n"
 
-Original post from {channel_name}:
-"{post_text}"
-
-Write a thoughtful comment that:
-1. Reflects your knowledge and perspective based on your interests
-2. Matches your natural communication style
-3. Adds value to the conversation
-4. Is appropriate for a public Telegram channel
-5. Is 1-3 sentences long
-6. Sounds authentic to how you typically write
-
-Comment:"""
-
+        prompt += "\nGenerate only the comment text, nothing else:"
+        
         return prompt
 
     async def _send_draft_notification(self, user_id: str, event: str, data: Dict[str, Any]):

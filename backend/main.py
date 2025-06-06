@@ -22,6 +22,7 @@ from routes.api.auth.tokens import router as tokens_router
 from routes.api.telethon_monitoring import router as telethon_monitoring_router
 from services.dependencies import container
 from services.domain.data_fetching_service import DataFetchingService
+from services.domain.draft_generation_service import DraftGenerationService
 from services.domain.scheduler_service import SchedulerService
 from services.external.telethon_client import TelethonClient
 from services.external.telethon_service import TelethonService
@@ -67,6 +68,7 @@ async def initialize_services(app: FastAPI):
         
         # Initialize data fetching service and scheduler
         data_fetching_service = container.resolve(DataFetchingService)
+        draft_generation_service = container.resolve(DraftGenerationService)
         scheduler_service = SchedulerService()
         
         # Store scheduler in application state for cleanup
@@ -78,6 +80,16 @@ async def initialize_services(app: FastAPI):
             min_interval_minutes=30,
             max_interval_minutes=240,
             task_name="telegram_data_fetch"
+        )
+        
+        # Start periodic draft generation task
+        draft_scheduler = SchedulerService()
+        app.state.draft_scheduler = draft_scheduler
+        await draft_scheduler.start_periodic_task(
+            task_func=draft_generation_service.check_for_new_posts,
+            min_interval_minutes=15,  # Check more frequently for drafts
+            max_interval_minutes=60,
+            task_name="draft_generation"
         )
         
         logger.info("Comment Management System services initialized successfully")
@@ -103,9 +115,14 @@ async def lifespan(app: FastAPI):
             scheduler_service = getattr(app.state, 'scheduler_service', None)
             if scheduler_service:
                 await scheduler_service.stop()
-                logger.info("Scheduler stopped")
+                logger.info("Data fetching scheduler stopped")
+                
+            draft_scheduler = getattr(app.state, 'draft_scheduler', None)
+            if draft_scheduler:
+                await draft_scheduler.stop()
+                logger.info("Draft generation scheduler stopped")
         except Exception as e:
-            logger.error(f"Error stopping scheduler: {e}")
+            logger.error(f"Error stopping schedulers: {e}")
             
         # Disconnect all Telethon clients
         try:
