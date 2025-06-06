@@ -31,27 +31,45 @@ export function useTelegramMock(): void {
     console.log('useTelegramMock.ts:31 Retrieved launch params:', lp);
   } catch (e) {
     console.log('Failed to retrieve launch params, applying mock data');
+    
+    // Create simple mock data without hash validation
+    const mockUser = {
+      id: 118672216,
+      first_name: "🔥A1🔥",
+      last_name: "",
+      username: "a1turbotop",
+      language_code: "ru",
+      is_premium: true,
+      allows_write_to_pm: true,
+    };
+
+    // Create initDataRaw without hash for development
     const initDataRaw = new URLSearchParams([
-      [
-        "user",
-        JSON.stringify({
-          id: 118672216,
-          first_name: "🔥A1🔥",
-          last_name: "",
-          username: "a1turbotop",
-          language_code: "ru",
-          is_premium: true,
-          allows_write_to_pm: true,
-        }),
-      ],
-      ["auth_date", "1735583847"],
-      ["hash", "abcd1234"],
+      ["user", JSON.stringify(mockUser)],
+      ["auth_date", Math.floor(Date.now() / 1000).toString()],
       ["start_param", "debug"],
       ["chat_type", "sender"],
       ["chat_instance", "-1000000000000000000"],
     ]).toString();
 
     console.log('useTelegramMock.ts:52 Created mock initDataRaw:', initDataRaw);
+
+    // Try to parse initData with error handling
+    let initData;
+    try {
+      initData = parseInitData(initDataRaw);
+    } catch (parseError) {
+      console.warn('Failed to parse initData, using fallback mock:', parseError);
+      // Fallback mock data if parsing fails
+      initData = {
+        user: mockUser,
+        auth_date: new Date(),
+        hash: "",
+        start_param: "debug",
+        chat_type: "sender" as const,
+        chat_instance: "-1000000000000000000",
+      };
+    }
 
     lp = {
       themeParams: {
@@ -69,7 +87,7 @@ export function useTelegramMock(): void {
         subtitleTextColor: "#708499",
         textColor: "#f5f5f5",
       },
-      initData: parseInitData(initDataRaw),
+      initData,
       initDataRaw,
       version: "8",
       platform: "tdesktop",
