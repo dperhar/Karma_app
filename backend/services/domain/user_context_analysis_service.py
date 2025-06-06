@@ -12,9 +12,10 @@ from services.base.base_service import BaseService
 from services.external.gemini_service import GeminiService
 from services.external.telethon_service import TelethonService
 from services.repositories.user_repository import UserRepository
-from services.repositories.ai_profile_repository import AIProfileRepository
-from services.dependencies import container
-from models.ai.ai_profile import AnalysisStatus
+# Remove circular imports - these will be imported within functions
+# from services.repositories.ai_profile_repository import AIProfileRepository
+# from services.dependencies import container
+# from models.ai.ai_profile import AnalysisStatus
 
 
 class UserContextAnalysisService(BaseService):
@@ -43,6 +44,11 @@ class UserContextAnalysisService(BaseService):
             Dict with analysis results and status
         """
         try:
+            # Import here to avoid circular imports
+            from services.repositories.ai_profile_repository import AIProfileRepository
+            from services.dependencies import container
+            from models.ai.ai_profile import AnalysisStatus
+            
             ai_profile_repo = container.resolve(AIProfileRepository)
             
             # Get or create AI profile

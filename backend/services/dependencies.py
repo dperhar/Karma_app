@@ -340,7 +340,11 @@ def get_jwt_service() -> JWTService:
 
 def get_refactored_telethon_client_service() -> RefactoredTelethonClientService:
     """Get RefactoredTelethonClientService instance."""
-    return RefactoredTelethonClientService()
+    user_repository = container.resolve(UserRepository)
+    return RefactoredTelethonClientService(
+        user_repository=user_repository,
+        container=container
+    )
 
 
 def get_draft_generation_service() -> DraftGenerationService:
