@@ -11,6 +11,7 @@ from schemas.draft_comment import (
     DraftCommentResponse,
     DraftCommentUpdate,
 )
+from schemas.negative_feedback import RegenerateRequest
 from services.dependencies import container
 from services.domain.karma_service import KarmaService
 
@@ -233,4 +234,57 @@ async def post_draft_comment(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error posting draft comment"
+        ) from e
+
+
+@router.post("/{draft_id}/regenerate", response_model=APIResponse[DraftCommentResponse])
+async def regenerate_draft_comment(
+    draft_id: str,
+    regenerate_request: RegenerateRequest,
+    current_user=Depends(get_current_user),
+    karma_service: KarmaService = Depends(get_karma_service),
+) -> APIResponse[DraftCommentResponse]:
+    """Regenerate a draft comment after negative feedback (Not My Vibe)."""
+    try:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required"
+            )
+
+        # Verify ownership
+        drafts = await karma_service.get_drafts_by_user(current_user.id)
+        draft = next((d for d in drafts if d.id == draft_id), None)
+        
+        if not draft:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Draft comment not found"
+            )
+
+        # Regenerate the draft with negative feedback
+        regenerated_draft = await karma_service.regenerate_draft_with_feedback(
+            draft_id, 
+            regenerate_request
+        )
+        
+        if not regenerated_draft:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to regenerate draft comment"
+            )
+
+        return APIResponse(
+            success=True,
+            data=regenerated_draft,
+            message="Draft comment regenerated successfully"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error regenerating draft comment: {e!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error regenerating draft comment"
         ) from e 
