@@ -34,7 +34,8 @@ class User(TimestampMixin, DBBase):
     first_name = Column(String, nullable=True)
     last_name = Column(String, nullable=True)
     username = Column(String, nullable=True)
-    telegram_session_string = Column(String, nullable=True)
+    
+    # Removed telegram_session_string - now handled by TelegramConnection model
     last_telegram_auth_at = Column(DateTime, nullable=True, comment="Timestamp of the last successful Telegram authentication")
     email = Column(String, nullable=True)
     telegram_chats_load_limit = Column(Integer, nullable=True, default=20)  # Reduced default for safety
@@ -45,7 +46,7 @@ class User(TimestampMixin, DBBase):
     )
     preferred_message_context_size = Column(Integer, nullable=True, default=50)
     
-    # Digital Twin / User-specific AI persona fields
+    # Digital Twin / User-specific AI persona fields (legacy - moved to AIProfile)
     persona_name = Column(String, nullable=True, default="Default User")
     persona_style_description = Column(
         Text, 
@@ -88,11 +89,25 @@ class User(TimestampMixin, DBBase):
 
     # Relationships
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+    telegram_connection = relationship("TelegramConnection", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    ai_profile = relationship("AIProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    draft_comments = relationship("DraftComment", back_populates="user", cascade="all, delete-orphan")
+    negative_feedback = relationship("NegativeFeedback", back_populates="user", cascade="all, delete-orphan")
 
     def has_valid_tg_session(self) -> bool:
         """Check if the user has a valid Telegram session."""
-        return self.telegram_session_string is not None
+        return (
+            self.telegram_connection is not None 
+            and self.telegram_connection.is_session_valid()
+        )
 
     def needs_initial_sync(self) -> bool:
         """Check if user needs initial synchronization."""
         return self.initial_sync_status == UserInitialSyncStatus.PENDING
+
+    def needs_vibe_analysis(self) -> bool:
+        """Check if user needs vibe profile analysis."""
+        return (
+            self.ai_profile is None 
+            or self.ai_profile.needs_analysis()
+        )

@@ -12,6 +12,8 @@ class DraftCommentBase(BaseModel):
     """Base schema for draft comment."""
     persona_name: Optional[str] = None
     ai_model_used: Optional[str] = None
+    original_post_url: Optional[str] = None
+    original_post_content: Optional[str] = None
     original_post_text_preview: Optional[str] = None
     draft_text: str
     edited_text: Optional[str] = None
