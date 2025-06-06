@@ -32,7 +32,12 @@ class DraftComment(DBBase, TimestampMixin):
     persona_name = Column(String, nullable=True)  # e.g., "Mark Zuckerberg"
     ai_model_used = Column(String, nullable=True)  # e.g., "gemini-pro", "gpt-4.1-mini"
     
+    # Original post information - aligned with vision
+    original_post_url = Column(String, nullable=True, comment="URL of the original post")
+    original_post_content = Column(Text, nullable=True, comment="Full content of the original post")
     original_post_text_preview = Column(Text, nullable=True)  # Snippet of the original post
+    
+    # Comment content
     draft_text = Column(Text, nullable=False)  # AI generated text
     edited_text = Column(Text, nullable=True)  # User-edited text
     final_text_to_post = Column(Text, nullable=True)  # Text that was/is to be posted
@@ -45,4 +50,5 @@ class DraftComment(DBBase, TimestampMixin):
 
     # Relationships
     original_message = relationship("TelegramMessengerMessage")
-    user = relationship("User") 
+    user = relationship("User")
+    negative_feedback = relationship("NegativeFeedback", back_populates="draft_comment") 

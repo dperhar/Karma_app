@@ -29,6 +29,15 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_DB = int(os.getenv("REDIS_DB", 0))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
+
+# Security & Encryption
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+if not ENCRYPTION_KEY:
+    logging.warning(
+        "ENCRYPTION_KEY not set. Generate one with: "
+        "python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+    )
+
 # JWT
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-here")
 JWT_ALGORITHM = "HS256"
