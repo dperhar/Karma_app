@@ -9,20 +9,14 @@ from typing import Dict, Optional, Tuple
 import jwt
 from fastapi import HTTPException, status
 
-from config import (
-    ACCESS_TOKEN_EXPIRE_MINUTES,
-    JWT_ALGORITHM,
-    JWT_SECRET_KEY,
-    REFRESH_TOKEN_EXPIRE_DAYS,
-    REFRESH_TOKEN_SECRET_KEY,
-)
-from models.user.refresh_token_schemas import (
+from app.core.config import settings
+from app.schemas.refresh_token import (
     AccessTokenResponse,
     RefreshTokenCreate,
     TokenPair,
 )
-from services.base.base_service import BaseService
-from services.repositories.refresh_token_repository import RefreshTokenRepository
+from app.services.base_service import BaseService
+from app.repositories.refresh_token_repository import RefreshTokenRepository
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +35,11 @@ class JWTService(BaseService):
         if expires_delta:
             expire = datetime.utcnow() + expires_delta
         else:
-            expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+            expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
             
         to_encode.update({"exp": expire, "type": "access"})
         
-        return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+        return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
     def _create_refresh_token_string(self) -> str:
         """Create a secure random refresh token string."""
@@ -58,7 +52,7 @@ class JWTService(BaseService):
     def verify_access_token(self, token: str) -> Dict:
         """Verify and decode access token."""
         try:
-            payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+            payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
             
             if payload.get("type") != "access":
                 raise HTTPException(
@@ -98,7 +92,7 @@ class JWTService(BaseService):
         refresh_token_hash = self._hash_refresh_token(refresh_token_string)
         
         # Calculate expiry
-        expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        expires_at = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
         
         # Store refresh token in database
         await self.refresh_token_repository.create_refresh_token(
@@ -114,7 +108,7 @@ class JWTService(BaseService):
         return TokenPair(
             access_token=access_token,
             refresh_token=refresh_token_string,
-            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         )
 
     async def refresh_access_token(self, refresh_token: str) -> AccessTokenResponse:
@@ -150,7 +144,7 @@ class JWTService(BaseService):
         
         return AccessTokenResponse(
             access_token=access_token,
-            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         )
 
     async def revoke_refresh_token(self, refresh_token: str) -> bool:
@@ -168,4 +162,15 @@ class JWTService(BaseService):
 
     async def get_user_token_count(self, user_id: str) -> int:
         """Get count of active refresh tokens for a user."""
-        return await self.refresh_token_repository.get_token_count_for_user(user_id) 
+        return await self.refresh_token_repository.get_token_count_for_user(user_id)
+
+    def generate_ws_token(self, user_id: str, expiry_minutes: int = 60 * 24) -> str:
+        """Generate WebSocket token for Centrifugo."""
+        expire = datetime.utcnow() + timedelta(minutes=expiry_minutes)
+        payload = {
+            "sub": user_id,
+            "user_id": user_id,
+            "exp": expire,
+            "type": "websocket"
+        }
+        return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM) 

@@ -6,10 +6,10 @@ try:
     sys.path.insert(0, '/app')
     print("Path added")
 
-    from services.dependencies import container
+    from app.services.dependencies import container
     print("Container imported")
     
-    from services.external.telethon_client import TelethonClient
+    from app.services.telethon_client import TelethonClient
     print("TelethonClient imported")
     
     print("Script completed successfully")

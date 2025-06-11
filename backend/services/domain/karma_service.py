@@ -5,17 +5,17 @@ import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from models.ai.draft_comment import DraftComment, DraftStatus
-from models.ai.ai_request import AIRequestModel
-from models.user.user import User
-from schemas.draft_comment import DraftCommentCreate, DraftCommentUpdate, DraftCommentResponse
-from services.base.base_service import BaseService
-from services.external.gemini_service import GeminiService
-from services.external.langchain_service import LangChainService
-from services.external.telethon_service import TelethonService
-from services.repositories.draft_comment_repository import DraftCommentRepository
-from services.repositories.user_repository import UserRepository
-from services.websocket_service import WebSocketService
+from app.models.draft_comment import DraftComment, DraftStatus
+from app.models.ai_request import AIRequestModel
+from app.models.user import User
+from app.schemas.draft_comment import DraftCommentCreate, DraftCommentUpdate, DraftCommentResponse
+from app.services.base_service import BaseService
+from app.services.gemini_service import GeminiService
+from app.services.langchain_service import LangChainService
+from app.services.telethon_service import TelethonService
+from app.repositories.draft_comment_repository import DraftCommentRepository
+from app.repositories.user_repository import UserRepository
+from app.services.websocket_service import WebSocketService
 
 
 class KarmaService(BaseService):
@@ -78,7 +78,7 @@ class KarmaService(BaseService):
             draft_data = DraftCommentCreate(
                 original_message_id=original_message_id,
                 user_id=user_id,
-                persona_name=user.persona_name or "Default User",
+                persona_name=user.ai_profile.persona_name if user.ai_profile else "Default User",
                 ai_model_used=str(user.preferred_ai_model.value) if user.preferred_ai_model else "gemini-pro",
                 original_post_text_preview=post_data.get('text', '')[:500],
                 draft_text=draft_text,
@@ -294,8 +294,8 @@ class KarmaService(BaseService):
     async def _save_negative_feedback(self, draft: Any, regenerate_request: Any):
         """Save negative feedback to improve future generations."""
         try:
-            from services.repositories.negative_feedback_repository import NegativeFeedbackRepository
-            from services.dependencies import container
+            from app.repositories.negative_feedback_repository import NegativeFeedbackRepository
+            from app.services.dependencies import container
             
             feedback_repo = container.resolve(NegativeFeedbackRepository)
             
@@ -317,8 +317,8 @@ class KarmaService(BaseService):
     async def _get_negative_feedback_context(self, user_id: str) -> List[Dict[str, Any]]:
         """Get negative feedback context for improving AI generation."""
         try:
-            from services.repositories.negative_feedback_repository import NegativeFeedbackRepository
-            from services.dependencies import container
+            from app.repositories.negative_feedback_repository import NegativeFeedbackRepository
+            from app.services.dependencies import container
             
             feedback_repo = container.resolve(NegativeFeedbackRepository)
             

@@ -5,17 +5,17 @@ import json
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
-from models.user.user import User, UserInitialSyncStatus
-from models.telegram_messenger.chat import TelegramMessengerChatSyncStatus
-from services.base.base_service import BaseService
-from services.domain.karma_service import KarmaService
-from services.domain.user_context_analysis_service import UserContextAnalysisService
-from services.external.telethon_client import TelethonClient
-from services.external.telethon_service import TelethonService
-from services.repositories.telegram.chat_repository import ChatRepository
-from services.repositories.telegram.message_repository import MessageRepository
-from services.repositories.user_repository import UserRepository
-from services.websocket_service import WebSocketService
+from app.models.user import User, UserInitialSyncStatus
+from app.models.chat import TelegramMessengerChatSyncStatus
+from app.services.base_service import BaseService
+from app.services.domain.karma_service import KarmaService
+from app.services.user_context_analysis_service import UserContextAnalysisService
+from app.services.telethon_client import TelethonClient
+from app.services.telethon_service import TelethonService
+from app.repositories.chat_repository import ChatRepository
+from app.repositories.message_repository import MessageRepository
+from app.repositories.user_repository import UserRepository
+from app.services.websocket_service import WebSocketService
 
 
 class DataFetchingService(BaseService):
