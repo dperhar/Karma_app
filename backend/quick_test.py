@@ -6,9 +6,9 @@ sys.path.append('/app')
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import select
-from models.user.user import User
-from services.external.telethon_client import TelethonClient
-from services.external.telethon_service import TelethonService
+from app.models.user import User
+from app.services.telethon_client import TelethonClient
+from app.services.telethon_service import TelethonService
 
 async def test_user():
     print('Подключаемся к базе данных...')

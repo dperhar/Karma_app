@@ -4,12 +4,12 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
-from models.user.user import User
-from services.base.base_service import BaseService
-from services.domain.karma_service import KarmaService
-from services.external.telethon_service import TelethonService
-from services.repositories.user_repository import UserRepository
-from services.websocket_service import WebSocketService
+from app.models.user import User
+from app.services.base_service import BaseService
+from app.services.karma_service import KarmaService
+from app.services.telethon_service import TelethonService
+from app.repositories.user_repository import UserRepository
+from app.services.websocket_service import WebSocketService
 
 
 class DraftGenerationService(BaseService):

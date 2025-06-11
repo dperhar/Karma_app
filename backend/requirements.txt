@@ -7,6 +7,7 @@ psycopg2-binary
 bcrypt
 boto3
 cent
+celery
 cryptography
 fastapi
 google-generativeai
@@ -17,8 +18,10 @@ langchain-openai
 openai
 Pillow
 passlib
+punq
 pydantic
 pydantic[email]
+pydantic-settings
 PyJWT
 python-multipart
 redis

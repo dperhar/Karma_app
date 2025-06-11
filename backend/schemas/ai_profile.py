@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any, List
 
 from pydantic import BaseModel
 
-from models.ai.ai_profile import AnalysisStatus
+from app.models.ai_profile import AnalysisStatus
 
 
 class VibeProfileData(BaseModel):

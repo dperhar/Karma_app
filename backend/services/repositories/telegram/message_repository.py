@@ -5,9 +5,9 @@ from typing import Optional
 
 from sqlalchemy import join, select
 
-from models.telegram_messenger.chat_user import TelegramMessengerChatUser
-from models.telegram_messenger.message import TelegramMessengerMessage
-from services.base.base_repository import BaseRepository
+from app.models.chat_user import TelegramMessengerChatUser
+from app.models.telegram_message import TelegramMessengerMessage
+from app.services.base_repository import BaseRepository
 
 
 class MessageRepository(BaseRepository):

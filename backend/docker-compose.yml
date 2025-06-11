@@ -18,6 +18,8 @@ services:
     volumes:
       - .:/app:delegated
       - venv:/app/.venv
+    networks:
+      - default
 
   turbomanager-db:
     image: postgres:16-alpine
@@ -27,18 +29,24 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: turbomanager-new
+    ports:
+      - "5433:5432"
     volumes:
       - turbomanager-new-postgres_data:/var/lib/postgresql/data
+    networks:
+      - default
 
   turbomanager-redis:
     image: redis:7-alpine
     restart: unless-stopped
     container_name: turbomanager-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     command: redis-server --save 60 1 --loglevel warning
     volumes:
       - turbomanager-new-redis_data:/data
+    networks:
+      - default
 
   turbomanager_pgadmin:
     image: dpage/pgadmin4
@@ -50,6 +58,8 @@ services:
       - "5051:80"
     depends_on:
       - turbomanager-db
+    networks:
+      - default
     volumes:
       - turbomanager-new-pgadmin_data:/var/lib/pgadmin
 
@@ -67,6 +77,41 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    networks:
+      - default
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A celery_config.celery_app worker --loglevel=info
+    volumes:
+      - .:/app:delegated
+    env_file:
+      - ../.env
+    environment:
+      - REDIS_URL=redis://turbomanager-redis:6379
+    depends_on:
+      - turbomanager-redis
+      - turbomanager-db
+    networks:
+      - default
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A celery_config.celery_app beat --loglevel=info
+    volumes:
+      - .:/app:delegated
+    env_file:
+      - ../.env
+    environment:
+      - REDIS_URL=redis://turbomanager-redis:6379
+    depends_on:
+      - turbomanager-redis
+    networks:
+      - default
 
 volumes:
   turbomanager-new-postgres_data:

@@ -45,4 +45,4 @@ fi
 
 # Запуск приложения
 echo "Запуск приложения с перезапуском..."
-exec python main.py
+exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

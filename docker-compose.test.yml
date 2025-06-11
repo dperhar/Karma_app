@@ -1,0 +1,219 @@
+services:
+  # Test Database - PostgreSQL with test data
+  test-postgres:
+    image: postgres:15-alpine
+    container_name: karma-test-postgres
+    environment:
+      POSTGRES_DB: karma_test
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5433:5432"  # Different port to avoid conflicts
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser -d karma_test"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - karma-test-network
+
+  # Test Redis - For session and caching testing
+  test-redis:
+    image: redis:7-alpine
+    container_name: karma-test-redis
+    ports:
+      - "6380:6379"  # Different port to avoid conflicts
+    volumes:
+      - redis_test_data:/data
+    networks:
+      - karma-test-network
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Backend API for Testing - With debug mode and test configurations
+  test-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.test
+    container_name: karma-test-backend
+    environment:
+      # Database
+      - DATABASE_URL=postgresql+asyncpg://testuser:testpass@test-postgres:5432/karma_test
+      - REDIS_URL=redis://test-redis:6379
+      
+      # Testing flags
+      - IS_DEVELOP=true
+      - TESTING=true
+      - LOG_LEVEL=DEBUG
+      
+      # API Keys (test/mock values)
+      - TELETHON_API_ID=12345
+      - TELETHON_API_HASH=test_hash_for_testing
+      - GROQ_API_KEY=test_groq_key
+      - ANTHROPIC_API_KEY=test_anthropic_key
+      - GEMINI_API_KEY=test_gemini_key
+      - OPENAI_API_KEY=test_openai_key
+      
+      # Security (test keys)
+      - ENCRYPTION_KEY=test_encryption_key_32_chars_long
+      - JWT_SECRET_KEY=test_jwt_secret_key_for_testing
+      - REFRESH_TOKEN_SECRET_KEY=test_refresh_secret_key
+      
+      # URLs
+      - FRONTEND_URL=http://test-frontend:3000
+      - WEBHOOK_URL=http://test-backend:8000/webhook
+      
+      # Features
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+      
+    ports:
+      - "8001:8000"  # Different port for testing
+    volumes:
+      - ./backend:/app
+      - test_backend_logs:/app/logs
+      - test_session_data:/app/sessions  # For Telethon session files
+    depends_on:
+      test-postgres:
+        condition: service_healthy
+      test-redis:
+        condition: service_healthy
+    networks:
+      - karma-test-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        sleep 10 &&
+        echo 'Running database migrations...' &&
+        alembic upgrade head &&
+        echo 'Starting test server...' &&
+        uvicorn main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+      "
+
+  # Test Frontend (optional, for full-stack testing)
+  test-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.test
+    container_name: karma-test-frontend
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8001/api
+      - NODE_ENV=test
+      - NEXT_TELEMETRY_DISABLED=1
+    ports:
+      - "3001:3000"  # Different port for testing
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - test-backend
+    networks:
+      - karma-test-network
+    restart: unless-stopped
+
+  # Test Runner Container - For running automated tests
+  test-runner:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.test
+    container_name: karma-test-runner
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://testuser:testpass@test-postgres:5432/karma_test
+      - REDIS_URL=redis://test-redis:6379
+      - TESTING=true
+      - PYTHONPATH=/app
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./backend:/app
+      - test_results:/app/test_results
+    depends_on:
+      test-backend:
+        condition: service_healthy
+    networks:
+      - karma-test-network
+    command: >
+      sh -c "
+        echo 'Waiting for backend to be ready...' &&
+        sleep 30 &&
+        echo 'Running Phase 2 tests...' &&
+        python -m pytest tests/ -v --tb=short --html=test_results/report.html --self-contained-html &&
+        echo 'Running integration tests...' &&
+        python test_phase2_integration.py &&
+        echo 'Running vibe profile tests...' &&
+        python test_vibe_profile_generation.py &&
+        echo 'Running draft generation tests...' &&
+        python test_draft_generation.py &&
+        echo 'Running feedback loop tests...' &&
+        python test_negative_feedback.py &&
+        echo 'All tests completed!'
+      "
+    profiles:
+      - test-run
+
+  # Database Admin Tool (for test data inspection)
+  test-adminer:
+    image: adminer:latest
+    container_name: karma-test-adminer
+    ports:
+      - "8080:8080"
+    environment:
+      - ADMINER_DEFAULT_SERVER=test-postgres
+      - ADMINER_DEFAULT_DATABASE=karma_test
+      - ADMINER_DEFAULT_USERNAME=testuser
+    depends_on:
+      - test-postgres
+    networks:
+      - karma-test-network
+    profiles:
+      - admin
+
+  # Redis Admin Tool (for cache inspection)
+  test-redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: karma-test-redis-commander
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=test-redis:test-redis:6379
+    depends_on:
+      - test-redis
+    networks:
+      - karma-test-network
+    profiles:
+      - admin
+
+volumes:
+  postgres_test_data:
+    driver: local
+  redis_test_data:
+    driver: local
+  test_backend_logs:
+    driver: local
+  test_session_data:
+    driver: local
+  test_results:
+    driver: local
+
+networks:
+  karma-test-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16 
