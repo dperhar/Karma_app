@@ -149,6 +149,31 @@ async def verify_qr_2fa(
             request.password, request.token, user_id
         )
 
+        # Set session cookie if authentication is successful
+        if result.get("status") == "success" and result.get("user_id"):
+            db_user_id = result.get("db_user_id")
+            if db_user_id:
+                new_session_id = uuid.uuid4().hex
+                redis_service: RedisService = container.resolve(RedisService)
+                redis_service.save_session(
+                    f"web_session:{new_session_id}",
+                    {"user_id": db_user_id},
+                    expire=settings.SESSION_EXPIRY_SECONDS,
+                )
+                response.set_cookie(
+                    key=settings.SESSION_COOKIE_NAME,
+                    value=new_session_id,
+                    max_age=settings.SESSION_EXPIRY_SECONDS,
+                    httponly=True,
+                    secure=not settings.IS_DEVELOP,
+                    samesite="lax",
+                    path="/",
+                )
+                await auth_service.user_service.update_user(
+                    db_user_id, {"last_telegram_auth_at": datetime.utcnow()}
+                )
+                logger.info(f"Session cookie set for user {db_user_id} from {client_ip}")
+
         logger.info(f"2FA verification successful for user from {client_ip}")
         return APIResponse(success=True, data=LoginCheckResponse(**result))
 

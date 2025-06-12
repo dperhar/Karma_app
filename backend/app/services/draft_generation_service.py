@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional
 from app.models.user import User
 from app.services.base_service import BaseService
 from app.services.karma_service import KarmaService
-from app.services.telethon_service import TelethonService
+from app.services.telegram_service import TelegramService
 from app.repositories.user_repository import UserRepository
 from app.services.domain.websocket_service import WebSocketService
 
@@ -19,13 +19,13 @@ class DraftGenerationService(BaseService):
         self,
         user_repository: UserRepository,
         karma_service: KarmaService,
-        telethon_service: TelethonService,
+        telegram_service: TelegramService,
         websocket_service: WebSocketService,
     ):
         super().__init__()
         self.user_repository = user_repository
         self.karma_service = karma_service
-        self.telethon_service = telethon_service
+        self.telegram_service = telegram_service
         self.websocket_service = websocket_service
 
     async def check_for_new_posts(self):

@@ -5,7 +5,7 @@ from datetime import datetime
 
 from app.models.chat import TelegramMessengerChat
 from app.services.base_service import BaseService
-from app.services.telethon_service import TelethonService
+from app.services.telegram_service import TelegramService
 from app.repositories.chat_repository import ChatRepository
 
 
@@ -14,12 +14,12 @@ class TelegramMessengerChatService(BaseService):
 
     def __init__(
         self,
-        telethon_service: TelethonService,
+        telegram_service: TelegramService,
         chat_repository: ChatRepository,
     ):
         """Initialize the service with required dependencies."""
         super().__init__()
-        self.telethon_service = telethon_service
+        self.telegram_service = telegram_service
         self.chat_repository = chat_repository
 
     async def get_chats_paginated(

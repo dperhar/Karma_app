@@ -1,137 +1,121 @@
 # services/external/telegram_bot_service.py
 
+import asyncio
 import logging
-from typing import Optional, Union
+from typing import Optional
 
-from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
-from aiogram.types import Chat, InlineKeyboardMarkup, Message, ReplyKeyboardMarkup
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message
 
+from app.core.config import settings
+# from app.core.dependencies import container  # Avoid circular import
+from app.schemas.user import UserCreate
 from app.services.base_service import BaseService
 
 logger = logging.getLogger(__name__)
 
 
 class TelegramBotService(BaseService):
-    """Service for interacting with Telegram bot."""
+    """Service for interacting with the Telegram bot and handling user commands."""
 
-    def __init__(self, bot_instance: Bot):
-        """Initialize TelegramBotService with bot instance."""
+    def __init__(self):
         super().__init__()
-        self.bot = bot_instance
-
-    async def edit_message(
-        self, chat_id: int, message_id: int, text: str, parse_mode: Optional[str] = None
-    ) -> Optional[Message]:
-        """Edit a message in Telegram."""
-        try:
-            return await self.bot.edit_message_text(
-                chat_id=chat_id, message_id=message_id, text=text, parse_mode=parse_mode
+        if (
+            not settings.TELEGRAM_BOT_TOKEN
+            or settings.TELEGRAM_BOT_TOKEN == "dummy-token-for-development"
+        ):
+            self.bot = None
+            self.dp = None
+            logger.warning(
+                "TELEGRAM_BOT_TOKEN is not configured. TelegramBotService will be disabled."
             )
-        except (TelegramAPIError, TelegramBadRequest) as e:
-            self.logger.error("Telegram error while editing message: %s", e)
-            return None
+        else:
+            self.bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+            self.storage = MemoryStorage()
+            self.dp = Dispatcher(storage=self.storage)
+            self._register_handlers()
+
+        self._task = None
+
+    def _register_handlers(self):
+        """Register all command and message handlers for the bot."""
+        if not self.dp:
+            return
+
+        @self.dp.message(CommandStart())
+        async def cmd_start(message: Message, state: FSMContext):
+            """Handles the /start command, creating a user if one doesn't exist."""
+            try:
+                # For now, we'll just send a simple welcome message
+                # User creation can be handled by the frontend app
+                await message.answer(
+                    "Welcome to Karma App! 🎯\n\n"
+                    "This bot is for notifications and updates. "
+                    "Please use the web application for all features.\n\n"
+                    "Web App: http://localhost:3000"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error in /start command for user {message.from_user.id}: {e}",
+                    exc_info=True,
+                )
+                await message.answer("Sorry, something went wrong. Please try again later.")
+
+        @self.dp.message(F.text)
+        async def handle_text_message(message: Message):
+            """Handles any other text messages sent to the bot."""
+            try:
+                await message.reply(
+                    "This bot is for notifications and initial setup. "
+                    "Please use the web application for all features."
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error handling text message from {message.from_user.id}: {e}",
+                    exc_info=True,
+                )
 
     async def send_message(
         self, chat_id: int, text: str, parse_mode: Optional[str] = None
-    ) -> Optional[Message]:
-        """Send a new message in Telegram.
+    ):
+        """Sends a message to a specific chat ID."""
+        if not self.bot:
+            logger.warning(
+                f"Attempted to send message to {chat_id}, but bot is disabled."
+            )
+            return
 
-        Args:
-            chat_id: Telegram chat ID.
-            text: Text message to send.
-            parse_mode: Text parsing mode (None, 'HTML', or 'MarkdownV2').
-        """
         try:
-            return await self.bot.send_message(
+            await self.bot.send_message(
                 chat_id=chat_id, text=text, parse_mode=parse_mode
             )
-        except (TelegramAPIError, TelegramBadRequest) as e:
-            self.logger.error("Telegram error while sending message: %s", e)
-            return None
+        except Exception as e:
+            logger.error(f"Failed to send message to {chat_id}: {e}", exc_info=True)
 
-    async def send_message_with_markup(
-        self,
-        chat_id: int,
-        text: str,
-        reply_markup: Optional[Union[InlineKeyboardMarkup, ReplyKeyboardMarkup]] = None,
-        parse_mode: Optional[str] = None,
-    ) -> Optional[Message]:
-        """Send a new message with reply markup in Telegram."""
-        try:
-            return await self.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode,
-            )
-        except (TelegramAPIError, TelegramBadRequest) as e:
-            self.logger.error("Telegram error while sending message with markup: %s", e)
-            return None
+    async def start_polling(self):
+        """Starts the bot's polling mechanism in the background."""
+        if not self.dp or not self.bot:
+            logger.info("Telegram bot is disabled. Skipping polling.")
+            return
 
-    async def delete_message(self, chat_id: int, message_id: int) -> bool:
-        """Delete a message from Telegram."""
-        try:
-            await self.bot.delete_message(chat_id=chat_id, message_id=message_id)
-            return True
-        except (TelegramAPIError, TelegramBadRequest) as e:
-            self.logger.error("Telegram error while deleting message: %s", e)
-            return False
+        if self._task:
+            logger.warning("Bot is already running.")
+            return
 
-    async def reply_to_message(
-        self,
-        message: Message,
-        text: str,
-        reply_markup: Optional[Union[InlineKeyboardMarkup, ReplyKeyboardMarkup]] = None,
-        parse_mode: Optional[str] = None,
-    ) -> Optional[Message]:
-        """Reply to a message in Telegram."""
-        try:
-            return await message.reply(
-                text=text, reply_markup=reply_markup, parse_mode=parse_mode
-            )
-        except (TelegramAPIError, TelegramBadRequest) as e:
-            self.logger.error("Telegram error while replying to message: %s", e)
-            return None
+        logger.info("Starting Telegram bot polling...")
+        self._task = asyncio.create_task(self.dp.start_polling(self.bot))
 
-    async def edit_message_reply_markup(
-        self,
-        chat_id: int,
-        message_id: int,
-        reply_markup: Optional[InlineKeyboardMarkup] = None,
-    ) -> bool:
-        """Edit message's reply markup."""
-        try:
-            await self.bot.edit_message_reply_markup(
-                chat_id=chat_id, message_id=message_id, reply_markup=reply_markup
-            )
-            return True
-        except (TelegramAPIError, TelegramBadRequest) as e:
-            self.logger.error("Telegram error while editing message markup: %s", e)
-            return False
-
-    async def get_chat(self, chat_id: int) -> tuple[Optional[Chat], Optional[int]]:
-        """Get chat information by its ID.
-
-        Args:
-            chat_id: Telegram chat ID.
-
-        Returns:
-            Tuple containing:
-            - Chat object if successful, None otherwise
-            - Permanent chat ID if successful, None otherwise
-        """
-        try:
-            # First try to get the chat directly
-            self.logger.info(f"Chat ID----: {chat_id}")
-            chat = await self.bot.get_chat(chat_id)
-            if chat:
-                self.logger.info(f"Chat: {chat}")
-                self.logger.info(f"Chat ID: {chat.id}")
-                return chat, chat.id
-            self.logger.info("NO CHAT")
-            return None, None
-
-        except (TelegramAPIError, TelegramBadRequest) as e:
-            self.logger.error("Telegram error while getting chat info: %s", e)
-            return None, None
+    async def stop_polling(self):
+        """Stops the bot's polling mechanism gracefully."""
+        if self._task and not self._task.done():
+            logger.info("Stopping Telegram bot polling...")
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                logger.info("Bot polling stopped.")
+        if self.bot:
+            await self.bot.session.close()

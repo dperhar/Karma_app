@@ -13,7 +13,7 @@ from app.models.chat import (
 )
 from app.models.chat_user import TelegramMessengerChatUser
 from app.services.base_service import BaseService
-from app.services.telethon_service import TelethonService
+from app.services.telegram_service import TelegramService
 from app.repositories.person_repository import PersonRepository
 from app.repositories.chat_repository import ChatRepository
 from app.repositories.participant_repository import ParticipantRepository
@@ -24,14 +24,14 @@ class TelegramMessengerChatUserService(BaseService):
 
     def __init__(
         self,
-        telethon_service: TelethonService,
+        telegram_service: TelegramService,
         chat_repository: ChatRepository,
         participant_repository: ParticipantRepository,
         person_repository: PersonRepository,
     ):
         """Initialize the service with required dependencies."""
         super().__init__()
-        self.telethon_service = telethon_service
+        self.telegram_service = telegram_service
         self.chat_repository = chat_repository
         self.participant_repository = participant_repository
         self.person_repository = person_repository

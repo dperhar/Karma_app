@@ -108,14 +108,14 @@ async def get_optional_admin(request: Request) -> Optional[AdminResponse]:
 async def get_bot(request: Request) -> Bot:
     """Get bot instance from application state."""
     try:
-        bot_instance = request.app.state.bot_instance
-        if not bot_instance:
+        bot_service = request.app.state.telegram_bot_service
+        if not bot_service or not bot_service.bot:
             logger.error("Bot instance not found in application state")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Bot instance not available",
             )
-        return bot_instance.bot
+        return bot_service.bot
     except Exception as e:
         logger.error(f"Error getting bot instance: {e}", exc_info=True)
         raise HTTPException(

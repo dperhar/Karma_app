@@ -1,19 +1,19 @@
 """API routes for draft comment management."""
 
 from typing import List, Optional
-
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.models.draft_comment import DraftStatus
 from app.schemas.base import APIResponse
 from app.dependencies import get_current_user, logger
-from schemas.draft_comment import (
+from app.schemas.draft_comment import (
     DraftCommentResponse,
     DraftCommentUpdate,
+    RegenerateRequest,
 )
-from app.schemas.negative_feedback import RegenerateRequest
 from app.core.dependencies import container
 from app.services.karma_service import KarmaService
+from app.tasks.tasks import generate_draft_for_post
 
 router = APIRouter(prefix="/draft-comments", tags=["draft-comments"])
 
@@ -237,54 +237,27 @@ async def post_draft_comment(
         ) from e
 
 
-@router.post("/{draft_id}/regenerate", response_model=APIResponse[DraftCommentResponse])
+@router.post("/{draft_id}/regenerate", response_model=APIResponse[dict])
 async def regenerate_draft_comment(
     draft_id: str,
     regenerate_request: RegenerateRequest,
     current_user=Depends(get_current_user),
-    karma_service: KarmaService = Depends(get_karma_service),
-) -> APIResponse[DraftCommentResponse]:
+) -> APIResponse[dict]:
     """Regenerate a draft comment after negative feedback (Not My Vibe)."""
-    try:
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required"
-            )
-
-        # Verify ownership
-        drafts = await karma_service.get_drafts_by_user(current_user.id)
-        draft = next((d for d in drafts if d.id == draft_id), None)
-        
-        if not draft:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Draft comment not found"
-            )
-
-        # Regenerate the draft with negative feedback
-        regenerated_draft = await karma_service.regenerate_draft_with_feedback(
-            draft_id, 
-            regenerate_request
-        )
-        
-        if not regenerated_draft:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to regenerate draft comment"
-            )
-
-        return APIResponse(
-            success=True,
-            data=regenerated_draft,
-            message="Draft comment regenerated successfully"
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error regenerating draft comment: {e!s}")
+    if not current_user:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error regenerating draft comment"
-        ) from e 
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required"
+        )
+
+    generate_draft_for_post.delay(
+        user_id=current_user.id,
+        post_data=regenerate_request.post_data.model_dump(),
+        rejected_draft_id=draft_id,
+        rejection_reason=regenerate_request.rejection_reason,
+    )
+
+    return APIResponse(
+        success=True,
+        data={"status": "regeneration_queued"},
+        message="Draft comment regeneration has been queued.",
+    ) 

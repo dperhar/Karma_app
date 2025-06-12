@@ -111,7 +111,7 @@ async def test_vibe_profile_data_flow():
     
     try:
         # Test that we can create and update AI profiles
-        from models.ai.ai_profile import AIProfile, AnalysisStatus
+        from app.models.ai_profile import AIProfile, AnalysisStatus
         
         # Create mock vibe profile
         test_vibe_profile = {

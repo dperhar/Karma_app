@@ -10,8 +10,8 @@ from app.models.chat import TelegramMessengerChatSyncStatus
 from app.services.base_service import BaseService
 from app.services.karma_service import KarmaService
 from app.services.user_context_analysis_service import UserContextAnalysisService
-from app.services.telethon_client import TelethonClient
-from app.services.telethon_service import TelethonService
+# from app.services.telethon_client import TelethonClient
+from app.services.telegram_service import TelegramService
 from app.repositories.chat_repository import ChatRepository
 from app.repositories.message_repository import MessageRepository
 from app.repositories.user_repository import UserRepository
@@ -32,8 +32,8 @@ class DataFetchingService(BaseService):
         user_repository: UserRepository,
         chat_repository: ChatRepository,
         message_repository: MessageRepository,
-        telethon_client: TelethonClient,
-        telethon_service: TelethonService,
+        # telethon_client: TelethonClient,
+        telegram_service: TelegramService,
         karma_service: KarmaService,
         user_context_analysis_service: UserContextAnalysisService,
         websocket_service: WebSocketService,
@@ -42,8 +42,8 @@ class DataFetchingService(BaseService):
         self.user_repository = user_repository
         self.chat_repository = chat_repository
         self.message_repository = message_repository
-        self.telethon_client = telethon_client
-        self.telethon_service = telethon_service
+        # self.telethon_client = telethon_client
+        self.telegram_service = telegram_service
         self.karma_service = karma_service
         self.user_context_analysis_service = user_context_analysis_service
         self.websocket_service = websocket_service

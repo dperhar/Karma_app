@@ -1,11 +1,13 @@
-"""Redis service for working with Redis database."""
+"""Redis service for managing data storage and retrieval."""
 
 import json
+import logging
+import os
 from typing import Any, Optional
 
 import redis
 
-from app.core.config import settings
+logger = logging.getLogger(__name__)
 
 
 class RedisService:
@@ -13,14 +15,29 @@ class RedisService:
 
     def __init__(self):
         """Initialize Redis connection."""
-        # Use default Redis configuration for development
+        # Use environment variable or default to docker service name for containerized deployment
+        redis_host = os.getenv("REDIS_HOST", "redis")
+        redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        redis_db = int(os.getenv("REDIS_DB", "0"))
+        redis_password = os.getenv("REDIS_PASSWORD", None)
+        
+        logger.info(f"Connecting to Redis at {redis_host}:{redis_port}")
+        
         self.redis_client = redis.Redis(
-            host="localhost",
-            port=6379,
-            db=0,
-            password=None,
+            host=redis_host,
+            port=redis_port,
+            db=redis_db,
+            password=redis_password,
             decode_responses=True,
         )
+        
+        # Test connection
+        try:
+            self.redis_client.ping()
+            logger.info("Redis connection established successfully")
+        except Exception as e:
+            logger.error(f"Failed to connect to Redis: {e}")
+            raise
 
     def set(self, key: str, value: Any, expire: Optional[int] = None) -> bool:
         """

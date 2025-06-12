@@ -1,6 +1,12 @@
-export interface APIResponse<T> {
+export interface APIResponse<T = any> {
   success: boolean;
-  data: T;
+  data?: T;
   message?: string;
-  error?: string;
+  status_code?: number;
+}
+
+export interface ErrorResponse {
+  success: false;
+  message: string;
+  status_code?: number;
 } 

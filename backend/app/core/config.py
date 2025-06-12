@@ -79,4 +79,9 @@ class Settings:
     S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "dummy-bucket")
     S3_ENDPOINT_URL: str = os.getenv("S3_ENDPOINT_URL")
 
-settings = Settings() 
+settings = Settings()
+
+
+def get_settings() -> Settings:
+    """Get application settings."""
+    return settings 

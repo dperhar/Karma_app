@@ -4,6 +4,47 @@ A modern karma app backend system built with FastAPI.
 
 ## Changelog
 
+### Refactoring 13.06.2025 - Finalization and Cleanup
+
+**Objective**: Finalize the architecture by consolidating API routes and integrating the aiogram worker, and removing all remaining obsolete code.
+
+#### ✅ **Major Changes Completed:**
+
+**1. API Route Consolidation**
+- **Deleted Obsolete Directories**: Removed the empty `backend/app/api/auth/` and `backend/app/api/telegram/` directories. All API logic is now cleanly organized under `backend/app/api/v1/` and `backend/app/api/admin/`.
+
+**2. Aiogram Worker Integration**
+- **Refactored `TelegramBotService`**: The logic from the `backend/app/worker/` directory has been refactored into a new, robust `TelegramBotService`.
+- **Integrated into FastAPI Lifespan**: The bot is now started and stopped gracefully with the main FastAPI application via the `lifespan` manager in `main.py`.
+- **Deleted `app/worker/`**: The entire obsolete `app/worker/` directory has been removed, completing the architectural cleanup.
+
+#### 🎯 **Results:**
+- ✅ **Simplified API Structure**: The API directory is now cleaner and follows the intended versioned structure.
+- ✅ **Integrated Bot**: The aiogram bot is no longer a separate, unmanaged component but an integrated part of the main application.
+- ✅ **Codebase Cleanup**: All obsolete directories and files from this phase have been pruned, reducing technical debt.
+
+### Refactoring 12.06.2025 - Telethon Service Consolidation
+
+**Objective**: Create a single, reliable service for all Telegram interactions, eliminating redundancy and confusion.
+
+#### ✅ **Major Changes Completed:**
+
+**1. Consolidated `TelegramService`**
+- **Merged Logic**: The new `TelegramService` (`app/services/telegram_service.py`) now contains all logic for client lifecycle management, session decryption, and high-level API calls.
+- **Simplified Architecture**: Replaced the complex `RefactoredTelethonClientService`, `ConnectionPool`, `SessionManager`, and `ConnectionMonitor` with a single, streamlined service.
+
+**2. Deleted Redundant Services**
+- **Removed 6 files**: `refactored_client_service.py`, `telethon_client.py`, `telethon_service.py` (old), `connection_pool.py`, `connection_monitor.py`, `session_manager.py`.
+
+**3. Updated Dependency Injection**
+- **Cleaned `dependencies.py`**: Removed registrations for all obsolete Telethon-related services.
+- **Ensured `TelegramService`** is the single source of truth for Telegram interactions in the DI container.
+
+#### 🎯 **Results:**
+- ✅ **Single Source of Truth**: All Telegram-related logic is now in one place, improving maintainability.
+- ✅ **Reduced Complexity**: The service layer is significantly simpler and easier to understand.
+- ✅ **Improved Stability**: Centralized client management and error handling.
+
 ### 11.06.2025 - Major Architecture Refactoring
 - **Complete restructure from `services.*` to `app.*` module organization**
 - **Implemented dependency injection using `punq` container**
