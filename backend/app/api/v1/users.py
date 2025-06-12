@@ -10,6 +10,7 @@ from app.schemas.base import APIResponse, MessageResponse
 from app.schemas.user import UserResponse, UserUpdate
 from app.core.dependencies import container
 from app.services.user_service import UserService
+from app.tasks.tasks import analyze_vibe_profile
 
 router = APIRouter()
 
@@ -87,13 +88,7 @@ async def analyze_user_vibe_profile(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
         )
 
-    # In a real implementation with Celery, you would dispatch the task here.
-    # from tasks import analyze_vibe_profile
-    # analyze_vibe_profile.delay(user_id=current_user.id)
-
-    logger.info(
-        f"Vibe profile analysis queued for user_id: {current_user.id}"
-    )
+    analyze_vibe_profile.delay(user_id=current_user.id)
 
     return APIResponse(
         success=True,

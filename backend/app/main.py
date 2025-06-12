@@ -13,13 +13,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-from middleware.auth import AuthMiddleware
+from middleware.auth import AuthenticationMiddleware
 from app.api.admin import router as admin_router
 from app.api.v1.router import api_router
 from app.core.dependencies import container
 from app.services.data_fetching_service import DataFetchingService
 from app.services.draft_generation_service import DraftGenerationService
 from app.services.scheduler_service import SchedulerService
+from app.services.telegram_bot_service import TelegramBotService
 
 # Assuming settings are loaded via app.core.config
 from app.core.config import settings
@@ -51,9 +52,7 @@ logger = logging.getLogger(__name__)
 async def initialize_services(app: FastAPI):
     """Initialize services for Comment Management System."""
     try:
-        # Initialize repositories and services
-        for repository_class in container.get_registered_repositories():
-            container.resolve(repository_class)
+        # Initialize repositories and services - punq handles dependency resolution automatically
         
         # Initialize data fetching service and scheduler
         data_fetching_service = container.resolve(DataFetchingService)
@@ -62,6 +61,12 @@ async def initialize_services(app: FastAPI):
         
         # Store scheduler in application state for cleanup
         app.state.scheduler_service = scheduler_service
+        
+        # Initialize and start the Telegram bot
+        telegram_bot_service = container.resolve(TelegramBotService)
+        app.state.telegram_bot_service = telegram_bot_service
+        await telegram_bot_service.start_polling()
+        logger.info("Telegram bot service initialized and started.")
         
         # Start periodic data fetching task
         await scheduler_service.start_periodic_task(
@@ -110,8 +115,14 @@ async def lifespan(app: FastAPI):
             if draft_scheduler:
                 await draft_scheduler.stop()
                 logger.info("Draft generation scheduler stopped")
+
+            # Stop Telegram bot
+            telegram_bot_service = getattr(app.state, "telegram_bot_service", None)
+            if telegram_bot_service:
+                await telegram_bot_service.stop_polling()
+                logger.info("Telegram bot service stopped.")
         except Exception as e:
-            logger.error(f"Error stopping schedulers: {e}")
+            logger.error(f"Error stopping services: {e}")
             
         logger.info("Application shutdown complete")
 
@@ -136,7 +147,7 @@ app.add_middleware(
 # Остальные middleware
 if not IS_DEVELOP:
     app.add_middleware(HTTPSRedirectMiddleware)
-app.add_middleware(AuthMiddleware)
+app.add_middleware(AuthenticationMiddleware)
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 # Health check endpoint

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # PostgreSQL Database
   postgres:
@@ -48,6 +46,7 @@ services:
       - FRONTEND_URL=http://localhost:3000
       - TELETHON_API_ID=${TELETHON_API_ID}
       - TELETHON_API_HASH=${TELETHON_API_HASH}
+      - ENCRYPTION_KEY=g-4imrdzJNd-qHXluWne6OIsy2GqyrRGR7IyYFFQQL0=
     ports:
       - "8000:8000"
     volumes:
@@ -69,7 +68,7 @@ services:
       dockerfile: Dockerfile.dev
     container_name: karma-frontend
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
       - NODE_ENV=development
     ports:
       - "3000:3000"

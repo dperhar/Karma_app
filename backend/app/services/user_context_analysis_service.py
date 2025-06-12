@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from app.models.ai_profile import AnalysisStatus
 from app.services.base_service import BaseService
 from app.services.gemini_service import GeminiService
-from app.services.telethon_service import TelethonService
+from app.services.telegram_service import TelegramService
 from app.repositories.user_repository import UserRepository
 
 
@@ -19,12 +19,12 @@ class UserContextAnalysisService(BaseService):
     def __init__(
         self,
         user_repository: UserRepository,
-        telethon_service: TelethonService,
+        telegram_service: TelegramService,
         gemini_service: GeminiService,
     ):
         super().__init__()
         self.user_repository = user_repository
-        self.telethon_service = telethon_service
+        self.telegram_service = telegram_service
         self.gemini_service = gemini_service
 
     async def analyze_user_context(self, client: Any, user_id: str) -> Dict[str, Any]:

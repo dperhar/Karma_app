@@ -14,7 +14,7 @@ from app.services.base_service import BaseService
 from app.services.telegram_chat_user_service import (
     TelegramMessengerChatUserService,
 )
-from app.services.telethon_service import TelethonService
+from app.services.telegram_service import TelegramService
 from app.repositories.chat_repository import ChatRepository
 from app.repositories.message_repository import MessageRepository
 
@@ -24,7 +24,7 @@ class TelegramMessengerMessagesService(BaseService):
 
     def __init__(
         self,
-        telethon_service: TelethonService,
+        telegram_service: TelegramService,
         chat_user_service: TelegramMessengerChatUserService,
         chat_repository: ChatRepository,
         message_repository: MessageRepository,
@@ -32,7 +32,7 @@ class TelegramMessengerMessagesService(BaseService):
     ):
         """Initialize the service with required dependencies."""
         super().__init__()
-        self.telethon_service = telethon_service
+        self.telegram_service = telegram_service
         self.chat_repository = chat_repository
         self.message_repository = message_repository
         self.chat_user_service = chat_user_service

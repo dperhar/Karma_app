@@ -12,31 +12,22 @@ from telethon.errors import (
 )
 from telethon.sessions import StringSession
 
-from app.core.config import settings
-from app.services.base_service import BaseService
-from app.services.redis_service import RedisService as RedisDataService
+from app.core.config import get_settings
 from app.services.user_service import UserService
-# from app.services.telethon_client import TelethonClient as TelethonClientService
 
 logger = logging.getLogger(__name__)
 
 
-class TelegramMessengerAuthService(BaseService):
+class TelegramMessengerAuthService:
     """Service class for Telegram Messenger authentication."""
 
-    def __init__(
-        self,
-        user_service: UserService,
-        # telethon_client: TelethonClientService,
-        redis_service: RedisDataService,
-    ):
+    def __init__(self, user_service: UserService):
         """Initialize the service with required dependencies."""
-        super().__init__()
         self.user_service = user_service
-        # self.telethon_client = telethon_client
-        self.redis_service = redis_service
         self.session_prefix = "tg_auth:"
         self._cleanup_tasks: set[asyncio.Task] = set()
+        self._memory_sessions: dict = {}
+        self.settings = get_settings()
 
     async def _cleanup_client(self, key: str):
         """Clean up client session after timeout or completion.
@@ -45,14 +36,8 @@ class TelegramMessengerAuthService(BaseService):
             key: Phone number or token used as storage key
         """
         try:
-            try:
-                session_data = self.redis_service.get_session(f"{self.session_prefix}{key}")
-            except Exception:
-                # Fallback to memory storage
-                if hasattr(self, '_memory_sessions'):
-                    session_data = self._memory_sessions.get(f"{self.session_prefix}{key}")
-                else:
-                    session_data = None
+            # Use memory storage for now (can add Redis later)
+            session_data = self._memory_sessions.get(f"{self.session_prefix}{key}")
                     
             if session_data and "session_string" in session_data:
                 # No need to disconnect as we don't store the client anymore
@@ -60,12 +45,8 @@ class TelegramMessengerAuthService(BaseService):
         except Exception as e:
             logger.error(f"Error during cleanup for {key}: {e}")
         finally:
-            try:
-                self.redis_service.delete_session(f"{self.session_prefix}{key}")
-            except Exception:
-                # Fallback to memory storage
-                if hasattr(self, '_memory_sessions'):
-                    self._memory_sessions.pop(f"{self.session_prefix}{key}", None)
+            # Clean up from memory storage
+            self._memory_sessions.pop(f"{self.session_prefix}{key}", None)
 
     async def _delayed_cleanup(self, key: str, delay: int = 300):
         """Cleanup client after delay.
@@ -104,18 +85,8 @@ class TelegramMessengerAuthService(BaseService):
             # Don't store the client object
             data.pop("client", None)
 
-        try:
-            self.redis_service.save_session(
-                f"{self.session_prefix}{key}",
-                data,
-                expire=expire,
-            )
-        except Exception as e:
-            logger.warning(f"Redis not available, storing session in memory: {e}")
-            # For development, we can store in a simple dict
-            if not hasattr(self, '_memory_sessions'):
-                self._memory_sessions = {}
-            self._memory_sessions[f"{self.session_prefix}{key}"] = data
+        # Store in memory (can add Redis later)
+        self._memory_sessions[f"{self.session_prefix}{key}"] = data
 
     async def _get_client_session(self, key: str) -> Optional[dict[str, Any]]:
         """Get client session data from Redis.
@@ -126,22 +97,15 @@ class TelegramMessengerAuthService(BaseService):
         Returns:
             Optional[Dict[str, Any]]: Session data if exists
         """
-        try:
-            session_data = self.redis_service.get_session(f"{self.session_prefix}{key}")
-        except Exception as e:
-            logger.warning(f"Redis not available, using memory session: {e}")
-            # Fallback to memory storage
-            if hasattr(self, '_memory_sessions'):
-                session_data = self._memory_sessions.get(f"{self.session_prefix}{key}")
-            else:
-                session_data = None
+        # Get from memory storage
+        session_data = self._memory_sessions.get(f"{self.session_prefix}{key}")
                 
         if session_data and "session_string" in session_data:
             # Create a new client instance from the stored session string
             client = TelegramClient(
                 StringSession(session_data["session_string"]),
-                int(settings.TELETHON_API_ID),
-                settings.TELETHON_API_HASH,
+                int(self.settings.TELETHON_API_ID),
+                self.settings.TELETHON_API_HASH,
                 device_model="Karma Comments App",
                 system_version="9.31.19-tl-e-CUSTOM",
                 app_version="1.12.3",
@@ -159,17 +123,17 @@ class TelegramMessengerAuthService(BaseService):
             Token for checking login status
         """
         # Check if API credentials are configured
-        if not settings.TELETHON_API_ID or not settings.TELETHON_API_HASH:
+        if not self.settings.TELETHON_API_ID or not self.settings.TELETHON_API_HASH:
             logger.error("Telethon API credentials not configured")
             raise Exception("Telethon API credentials not configured. Please set TELETHON_API_ID and TELETHON_API_HASH in environment variables.")
         
         try:
-            logger.info(f"Generating QR code with API_ID: {settings.TELETHON_API_ID}")
+            logger.info(f"Generating QR code with API_ID: {self.settings.TELETHON_API_ID}")
             
             client = TelegramClient(
                 StringSession(),
-                int(settings.TELETHON_API_ID),
-                settings.TELETHON_API_HASH,
+                int(self.settings.TELETHON_API_ID),
+                self.settings.TELETHON_API_HASH,
                 device_model="Karma Comments App",
                 system_version="9.31.19-tl-e-CUSTOM",
                 app_version="1.12.3",
@@ -181,8 +145,8 @@ class TelegramMessengerAuthService(BaseService):
             # Get QR code data
             qr_login = await client(
                 functions.auth.ExportLoginTokenRequest(
-                    api_id=int(settings.TELETHON_API_ID),
-                    api_hash=settings.TELETHON_API_HASH,
+                    api_id=int(self.settings.TELETHON_API_ID),
+                    api_hash=self.settings.TELETHON_API_HASH,
                     except_ids=[],
                 )
             )
@@ -250,11 +214,11 @@ class TelegramMessengerAuthService(BaseService):
             client = session_data["client"]
 
             try:
+                # Import the QR token to check status
+                token_bytes = base64.b64decode(token)
                 result = await client(
-                    functions.auth.ExportLoginTokenRequest(
-                        api_id=int(settings.TELETHON_API_ID),
-                        api_hash=settings.TELETHON_API_HASH,
-                        except_ids=[],
+                    functions.auth.ImportLoginTokenRequest(
+                        token=token_bytes
                     )
                 )
 
@@ -400,7 +364,7 @@ class TelegramMessengerAuthService(BaseService):
         """
         try:
             client = TelegramClient(
-                StringSession(session), int(settings.TELETHON_API_ID), settings.TELETHON_API_HASH
+                StringSession(session), self.settings.TELETHON_API_ID, self.settings.TELETHON_API_HASH
             )
             await client.connect()
 

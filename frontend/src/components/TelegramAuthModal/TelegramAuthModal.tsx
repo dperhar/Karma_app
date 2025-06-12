@@ -6,16 +6,38 @@ import { useEffect } from 'react';
 import { QRCodeDisplay } from './QRCodeDisplay';
 import { TwoFactorForm } from './TwoFactorForm';
 
+
 interface TelegramAuthModalProps {
   isOpen: boolean;
   onClose: () => void;
   initDataRaw: string;
+  onSuccess?: () => void;
 }
+
+// Helper function to update Telegram environment with authenticated user data
+const updateTelegramEnvironment = (userData: { user_id: number; status: string }) => {
+  try {
+    console.log('🔄 Updating session with authenticated user:', userData.user_id);
+    
+    // Simply mark the session as authenticated since Telethon handles the actual connection
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem("env-authenticated", "1");
+      sessionStorage.setItem("authenticated-user-id", userData.user_id.toString());
+    }
+
+    console.log('✅ Session updated with authenticated user:', userData.user_id);
+    return true;
+  } catch (error) {
+    console.error('❌ Failed to update session:', error);
+    return false;
+  }
+};
 
 export const TelegramAuthModal: React.FC<TelegramAuthModalProps> = ({
   isOpen,
   onClose,
   initDataRaw,
+  onSuccess,
 }) => {
   const {
     qrData,
@@ -34,13 +56,62 @@ export const TelegramAuthModal: React.FC<TelegramAuthModalProps> = ({
     }
   }, [isOpen, generateQRCode]);
 
+  // Handle successful authentication
+  useEffect(() => {
+    if (loginStatus?.user_id && loginStatus?.status === 'success') {
+      console.log('🎉 Authentication successful, updating environment...');
+      
+      // Type-safe data for environment update
+      const authData = {
+        user_id: loginStatus.user_id,
+        status: loginStatus.status,
+      };
+      
+      // Update Telegram environment with authenticated user data
+      const envUpdated = updateTelegramEnvironment(authData);
+      
+      if (envUpdated) {
+        // Set persistent session cookie to maintain authentication state
+        const sessionId = `auth_${Date.now()}_${loginStatus.user_id}`;
+        const cookieExpiry = new Date();
+        cookieExpiry.setDate(cookieExpiry.getDate() + 30); // 30 days persistence
+        
+        document.cookie = `karma_session=${sessionId}; path=/; expires=${cookieExpiry.toUTCString()}; SameSite=Lax; Secure=${window.location.protocol === 'https:'}`;
+        
+        // Store authentication data in localStorage for persistence across browser restarts
+        const authData = {
+          sessionId,
+          userId: loginStatus.user_id,
+          authenticatedAt: Date.now(),
+          expiresAt: cookieExpiry.getTime(),
+        };
+        localStorage.setItem('karma_auth', JSON.stringify(authData));
+        
+        console.log('✅ Persistent authentication set up:', {
+          sessionId,
+          userId: loginStatus.user_id,
+          expiresIn: '30 days'
+        });
+        
+        // Small delay to ensure environment is updated before closing modal
+        const timer = setTimeout(() => {
+          onSuccess?.();
+          onClose();
+        }, 500);
+        
+        return () => clearTimeout(timer);
+      } else {
+        console.error('Failed to update environment, keeping modal open');
+      }
+    }
+  }, [loginStatus?.user_id, loginStatus?.status, onSuccess, onClose]);
+
   const handle2FASubmit = async (code: string): Promise<boolean> => {
     const success = await verify2FA(code);
-    if (success) {
-      onClose();
-      return true;
-    }
-    return false;
+    
+    // Don't manually call onSuccess here - let the useEffect handle it
+    // after environment is properly updated
+    return success;
   };
 
   const handleQRCodeError = () => {
@@ -77,12 +148,13 @@ export const TelegramAuthModal: React.FC<TelegramAuthModalProps> = ({
                 onSubmit={handle2FASubmit}
                 loading={loading}
               />
-            ) : loginStatus?.user_id ? (
+            ) : loginStatus?.user_id && loginStatus?.status === 'success' ? (
               <div className="text-center space-y-2">
                 <div className="text-success text-lg font-semibold">
                   Login Successful!
                 </div>
-                <p className="text-base-content/70">You can now close this window</p>
+                <p className="text-base-content/70">Updating environment...</p>
+                <span className="loading loading-spinner loading-md"></span>
               </div>
             ) : (
               <div className="text-center space-y-2">

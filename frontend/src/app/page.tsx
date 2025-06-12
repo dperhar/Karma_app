@@ -85,15 +85,12 @@ export default function Home() {
         console.log('[Page] loadData started - initDataRaw value:', initDataRaw?.substring(0, 50) + '...');
         console.log('[Page] loadData started - initDataState value:', initDataState);
         
-        // Check if we have valid initialization data
-        if (!initDataRaw) {
-          console.error('[Page] No Telegram init data available');
-          return;
-        }
+        // Use mock initDataRaw for Telethon since backend still expects it
+        const mockInitDataRaw = "mock_init_data_for_telethon";
         
         // Fetch fresh user data from server first
         console.log('[Page] Fetching fresh user data from server');
-        await fetchUser(initDataRaw);
+        await fetchUser(mockInitDataRaw);
         
         // Get the latest user data which includes their chat load limit preference
         const userData = useUserStore.getState().user;
@@ -101,7 +98,7 @@ export default function Home() {
         
         // Fetch chats with the user's preferred limit
         console.log(`[Page] Loading chats with user-defined limit: ${limit}`);
-        await fetchChats(initDataRaw, limit);
+        await fetchChats(mockInitDataRaw, limit);
         
         // Log current state after fetch
         const chatState = useChatStore.getState();
@@ -122,19 +119,27 @@ export default function Home() {
       }
     };
 
-    // Only proceed with data loading if initialization data is available
-    if (initDataState && initDataRaw) {
-      console.log('[Page] Starting data load...');
+    // Check if user is authenticated via session (since we use Telethon, not SDK)
+    const isSessionAuthenticated = typeof window !== 'undefined' && 
+      sessionStorage.getItem("env-authenticated") === "1";
+    
+    // Only proceed with data loading if user is authenticated
+    if (isSessionAuthenticated) {
+      console.log('[Page] Starting data load - user authenticated via session...');
       loadData();
     } else {
-      console.log('[Page] Not loading data - missing initData:', { initDataState, hasInitDataRaw: !!initDataRaw });
+      console.log('[Page] Not loading data - user not authenticated:', { 
+        isSessionAuthenticated,
+        initDataState: !!initDataState, 
+        hasInitDataRaw: !!initDataRaw 
+      });
     }
     
     // Cleanup function
     return () => {
       isMounted = false;
     };
-  }, [fetchUser, fetchChats, initDataRaw, initDataState]);
+  }, [fetchUser, fetchChats]);
 
   const handleChatClick = (chat: TelegramChat) => {
     setSelectedChat(chat);
@@ -229,11 +234,14 @@ export default function Home() {
   // Test function to force reload chats
   const handleForceReloadChats = async () => {
     console.log('[Page] Force reload chats button clicked');
-    if (initDataRaw) {
-      console.log('[Page] initDataRaw available, calling fetchChats');
-      await fetchChats(initDataRaw, 20);
+    const isSessionAuthenticated = typeof window !== 'undefined' && 
+      sessionStorage.getItem("env-authenticated") === "1";
+    
+    if (isSessionAuthenticated) {
+      console.log('[Page] Session authenticated, calling fetchChats with mock initDataRaw');
+      await fetchChats("mock_init_data_for_telethon", 20);
     } else {
-      console.log('[Page] No initDataRaw available');
+      console.log('[Page] No session authentication available');
     }
   };
 

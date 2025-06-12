@@ -12,7 +12,7 @@ from app.schemas.draft_comment import DraftCommentCreate, DraftCommentUpdate, Dr
 from app.services.base_service import BaseService
 from app.services.gemini_service import GeminiService
 from app.services.langchain_service import LangChainService
-from app.services.telethon_service import TelethonService
+from app.services.telegram_service import TelegramService
 from app.repositories.draft_comment_repository import DraftCommentRepository
 from app.repositories.user_repository import UserRepository
 from app.services.domain.websocket_service import WebSocketService
@@ -27,7 +27,7 @@ class KarmaService(BaseService):
         user_repository: UserRepository,
         gemini_service: GeminiService,
         langchain_service: LangChainService,
-        telethon_service: TelethonService,
+        telegram_service: TelegramService,
         websocket_service: WebSocketService,
     ):
         super().__init__()
@@ -35,7 +35,7 @@ class KarmaService(BaseService):
         self.user_repository = user_repository
         self.gemini_service = gemini_service
         self.langchain_service = langchain_service
-        self.telethon_service = telethon_service
+        self.telegram_service = telegram_service
         self.websocket_service = websocket_service
 
     async def generate_draft_comment(

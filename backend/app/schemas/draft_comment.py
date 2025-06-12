@@ -48,3 +48,16 @@ class DraftCommentResponse(DraftCommentBase):
 
     class Config:
         from_attributes = True 
+
+
+class PostData(BaseModel):
+    """Schema for post data needed for regeneration."""
+    original_message_id: str
+    original_post_url: Optional[str] = None
+    original_post_content: Optional[str] = None
+
+
+class RegenerateRequest(BaseModel):
+    """Schema for draft regeneration request."""
+    post_data: PostData
+    rejection_reason: Optional[str] = None
