@@ -23,7 +23,7 @@ class RefreshToken(DBBase):
     ip_address = Column(String, nullable=True)  # IP address when token was created
     
     # Relationship
-    user = relationship("User", back_populates="refresh_tokens")
+    user = relationship("User")
 
     def __repr__(self):
         return f"<RefreshToken {self.id} for user {self.user_id}>"

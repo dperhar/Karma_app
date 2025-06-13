@@ -78,11 +78,26 @@ container.register(RedisService, scope=Scope.singleton)
 container.register(SchedulerService, scope=Scope.singleton)
 container.register(TelegramMessengerAuthService, scope=Scope.singleton)
 container.register(TelegramBotService, scope=Scope.singleton)
-container.register(TelegramService)
+container.register(TelegramService, lambda: TelegramService(
+    connection_repo=container.resolve(TelegramConnectionRepository),
+    container=container
+), scope=Scope.singleton)
 container.register(UserContextAnalysisService)
 container.register(UserService)
 container.register(WebSocketService, scope=Scope.singleton)
 
+# Add convenience methods to container (following working project pattern)
+def telegram_service() -> TelegramService:
+    """Get TelegramService instance from container."""
+    return container.resolve(TelegramService)
+
+def websocket_service() -> WebSocketService:
+    """Get WebSocketService instance from container."""
+    return container.resolve(WebSocketService)
+
+# Attach methods to container instance
+container.telegram_service = telegram_service
+container.websocket_service = websocket_service
 
 # Dependency functions for FastAPI
 def get_admin_service() -> AdminService:
@@ -93,6 +108,11 @@ def get_admin_service() -> AdminService:
 def get_user_service() -> UserService:
     """Get user service instance."""
     return container.resolve(UserService)
+
+
+def get_telegram_service() -> TelegramService:
+    """Get telegram service instance."""
+    return container.resolve(TelegramService)
 
 
 def get_menu_service():

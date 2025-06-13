@@ -363,17 +363,18 @@ class TelegramMessengerAuthService(BaseService):
 
                 logger.info(f"Successful 2FA verification for Telegram user: {me.id}")
 
-                # Only update telegram session, like in the working project
+                # Only update telegram session if user_id is provided
                 if current_user_id:
                     await self.user_service.update_user_tg_session(
                         current_user_id, session_string
                     )
 
-                # Return simple response like in the working project
+                # Return response with session string for endpoint to save
                 return {
                     "requires_2fa": False,
                     "user_id": me.id,
-                    "status": "success"
+                    "status": "success",
+                    "session_string": session_string  # Include session string for endpoint
                 }
 
             except PasswordHashInvalidError as exc:

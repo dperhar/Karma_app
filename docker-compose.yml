@@ -20,7 +20,7 @@ services:
     networks:
       - karma-network
 
-  # Redis Cache (если понадобится)
+  # Redis Cache
   redis:
     image: redis:7-alpine
     container_name: karma-redis
@@ -36,6 +36,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: karma-backend:latest
     container_name: karma-backend
     env_file:
       - .env
@@ -56,6 +57,64 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_started
+    networks:
+      - karma-network
+    restart: unless-stopped
+
+  # Celery Worker
+  celery-worker:
+    image: karma-backend:latest
+    container_name: karma-celery-worker
+    command: celery -A app.tasks.worker.celery_app worker --loglevel=info --queues=analysis,drafts,scheduler
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/karma
+      - REDIS_URL=redis://redis:6379
+      - IS_DEVELOP=true
+      - TELETHON_API_ID=${TELETHON_API_ID}
+      - TELETHON_API_HASH=${TELETHON_API_HASH}
+      - ENCRYPTION_KEY=g-4imrdzJNd-qHXluWne6OIsy2GqyrRGR7IyYFFQQL0=
+    volumes:
+      - ./backend:/app
+      - backend_logs:/app/logs
+    depends_on:
+      backend:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - karma-network
+    restart: unless-stopped
+
+  # Celery Beat Scheduler
+  celery-beat:
+    image: karma-backend:latest
+    container_name: karma-celery-beat
+    command: celery -A app.tasks.worker.celery_app beat --loglevel=info
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/karma
+      - REDIS_URL=redis://redis:6379
+      - IS_DEVELOP=true
+      - TELETHON_API_ID=${TELETHON_API_ID}
+      - TELETHON_API_HASH=${TELETHON_API_HASH}
+      - ENCRYPTION_KEY=g-4imrdzJNd-qHXluWne6OIsy2GqyrRGR7IyYFFQQL0=
+    volumes:
+      - ./backend:/app
+      - backend_logs:/app/logs
+    depends_on:
+      backend:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      celery-worker:
         condition: service_started
     networks:
       - karma-network

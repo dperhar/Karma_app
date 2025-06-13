@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-from middleware.auth import AuthenticationMiddleware
+from app.middleware.auth import AuthenticationMiddleware
 from app.api.admin import router as admin_router
 from app.api.v1.router import api_router
 from app.core.dependencies import container
@@ -121,6 +121,15 @@ async def lifespan(app: FastAPI):
             if telegram_bot_service:
                 await telegram_bot_service.stop_polling()
                 logger.info("Telegram bot service stopped.")
+                
+            # Disconnect all Telethon clients (production-ready cleanup)
+            try:
+                telegram_service = container.telegram_service()
+                await telegram_service.disconnect_all_clients()
+                logger.info("All Telegram clients disconnected successfully")
+            except Exception as e:
+                logger.error(f"Error disconnecting Telegram clients: {e}")
+                
         except Exception as e:
             logger.error(f"Error stopping services: {e}")
             

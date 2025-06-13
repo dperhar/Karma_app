@@ -60,7 +60,7 @@ class TelegramMessengerChat(DBBase, TimestampMixin):
     # Additional pagination cursors for messages
     messages_pagination_cursor = Column(Text, nullable=True, comment="JSON cursor for message pagination state")
 
-    # Relationships
-    messages = relationship("TelegramMessage", back_populates="chat")
-    user = relationship("User", back_populates="telegram_chats")
-    participants = relationship("TelegramParticipant", back_populates="chat")
+    # Relationships - Fixed with correct model names
+    messages = relationship("TelegramMessengerMessage", back_populates="chat")
+    user = relationship("User")
+    participants = relationship("TelegramMessengerChatUser", back_populates="chat")

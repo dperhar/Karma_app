@@ -25,6 +25,76 @@ from app.tasks.worker import celery_app
 logger = logging.getLogger(__name__)
 
 
+@celery_app.task(name="tasks.fetch_telegram_chats_task")
+def fetch_telegram_chats_task(user_id: str, limit: int = 50, offset: int = 0):
+    """
+    Celery task to fetch user's Telegram chats.
+    
+    Following Principle 2: The Worker is the Intelligent, Stateful Engine.
+    All Telegram API interactions must happen here in the Celery worker.
+    """
+    logger.info(f"Starting fetch chats task for user_id: {user_id}, limit: {limit}, offset: {offset}")
+    asyncio.run(async_fetch_telegram_chats(user_id, limit, offset))
+
+
+async def async_fetch_telegram_chats(user_id: str, limit: int, offset: int):
+    """
+    Async implementation of fetching Telegram chats.
+    
+    This task is self-contained and instantiates its own dependencies.
+    """
+    # GOOD: Task instantiates its own dependencies
+    telegram_service = container.resolve(TelegramService)
+    chat_repo = container.resolve(ChatRepository)
+    websocket_service = container.resolve(WebSocketService)
+    
+    client = None
+    try:
+        # GOOD: All Telegram API interactions happen in the Celery worker
+        client = await telegram_service.get_client(user_id)
+        if not client:
+            await websocket_service.send_user_notification(
+                user_id, "chats_fetch_failed", {"error": "Failed to create Telegram client"}
+            )
+            return
+            
+        # Fetch chats from Telegram
+        chats = await telegram_service.get_user_chats(user_id, limit=limit, offset=offset)
+        
+        # Store chats in database
+        for chat_data in chats:
+            await chat_repo.create_or_update_chat(
+                user_id=user_id,
+                chat_id=chat_data.get("id"),
+                chat_type=chat_data.get("type"),
+                title=chat_data.get("title"),
+                username=chat_data.get("username"),
+                participant_count=chat_data.get("participant_count")
+            )
+        
+        # Notify frontend via WebSocket
+        await websocket_service.send_user_notification(
+            user_id, 
+            "chats_fetch_completed", 
+            {
+                "chats_count": len(chats),
+                "limit": limit,
+                "offset": offset
+            }
+        )
+        
+        logger.info(f"Successfully fetched {len(chats)} chats for user {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Chat fetch for user {user_id} failed: {e}", exc_info=True)
+        await websocket_service.send_user_notification(
+            user_id, "chats_fetch_failed", {"error": str(e)}
+        )
+    finally:
+        if client:
+            await telegram_service.disconnect_client(user_id)
+
+
 @celery_app.task(name="tasks.analyze_vibe_profile")
 def analyze_vibe_profile(user_id: str):
     """Celery task to analyze a user's vibe profile asynchronously."""
@@ -303,6 +373,6 @@ async def async_check_for_new_posts():
                         generate_draft_for_post.delay(user_id=user.id, post_data=post_data)
         except Exception as e:
             logger.error(f"Failed to process user {user.id} in scheduled task: {e}")
-    finally:
+        finally:
             if client:
                 await telegram_service.disconnect_client(user.id) 

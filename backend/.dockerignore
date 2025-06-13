@@ -1,17 +1,63 @@
-# Исключаем node_modules, чтобы Docker не копировал локальные зависимости
-node_modules
-data
-# Исключаем кэш Yarn
-.yarn
-
-# Исключаем локальные файлы и папки IDE
-.vscode
-.idea
-
-# Исключаем временные файлы и папки
-*.log
+# Python cache and compiled files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
 
-.venv
-venv
+# Tests and coverage
+tests/
+.coverage
+.pytest_cache/
+htmlcov/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+
+# Documentation
+*.md
+docs/
+
+# Environment files (will be mounted)
+.env
+.env.*
+
+# Node modules (shouldn't be here but just in case)
+node_modules/
+
+# Development files
+*.dev
+*.local
+
+# Jupyter notebooks
+*.ipynb

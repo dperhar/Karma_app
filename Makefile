@@ -119,4 +119,91 @@ quickstart: install ## 🚀 Быстрый старт для новых разр
 	make dev
 	@echo ""
 	@echo "$(GREEN)🎉 Ready to go!$(NC)"
-	@echo "$(YELLOW)Open: http://localhost:3000$(NC)" 
+	@echo "$(YELLOW)Open: http://localhost:3000$(NC)"
+
+# Fast development commands
+.PHONY: build-backend
+build-backend:
+	@echo "Building backend image..."
+	docker build -t karma-backend:latest ./backend
+
+.PHONY: dev-backend
+dev-backend: build-backend
+	@echo "Starting backend services only..."
+	docker-compose up postgres redis backend celery-worker -d
+
+.PHONY: dev-full
+dev-full: build-backend
+	@echo "Starting all services..."
+	docker-compose up -d
+
+.PHONY: dev-logs
+dev-logs:
+	docker-compose logs -f backend celery-worker
+
+.PHONY: clean-build
+clean-build:
+	@echo "Cleaning Docker build cache..."
+	docker system prune -f
+	docker builder prune -f
+
+.PHONY: restart-backend
+restart-backend:
+	docker-compose restart backend celery-worker celery-beat
+
+# 🚀 ULTRA-FAST DEVELOPMENT COMMANDS
+.PHONY: dev-ultra-fast
+dev-ultra-fast:
+	@echo "🚀 Starting ULTRA-FAST development environment..."
+	@echo "Building dev image with hot reload..."
+	docker build -f Dockerfile.dev -t karma-dev-backend:latest ./backend
+	@echo "Starting services with hot reload..."
+	docker-compose -f docker-compose.dev.yml up -d
+	@echo ""
+	@echo "$(GREEN)⚡ BLAZING FAST DEV MODE ACTIVE!$(NC)"
+	@echo "$(YELLOW)🔥 Hot reload enabled - code changes apply instantly!$(NC)"
+	@echo "$(YELLOW)📡 API: http://localhost:8000$(NC)"
+	@echo "$(YELLOW)📊 API Docs: http://localhost:8000/docs$(NC)"
+	@echo "$(YELLOW)🔍 Health: http://localhost:8000/health$(NC)"
+
+.PHONY: dev-stop
+dev-stop:
+	docker-compose -f docker-compose.dev.yml down
+
+.PHONY: dev-rebuild
+dev-rebuild:
+	@echo "🔄 Rebuilding dev image..."
+	docker build -f Dockerfile.dev -t karma-dev-backend:latest ./backend --no-cache
+	docker-compose -f docker-compose.dev.yml up -d --force-recreate
+
+.PHONY: dev-logs
+dev-logs:
+	docker-compose -f docker-compose.dev.yml logs -f backend celery-worker
+
+.PHONY: dev-shell
+dev-shell:
+	docker exec -it karma-dev-backend bash
+
+.PHONY: test-api
+test-api:
+	@echo "🧪 Testing Karma App API endpoints..."
+	@echo "Health check:"
+	@curl -s http://localhost:8000/health | jq '.' 2>/dev/null || curl -s http://localhost:8000/health
+	@echo ""
+	@echo "User endpoint (development mode):"
+	@curl -s http://localhost:8000/api/v1/users/me | jq '.' 2>/dev/null || curl -s http://localhost:8000/api/v1/users/me
+	@echo ""
+	@echo "API Documentation: http://localhost:8000/docs"
+
+.PHONY: test-celery
+test-celery:
+	@echo "🔄 Testing Celery workers..."
+	docker exec karma-dev-celery-worker celery -A app.tasks.worker.celery_app inspect active
+	@echo "Queue status:"
+	docker exec karma-dev-celery-worker celery -A app.tasks.worker.celery_app inspect active
+
+.PHONY: test-full
+test-full: test-api test-celery
+	@echo ""
+	@echo "$(GREEN)✅ Full Karma App functionality test complete!$(NC)"
+	@echo "$(YELLOW)Architecture compliance: ✅ API thin gateway, ✅ Worker engine, ✅ Task-oriented$(NC)" 

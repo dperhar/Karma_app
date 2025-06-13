@@ -48,11 +48,11 @@ export default function SettingsPage() {
     if (initialLoadRef.current) return;
     
     const loadData = async () => {
-      if (initDataRaw) {
-        console.log('Fetching fresh user data from server on settings page (initial load)');
-        await fetchUser(initDataRaw);
-        initialLoadRef.current = true;
-      }
+      console.log('Fetching fresh user data from server on settings page (initial load)');
+      // Use initDataRaw if available, otherwise use mock data for development
+      const requestInitData = initDataRaw || "mock_init_data_for_telethon";
+      await fetchUser(requestInitData);
+      initialLoadRef.current = true;
     };
     
     loadData();
@@ -97,14 +97,17 @@ export default function SettingsPage() {
     setSuccessMessage(null);
     setErrorMessage(null);
 
-    if (!initDataRaw) {
-      setErrorMessage("Telegram data not available. Cannot save.");
+    // Check if user has a valid Telegram session for settings that require it
+    if (!userData?.has_valid_tg_session) {
+      setErrorMessage("Telegram session not available. Please reconnect to Telegram to save settings.");
       setIsSaving(false);
       return false;
     }
     
     try {
-      const response = await userService.updateUser(formData, initDataRaw);
+      // Use initDataRaw if available, otherwise use mock data for development
+      const requestInitData = initDataRaw || "mock_init_data_for_telethon";
+      const response = await userService.updateUser(formData, requestInitData);
       if (response.success) {
         // response.data should be the complete User object from backend
         if (response.data) {
@@ -112,7 +115,7 @@ export default function SettingsPage() {
         }
         return true;
       } else {
-        setErrorMessage(response.error || 'Failed to update user settings');
+        setErrorMessage(response.message || 'Failed to update user settings');
         return false;
       }
     } catch (error) {
@@ -172,6 +175,20 @@ export default function SettingsPage() {
         title="Settings"
         onSettingsClick={handleSettingsClick}
       />
+      
+      {/* Back to Chats Button */}
+      <div className="container mx-auto px-4 pt-4">
+        <Button
+          onClick={handleBackNavigation}
+          className="btn-outline btn-sm mb-4 flex items-center gap-2"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          Back to Chats
+        </Button>
+      </div>
+      
       <div className="container mx-auto p-4">
         <div className="grid grid-cols-1 gap-4">
           {/* Telegram Authentication Section */}
@@ -193,12 +210,27 @@ export default function SettingsPage() {
                     </p>
                   )}
                 </div>
-                <Button
-                  onClick={() => setShowQRModal(true)}
-                  className={userData?.has_valid_tg_session ? 'btn-outline btn-sm' : 'btn-primary btn-sm'}
-                >
-                  {userData?.has_valid_tg_session ? 'Reconnect Telegram' : 'Connect Telegram'}
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => setShowQRModal(true)}
+                    className={userData?.has_valid_tg_session ? 'btn-outline btn-sm' : 'btn-primary btn-sm'}
+                  >
+                    {userData?.has_valid_tg_session ? 'Reconnect Telegram' : 'Connect Telegram'}
+                  </Button>
+                  
+                  <Button
+                    onClick={async () => {
+                      console.log('[Settings] Manual refresh button clicked');
+                      const requestInitData = initDataRaw || "mock_init_data_for_telethon";
+                      await fetchUser(requestInitData);
+                      console.log('[Settings] User data refreshed, current session status:', userData?.has_valid_tg_session);
+                    }}
+                    className="btn-ghost btn-sm"
+                    title="Refresh user data"
+                  >
+                    🔄
+                  </Button>
+                </div>
               </div>
             </div>
           </section>
@@ -406,19 +438,28 @@ export default function SettingsPage() {
           </section>
         </div>
 
-        {initDataRaw && (
-          <TelegramAuthModal
-            isOpen={showQRModal}
-            onClose={() => {
-              setShowQRModal(false);
-              // Refresh user data after modal closes (successful login)
-              if (initDataRaw) {
-                fetchUser(initDataRaw);
-              }
-            }}
-            initDataRaw={initDataRaw}
-          />
-        )}
+        <TelegramAuthModal
+          isOpen={showQRModal}
+          onClose={() => {
+            setShowQRModal(false);
+            // Refresh user data after modal closes (successful login)
+            const dataRaw = initDataRaw || "mock_init_data_for_telethon";
+            fetchUser(dataRaw);
+          }}
+          initDataRaw={initDataRaw || "mock_init_data_for_telethon"}
+          onSuccess={() => {
+            console.log('[Settings] Telegram authentication successful, reloading data...');
+            setShowQRModal(false);
+            // Reload user data with real authentication - this should update has_valid_tg_session
+            const dataRaw = initDataRaw || "mock_init_data_for_telethon";
+            fetchUser(dataRaw);
+            
+            // Clear any existing error message since telegram session is now available
+            setErrorMessage(null);
+            setSuccessMessage('Telegram authentication successful! You can now save settings.');
+            setTimeout(() => setSuccessMessage(null), 3000);
+          }}
+        />
       </div>
     </Page>
   );

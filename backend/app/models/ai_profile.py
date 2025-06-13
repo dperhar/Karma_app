@@ -60,7 +60,7 @@ class AIProfile(TimestampMixin, DBBase):
     retry_count = Column(String, nullable=True, default="0", comment="Number of analysis retries")
     
     # Relationships
-    user = relationship("User", back_populates="ai_profile")
+    user = relationship("User")
 
     def mark_analysis_started(self, ai_model: str = None):
         """Mark analysis as started."""

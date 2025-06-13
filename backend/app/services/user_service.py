@@ -41,7 +41,9 @@ class UserService(BaseService):
         """Create a new user with the provided data."""
         user_dict = user_data.model_dump()
         db_user = await self.user_repository.create_user(**user_dict)
-        user_response = UserResponse.model_validate(db_user)
+        user_dict = db_user.__dict__.copy()
+        user_dict['has_valid_tg_session'] = db_user.has_valid_tg_session()
+        user_response = UserResponse.model_validate(user_dict)
 
         # Send notification about user creation
         await self._send_user_update_notification(
@@ -55,12 +57,20 @@ class UserService(BaseService):
     async def get_user(self, user_id: str) -> Optional[UserResponse]:
         """Get user by ID."""
         user = await self.user_repository.get_user(user_id)
-        return UserResponse.model_validate(user) if user else None
+        if user:
+            user_dict = user.__dict__.copy()
+            user_dict['has_valid_tg_session'] = user.has_valid_tg_session()
+            return UserResponse.model_validate(user_dict)
+        return None
 
     async def get_user_by_telegram_id(self, telegram_id: int) -> Optional[UserResponse]:
         """Get user by Telegram ID."""
         user = await self.user_repository.get_user_by_telegram_id(telegram_id)
-        return UserResponse.model_validate(user) if user else None
+        if user:
+            user_dict = user.__dict__.copy()
+            user_dict['has_valid_tg_session'] = user.has_valid_tg_session()
+            return UserResponse.model_validate(user_dict)
+        return None
 
     async def update_user(
         self,
@@ -91,7 +101,9 @@ class UserService(BaseService):
             logger.info(
                 f"User data: first_name={user.first_name}, last_name={user.last_name}, username={user.username}"
             )
-            user_response = UserResponse.model_validate(user)
+            user_dict = user.__dict__.copy()
+            user_dict['has_valid_tg_session'] = user.has_valid_tg_session()
+            user_response = UserResponse.model_validate(user_dict)
 
             # Send notification about user update
             await self._send_user_update_notification(
@@ -108,24 +120,49 @@ class UserService(BaseService):
     async def get_users(self) -> list[UserResponse]:
         """Get all users."""
         users = await self.user_repository.get_users()
-        return [UserResponse.model_validate(user) for user in users]
+        user_responses = []
+        for user in users:
+            user_dict = user.__dict__.copy()
+            user_dict['has_valid_tg_session'] = user.has_valid_tg_session()
+            user_responses.append(UserResponse.model_validate(user_dict))
+        return user_responses
 
     async def update_user_tg_session(
         self, user_id: str, session_string: str
     ) -> Optional[UserResponse]:
         """Update user's Telegram session string and last_telegram_auth_at."""
         # This method is called upon successful TG auth, so it's a "login" event
-        # Update last_telegram_auth_at as well
-        # The actual web session cookie is set by the calling route/middleware
-        user = await self.user_repository.update_user(
-            user_id=user_id, telegram_session_string=session_string
+        # Update last_telegram_auth_at and save session to telegram_connections table
+        from app.repositories.telegram_connection_repository import TelegramConnectionRepository
+        from app.core.security import get_encryption_service
+        
+        # Encrypt the session string before storing
+        encryption_service = get_encryption_service()
+        encrypted_session = encryption_service.encrypt_session_string(session_string)
+        
+        # Save to telegram_connections table
+        connection_repo = TelegramConnectionRepository()
+        await connection_repo.create_or_update(
+            user_id=user_id,
+            session_string_encrypted=encrypted_session,
+            is_active=True,
+            validation_status="VALID",
+            last_validation_at=datetime.utcnow()
         )
+        
+        # Update user's last_telegram_auth_at
+        user = await self.user_repository.update_user(
+            user_id=user_id, last_telegram_auth_at=datetime.utcnow()
+        )
+        
         if user:
-            user_response = UserResponse.model_validate(user)
+            user_dict = user.__dict__.copy()
+            user_dict['has_valid_tg_session'] = user.has_valid_tg_session()
+            user_response = UserResponse.model_validate(user_dict)
             await self._send_user_update_notification(
                 user_id=user_id,
                 event="user_updated",
-                data=user_response.model_dump(exclude={"telegram_session_string"}, mode="json"),
+                data=user_response.model_dump(mode="json"),
             )
             return user_response
         return None
@@ -160,7 +197,9 @@ class UserService(BaseService):
             
             if user:
                 logger.info(f"User {user_id} updated successfully with Telegram data")
-                user_response = UserResponse.model_validate(user)
+                user_dict = user.__dict__.copy()
+                user_dict['has_valid_tg_session'] = user.has_valid_tg_session()
+                user_response = UserResponse.model_validate(user_dict)
                 
                 # Send notification about user update
                 await self._send_user_update_notification(

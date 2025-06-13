@@ -48,7 +48,7 @@ class TelegramMessengerAuthService:
             # Clean up from memory storage
             self._memory_sessions.pop(f"{self.session_prefix}{key}", None)
 
-    async def _delayed_cleanup(self, key: str, delay: int = 300):
+    async def _delayed_cleanup(self, key: str, delay: int = 1800):
         """Cleanup client after delay.
 
         Args:
@@ -58,7 +58,7 @@ class TelegramMessengerAuthService:
         await asyncio.sleep(delay)
         await self._cleanup_client(key)
 
-    def _create_cleanup_task(self, key: str, delay: int = 300):
+    def _create_cleanup_task(self, key: str, delay: int = 1800):
         """Create and store a cleanup task.
 
         Args:
@@ -70,7 +70,7 @@ class TelegramMessengerAuthService:
         task.add_done_callback(self._cleanup_tasks.discard)
 
     async def _save_client_session(
-        self, key: str, data: dict[str, Any], expire: int = 300
+        self, key: str, data: dict[str, Any], expire: int = 1800
     ):
         """Save client session data to Redis.
 
@@ -79,13 +79,9 @@ class TelegramMessengerAuthService:
             data: Session data
             expire: Expiration time in seconds
         """
-        # Extract session string from client if it exists
-        if "client" in data and isinstance(data["client"], TelegramClient):
-            data["session_string"] = data["client"].session.save()
-            # Don't store the client object
-            data.pop("client", None)
-
-        # Store in memory (can add Redis later)
+        # For QR auth, we need to keep the client instance in memory
+        # because ImportLoginTokenRequest must be called on the same client
+        # that generated the token
         self._memory_sessions[f"{self.session_prefix}{key}"] = data
 
     async def _get_client_session(self, key: str) -> Optional[dict[str, Any]]:
@@ -97,23 +93,8 @@ class TelegramMessengerAuthService:
         Returns:
             Optional[Dict[str, Any]]: Session data if exists
         """
-        # Get from memory storage
+        # Get from memory storage - client instance is already stored
         session_data = self._memory_sessions.get(f"{self.session_prefix}{key}")
-                
-        if session_data and "session_string" in session_data:
-            # Create a new client instance from the stored session string
-            client = TelegramClient(
-                StringSession(session_data["session_string"]),
-                int(self.settings.TELETHON_API_ID),
-                self.settings.TELETHON_API_HASH,
-                device_model="Karma Comments App",
-                system_version="9.31.19-tl-e-CUSTOM",
-                app_version="1.12.3",
-                lang_code="en",
-                system_lang_code="en",
-            )
-            await client.connect()
-            session_data["client"] = client
         return session_data
 
     async def generate_qr_code(self) -> dict[str, str]:
@@ -155,8 +136,9 @@ class TelegramMessengerAuthService:
             token = base64.b64encode(qr_login.token).decode("utf-8")
             logger.info(f"QR token generated successfully for session")
 
-            # Store session data in Redis with enhanced metadata
+            # Store client and session data with enhanced metadata
             session_metadata = {
+                "client": client,  # Store the actual client instance
                 "session_string": client.session.save(),
                 "created_at": asyncio.get_event_loop().time(),
                 "token": token,
@@ -166,7 +148,7 @@ class TelegramMessengerAuthService:
 
             await self._save_client_session(token, session_metadata)
 
-            # Set 5-minute timeout
+            # Set 30-minute timeout
             self._create_cleanup_task(token)
 
             return {
@@ -206,7 +188,7 @@ class TelegramMessengerAuthService:
             # Check if session is too old (additional safety check)
             created_at = session_data.get("created_at", 0)
             current_time = asyncio.get_event_loop().time()
-            if current_time - created_at > 300:  # 5 minutes
+            if current_time - created_at > 1800:  # 30 minutes
                 logger.warning(f"Session too old, rejecting")
                 await self._cleanup_client(token)
                 raise ValueError("Session expired")
@@ -252,6 +234,7 @@ class TelegramMessengerAuthService:
                             "requires_2fa": False,
                             "user_id": me.id,
                             "status": "success",
+                            "session_string": session_string
                         }
                     except SessionPasswordNeededError:
                         logger.info(f"2FA required for QR login")
@@ -313,7 +296,7 @@ class TelegramMessengerAuthService:
             # Check if session is too old
             created_at = session_data.get("created_at", 0)
             current_time = asyncio.get_event_loop().time()
-            if current_time - created_at > 300:  # 5 minutes
+            if current_time - created_at > 1800:  # 30 minutes
                 logger.warning(f"Session too old for 2FA verification")
                 await self._cleanup_client(token)
                 raise ValueError("Session expired")
@@ -333,11 +316,12 @@ class TelegramMessengerAuthService:
                         current_user_id, session_string
                     )
 
-                # Return simple response like in the working project
+                # Return response with session string for auth endpoint
                 return {
                     "requires_2fa": False,
                     "user_id": me.id,
-                    "status": "success"
+                    "status": "success",
+                    "session_string": session_string
                 }
 
             except PasswordHashInvalidError as exc:
