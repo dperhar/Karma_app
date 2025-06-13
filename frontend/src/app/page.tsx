@@ -9,6 +9,7 @@ import { ChatList } from '@/components/ChatList';
 import { Header } from '@/components/Header';
 import { Page } from '@/components/Page';
 import { Preloader } from '@/components/Preloader/Preloader';
+import { TelegramAuthModal } from '@/components/TelegramAuthModal/TelegramAuthModal';
 import { useChatStore } from '@/store/chatStore';
 import { useUserStore } from '@/store/userStore';
 import { TelegramChat, TelegramMessengerChatType } from '@/types/chat';
@@ -24,6 +25,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [showAuthModal, setShowAuthModal] = useState(false);
   
   // Get the Telegram initialization data
   const initDataRaw = useSignal(initData.raw);
@@ -231,6 +233,26 @@ export default function Home() {
 
   console.log('[Page] Rendering main content with filteredChats:', filteredChats?.length || 0);
 
+  // Check if user has real Telegram authentication
+  const hasRealTelegramAuth = typeof window !== 'undefined' && 
+    sessionStorage.getItem("env-authenticated") === "1";
+
+  // Handle Telegram authentication success
+  const handleTelegramAuthSuccess = async () => {
+    console.log('[Page] Telegram authentication successful, reloading data...');
+    setShowAuthModal(false);
+    
+    // Reload chats with real authentication
+    const mockInitDataRaw = "mock_init_data_for_telethon";
+    await fetchChats(mockInitDataRaw, user?.telegram_chats_load_limit || DEFAULT_CHAT_LOAD_LIMIT);
+  };
+
+  // Handle connect to Telegram button
+  const handleConnectTelegram = () => {
+    console.log('[Page] Connect to Telegram button clicked');
+    setShowAuthModal(true);
+  };
+
   // Test function to force reload chats
   const handleForceReloadChats = async () => {
     console.log('[Page] Force reload chats button clicked');
@@ -385,6 +407,28 @@ export default function Home() {
             </div>
           )}
           
+          {/* Show connect to Telegram button if no real auth */}
+          {!hasRealTelegramAuth && (
+            <div className="alert alert-warning shadow-lg mb-6">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="stroke-current flex-shrink-0 w-6 h-6">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.732-.833-2.5 0L4.232 13.5c-.77.833.192 2.5 1.732 2.5z"></path>
+              </svg>
+              <div className="flex-1">
+                <h3 className="font-bold">Connect Your Telegram Account</h3>
+                <div className="text-sm">You're seeing demo data. Connect your real Telegram account to see your actual chats.</div>
+              </div>
+              <button 
+                className="btn btn-primary btn-sm"
+                onClick={handleConnectTelegram}
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                </svg>
+                Connect Telegram
+              </button>
+            </div>
+          )}
+          
           <ChatList 
             chats={filteredChats} 
             onChatClick={handleChatClick}
@@ -416,6 +460,14 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {/* Telegram Authentication Modal */}
+      <TelegramAuthModal
+        isOpen={showAuthModal}
+        onClose={() => setShowAuthModal(false)}
+        initDataRaw="mock_init_data_for_telethon"
+        onSuccess={handleTelegramAuthSuccess}
+      />
     </Page>
   );
 }

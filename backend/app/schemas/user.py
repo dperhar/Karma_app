@@ -52,11 +52,7 @@ class UserResponse(UserBase):
 
     id: str
     telegram_session_string: Optional[str] = Field(default=None, exclude=True)
-
-    @computed_field # type: ignore[misc]
-    def has_valid_tg_session(self) -> bool:
-        """Check if the user has a valid Telegram session."""
-        return self.telegram_session_string is not None
+    has_valid_tg_session: bool = Field(default=False)
 
     model_config = ConfigDict(
         from_attributes=True,

@@ -15,15 +15,15 @@ logger = logging.getLogger(__name__)
 class EncryptionService:
     """Service for encryption operations."""
 
-    def encrypt_session_string(self, session_string: str) -> str:
+    def encrypt_session_string(self, session_string: str) -> bytes:
         """Encrypt a session string."""
-        logger.info("Encrypting session string (stub implementation)")
-        return session_string  # In real implementation, this would encrypt
+        logger.info("Encrypting session string")
+        return self.encrypt(session_string)
 
-    def decrypt_session_string(self, encrypted_session: str) -> str:
+    def decrypt_session_string(self, encrypted_session: bytes) -> str:
         """Decrypt a session string."""
-        logger.info("Decrypting session string (stub implementation)")
-        return encrypted_session  # In real implementation, this would decrypt
+        logger.info("Decrypting session string")
+        return self.decrypt(encrypted_session)
 
     def __init__(self):
         self._fernet = None

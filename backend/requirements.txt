@@ -37,3 +37,4 @@ Werkzeug
 qrcode[pil]
 pytest
 pytest-asyncio
+watchdog

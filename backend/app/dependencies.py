@@ -23,7 +23,7 @@ async def get_current_user(
     user_service: UserService = Depends(lambda: container.resolve(UserService)),
 ) -> Optional[UserResponse]:
     """
-    Get current user from Telegram auth data in request state.
+    Get current user from request state (set by middleware).
 
     Args:
         request: FastAPI request object
@@ -39,21 +39,18 @@ async def get_current_user(
     if request.method == "OPTIONS":
         return None
 
-    tg_user = getattr(request.state, "user", None)
-
-    if not tg_user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-        )
-
-    user = await user_service.get_user_by_telegram_id(tg_user.id)
+    # The middleware sets the user in request.state.user
+    user = getattr(request.state, "user", None)
+    logger.info(f"🔍 get_current_user - user from state: {user}")
 
     if not user:
+        logger.info(f"🔍 get_current_user - no user in state, raising 401")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
         )
+
+    logger.info(f"🔍 get_current_user - returning user: {user.id if hasattr(user, 'id') else 'no id'}")
     return user
 
 
@@ -62,7 +59,7 @@ async def get_optional_user(
     user_service: UserService = Depends(lambda: container.resolve(UserService)),
 ) -> Optional[UserResponse]:
     """
-    Get current user from Telegram auth data in request state, but don't require authentication.
+    Get current user from request state, but don't require authentication.
     
     Returns None if no authentication is provided.
     """
@@ -70,12 +67,8 @@ async def get_optional_user(
     if request.method == "OPTIONS":
         return None
 
-    tg_user = getattr(request.state, "user", None)
-
-    if not tg_user:
-        return None
-
-    user = await user_service.get_user_by_telegram_id(tg_user.id)
+    # The middleware sets the user in request.state.user
+    user = getattr(request.state, "user", None)
     return user
 
 

@@ -80,17 +80,75 @@ async def check_qr_login(
 
         settings = get_settings()
         if result.get("status") == "success" and result.get("user_id"):
-            # User successfully logged in, create a web session
-            db_user_id = result.get("db_user_id") # This should be set by auth_service
-            if db_user_id:
-                new_session_id = uuid.uuid4().hex
-                # TODO: Implement session storage
-                response.set_cookie(
-                    key=settings.SESSION_COOKIE_NAME,
-                    value=new_session_id,
-                    max_age=settings.SESSION_EXPIRY_SECONDS,
-                    httponly=True, secure=not settings.IS_DEVELOP, samesite="lax", path="/"
+            # User successfully logged in, create/get user in database
+            telegram_user_id = result.get("user_id")
+            
+            # Create or get user in database
+            user_service = container.resolve(UserService)
+            user = await user_service.get_user_by_telegram_id(telegram_user_id)
+            
+            if not user:
+                # Create new user from Telegram data
+                from app.schemas.user import UserCreate
+                user_data = UserCreate(
+                    telegram_id=telegram_user_id,
+                    first_name="Telegram User",  # Will be updated later
+                    last_name=None,
+                    username=None,
                 )
+                user = await user_service.create_user(user_data)
+                logger.info(f"Created new user from Telegram auth: {user.id}")
+            
+            # Create web session
+            new_session_id = uuid.uuid4().hex
+            
+            # Store session in Redis
+            from app.services.redis_service import RedisService
+            redis_service = container.resolve(RedisService)
+            session_data = {
+                "user_id": user.id,
+                "telegram_id": telegram_user_id,
+                "created_at": datetime.utcnow().isoformat(),
+            }
+            redis_service.save_session(f"web_session:{new_session_id}", session_data, settings.SESSION_EXPIRY_SECONDS)
+            
+            # Set session cookie
+            response.set_cookie(
+                key=settings.SESSION_COOKIE_NAME,
+                value=new_session_id,
+                max_age=settings.SESSION_EXPIRY_SECONDS,
+                httponly=True, secure=not settings.IS_DEVELOP, samesite="lax", path="/"
+            )
+            
+            # Save Telegram session string if available
+            session_string = result.get("session_string")
+            if session_string and user:
+                try:
+                    await user_service.update_user_tg_session(user.id, session_string)
+                    logger.info(f"Telegram session saved for user {user.id}")
+                    
+                    # Get Telegram user data and update our user record
+                    auth_validation_service = container.resolve(TelegramMessengerAuthService)
+                    
+                    # Validate the session and get user data from Telegram
+                    validation_result = await auth_validation_service.validate_session(session_string)
+                    if validation_result.get("valid"):
+                        # Create a mock Telegram user object for update_user_from_telegram
+                        class TelegramUser:
+                            def __init__(self, data):
+                                self.id = data.get("user_id")
+                                self.first_name = data.get("first_name", "Telegram User")
+                                self.last_name = None
+                                self.username = data.get("username")
+                        
+                        telegram_user = TelegramUser(validation_result)
+                        await user_service.update_user_from_telegram(user.id, telegram_user)
+                        logger.info(f"User data updated from Telegram for user {user.id}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to save Telegram session for user {user.id}: {e}")
+            
+            logger.info(f"Created session for user {user.id} with Telegram ID {telegram_user_id}")
 
         return APIResponse(success=True, data=LoginCheckResponse(**result)) # type: ignore
     except ValueError as e:
@@ -131,6 +189,79 @@ async def verify_qr_2fa(
         result = await auth_service.verify_qr_2fa(
             request.password, request.token, user_id
         )
+        
+        # Handle successful 2FA authentication
+        settings = get_settings()
+        if result.get("status") == "success" and result.get("user_id"):
+            # User successfully authenticated, create/get user in database
+            telegram_user_id = result.get("user_id")
+            
+            # Create or get user in database
+            user_service = container.resolve(UserService)
+            user = await user_service.get_user_by_telegram_id(telegram_user_id)
+            
+            if not user:
+                # Create new user from Telegram data
+                from app.schemas.user import UserCreate
+                user_data = UserCreate(
+                    telegram_id=telegram_user_id,
+                    first_name="Telegram User",  # Will be updated later
+                    last_name=None,
+                    username=None,
+                )
+                user = await user_service.create_user(user_data)
+                logger.info(f"Created new user from 2FA auth: {user.id}")
+            
+            # Save Telegram session string to database (CRITICAL FIX)
+            session_string = result.get("session_string")
+            if session_string and user:
+                try:
+                    await user_service.update_user_tg_session(user.id, session_string)
+                    logger.info(f"Telegram session saved for user {user.id}")
+                    
+                    # Get Telegram user data and update our user record
+                    auth_validation_service = container.resolve(TelegramMessengerAuthService)
+                    
+                    # Validate the session and get user data from Telegram
+                    validation_result = await auth_validation_service.validate_session(session_string)
+                    if validation_result.get("valid"):
+                        # Create a mock Telegram user object for update_user_from_telegram
+                        class TelegramUser:
+                            def __init__(self, data):
+                                self.id = data.get("user_id")
+                                self.first_name = data.get("first_name", "Telegram User")
+                                self.last_name = None
+                                self.username = data.get("username")
+                        
+                        telegram_user = TelegramUser(validation_result)
+                        await user_service.update_user_from_telegram(user.id, telegram_user)
+                        logger.info(f"User data updated from Telegram for user {user.id}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to save Telegram session for user {user.id}: {e}")
+            
+            # Create web session
+            new_session_id = uuid.uuid4().hex
+            
+            # Store session in Redis
+            from app.services.redis_service import RedisService
+            redis_service = container.resolve(RedisService)
+            session_data = {
+                "user_id": user.id,
+                "telegram_id": telegram_user_id,
+                "created_at": datetime.utcnow().isoformat(),
+            }
+            redis_service.save_session(f"web_session:{new_session_id}", session_data, settings.SESSION_EXPIRY_SECONDS)
+            
+            # Set session cookie
+            response.set_cookie(
+                key=settings.SESSION_COOKIE_NAME,
+                value=new_session_id,
+                max_age=settings.SESSION_EXPIRY_SECONDS,
+                httponly=True, secure=not settings.IS_DEVELOP, samesite="lax", path="/"
+            )
+            
+            logger.info(f"Created session for user {user.id} with Telegram ID {telegram_user_id} after 2FA")
         
         logger.info(f"2FA verification successful for user from {client_ip}")
         return APIResponse(success=True, data=LoginCheckResponse(**result))

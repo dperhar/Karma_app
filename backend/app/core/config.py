@@ -69,7 +69,7 @@ class Settings:
 
     # Session configuration
     SESSION_COOKIE_NAME: str = os.getenv("SESSION_COOKIE_NAME", "karma_session")
-    SESSION_EXPIRY_SECONDS: int = int(os.getenv("SESSION_EXPIRY_SECONDS", "86400"))  # 24 hours
+    SESSION_EXPIRY_SECONDS: int = int(os.getenv("SESSION_EXPIRY_SECONDS", "15552000"))  # 6 months (180 days)
     SESSION_SECRET_KEY: str = os.getenv("SESSION_SECRET_KEY", "another-super-secret-key-for-sessions")
 
     # AWS S3

@@ -27,17 +27,30 @@ class TelegramConnectionRepository(BaseRepository):
     async def create_or_update(self, user_id: str, **kwargs) -> TelegramConnection:
         """Create or update a Telegram connection."""
         async with self.get_session() as session:
-            connection = await self.get_by_user_id(user_id)
-            if connection:
-                for key, value in kwargs.items():
-                    setattr(connection, key, value)
-            else:
-                connection = TelegramConnection(user_id=user_id, **kwargs)
-                session.add(connection)
-            
-            await session.commit()
-            await session.refresh(connection)
-            return connection
+            try:
+                # Check if connection exists using the current session
+                query = select(TelegramConnection).where(TelegramConnection.user_id == user_id)
+                result = await session.execute(query)
+                connection = result.unique().scalar_one_or_none()
+                
+                if connection:
+                    # Update existing connection
+                    for key, value in kwargs.items():
+                        setattr(connection, key, value)
+                    self.logger.info(f"Updated existing Telegram connection for user {user_id}")
+                else:
+                    # Create new connection
+                    connection = TelegramConnection(user_id=user_id, **kwargs)
+                    session.add(connection)
+                    self.logger.info(f"Created new Telegram connection for user {user_id}")
+                
+                await session.commit()
+                await session.refresh(connection)
+                return connection
+            except SQLAlchemyError as e:
+                await session.rollback()
+                self.logger.error("Error creating/updating Telegram connection for user %s: %s", user_id, str(e), exc_info=True)
+                raise
 
     async def update_validation_status(self, user_id: str, status: str, last_validation_at) -> None:
         """Update the validation status of a connection."""

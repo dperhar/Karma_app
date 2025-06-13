@@ -4,6 +4,7 @@ from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import selectinload
 
 from app.models.user import User
 from app.services.base_repository import BaseRepository
@@ -34,7 +35,11 @@ class UserRepository(BaseRepository):
         """Get user by ID."""
         async with self.get_session() as session:
             try:
-                query = select(User).where(User.id == user_id)
+                query = (
+                    select(User)
+                    .options(selectinload(User.telegram_connection))
+                    .where(User.id == user_id)
+                )
                 result = await session.execute(query)
                 user = result.unique().scalar_one_or_none()
                 if not user:
@@ -48,7 +53,11 @@ class UserRepository(BaseRepository):
         """Get user by Telegram ID."""
         async with self.get_session() as session:
             try:
-                query = select(User).where(User.telegram_id == telegram_id)
+                query = (
+                    select(User)
+                    .options(selectinload(User.telegram_connection))
+                    .where(User.telegram_id == telegram_id)
+                )
                 result = await session.execute(query)
                 user = result.unique().scalar_one_or_none()
                 if not user:
@@ -62,7 +71,11 @@ class UserRepository(BaseRepository):
         """Update user data."""
         async with self.get_session() as session:
             try:
-                query = select(User).where(User.id == user_id)
+                query = (
+                    select(User)
+                    .options(selectinload(User.telegram_connection))
+                    .where(User.id == user_id)
+                )
                 result = await session.execute(query)
                 user = result.unique().scalar_one_or_none()
 
@@ -70,7 +83,7 @@ class UserRepository(BaseRepository):
                     for key, value in update_data.items():
                         setattr(user, key, value)
                     await session.commit()
-                    await session.refresh(user)
+                    await session.refresh(user, ["telegram_connection"])
                     self.logger.info("User updated successfully: %s", user_id)
                 else:
                     self.logger.info("User not found with id: %s", user_id)
@@ -85,7 +98,7 @@ class UserRepository(BaseRepository):
         """Get all users."""
         async with self.get_session() as session:
             try:
-                query = select(User)
+                query = select(User).options(selectinload(User.telegram_connection))
                 result = await session.execute(query)
                 users = result.unique().scalars().all()
                 return list(users)

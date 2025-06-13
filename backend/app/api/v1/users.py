@@ -9,7 +9,6 @@ from app.dependencies import get_current_user, get_optional_user, logger
 from app.schemas.base import APIResponse, MessageResponse
 from app.schemas.user import UserResponse, UserUpdate
 from app.core.dependencies import container
-from app.services.user_service import UserService
 from app.tasks.tasks import analyze_vibe_profile
 
 router = APIRouter()
@@ -18,21 +17,29 @@ router = APIRouter()
 @router.get("/me", response_model=APIResponse[UserResponse])
 async def get_user(
     current_user: Optional[UserResponse] = Depends(get_optional_user),
-    user_service: UserService = Depends(lambda: container.resolve(UserService)),
 ) -> APIResponse[UserResponse]:
     """Get current user."""
+    # Development mode fallback for when auth isn't working
+    is_develop = os.getenv("IS_DEVELOP", "true").lower() == "true"
+    
+    if not current_user and is_develop:
+        # Return a mock user for development when authentication fails
+        mock_user = UserResponse(
+            id="dev-user-123",
+            telegram_id=109005276,  # From the frontend logs
+            username="dev_user",
+            first_name="Development",
+            last_name="User", 
+            phone_number=None,
+            is_active=True
+        )
+        return APIResponse(
+            success=True,
+            data=mock_user,
+            message="Development mode: mock user returned",
+        )
+    
     if not current_user:
-        is_develop = os.getenv("IS_DEVELOP", "true").lower() == "true"
-        if is_develop:
-            # Fallback for development without a valid session
-            real_user = await user_service.get_user_by_telegram_id(118672216)
-            if real_user:
-                return APIResponse(
-                    success=True,
-                    data=real_user,
-                    message="Development mode: real user returned",
-                )
-
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
         )
@@ -47,7 +54,6 @@ async def get_user(
 async def update_user(
     user_data: UserUpdate,
     current_user: Optional[UserResponse] = Depends(get_current_user),
-    user_service: UserService = Depends(lambda: container.resolve(UserService)),
 ) -> APIResponse[UserResponse]:
     """Update current user data."""
     if not current_user:
@@ -56,6 +62,8 @@ async def update_user(
         )
 
     try:
+        from app.services.user_service import UserService
+        user_service = container.resolve(UserService)
         updated_user = await user_service.update_user(current_user.id, user_data)
         if not updated_user:
             raise HTTPException(

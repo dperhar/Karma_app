@@ -3,6 +3,7 @@
 from uuid import uuid4
 
 from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, String
+from sqlalchemy.orm import relationship
 
 from app.models.db_base import DBBase
 from app.models.timestamp_mixin import TimestampMixin
@@ -28,3 +29,8 @@ class TelegramMessengerChatUser(DBBase, TimestampMixin):
     is_admin = Column(Boolean, default=False)
     is_creator = Column(Boolean, default=False)
     join_date = Column(DateTime, nullable=True)
+
+    # Relationships
+    chat = relationship("TelegramMessengerChat", back_populates="participants")
+    user = relationship("User")
+    management_person = relationship("ManagementPerson")

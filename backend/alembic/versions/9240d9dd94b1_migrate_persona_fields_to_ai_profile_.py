@@ -60,7 +60,7 @@ def upgrade() -> None:
             ai_profile_id = uuid4().hex
             connection.execute(sa.text("""
                 INSERT INTO ai_profiles (id, user_id, persona_name, user_system_prompt, analysis_status, created_at, updated_at)
-                VALUES (:id, :user_id, :persona_name, :user_system_prompt, 'PENDING', datetime('now'), datetime('now'))
+                VALUES (:id, :user_id, :persona_name, :user_system_prompt, 'PENDING', NOW(), NOW())
             """), {
                 "id": ai_profile_id,
                 "user_id": user_id,

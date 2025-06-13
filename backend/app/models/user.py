@@ -60,11 +60,7 @@ class User(TimestampMixin, DBBase):
     )
 
     # Relationships
-    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
     telegram_connection = relationship("TelegramConnection", back_populates="user", uselist=False, cascade="all, delete-orphan")
-    ai_profile = relationship("AIProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
-    draft_comments = relationship("DraftComment", back_populates="user", cascade="all, delete-orphan")
-    negative_feedback = relationship("NegativeFeedback", back_populates="user", cascade="all, delete-orphan")
 
     def has_valid_tg_session(self) -> bool:
         """Check if the user has a valid Telegram session."""
