@@ -8,12 +8,10 @@ import { cn } from '@/lib/utils';
 
 interface CommentManagementPanelProps {
   selectedPost: Post | null;
-  initDataRaw: string | null;
 }
 
 export const CommentManagementPanel: React.FC<CommentManagementPanelProps> = ({
   selectedPost,
-  initDataRaw,
 }) => {
   const { 
     drafts,
@@ -32,13 +30,6 @@ export const CommentManagementPanel: React.FC<CommentManagementPanelProps> = ({
   
   const [editedText, setEditedText] = useState('');
   const [isEditing, setIsEditing] = useState(false);
-
-  // Загружаем черновики при инициализации
-  useEffect(() => {
-    if (initDataRaw) {
-      fetchDrafts(initDataRaw);
-    }
-  }, [initDataRaw, fetchDrafts]);
 
   // Обновляем текущий черновик если выбран пост
   useEffect(() => {
@@ -72,8 +63,7 @@ export const CommentManagementPanel: React.FC<CommentManagementPanelProps> = ({
   }
 
   const handleGenerateComment = async () => {
-    if (!initDataRaw) return;
-    await generateDraftComment(selectedPost.telegram_id, selectedPost.channel_telegram_id, initDataRaw);
+    await generateDraftComment(selectedPost.telegram_id, selectedPost.channel_telegram_id, "mock_init_data_for_telethon");
   };
 
   const handleStartEdit = () => {
@@ -82,9 +72,9 @@ export const CommentManagementPanel: React.FC<CommentManagementPanelProps> = ({
   };
 
   const handleSaveEdit = async () => {
-    if (!currentDraft || !initDataRaw) return;
+    if (!currentDraft) return;
     
-    await updateDraft(currentDraft.id, editedText, initDataRaw);
+    await updateDraft(currentDraft.id, editedText, "mock_init_data_for_telethon");
     setIsEditing(false);
   };
 
@@ -94,13 +84,13 @@ export const CommentManagementPanel: React.FC<CommentManagementPanelProps> = ({
   };
 
   const handleApprove = async () => {
-    if (!currentDraft || !initDataRaw) return;
-    await approveDraft(currentDraft.id, initDataRaw);
+    if (!currentDraft) return;
+    await approveDraft(currentDraft.id, "mock_init_data_for_telethon");
   };
 
   const handlePost = async () => {
-    if (!currentDraft || !initDataRaw) return;
-    await postDraft(currentDraft.id, initDataRaw);
+    if (!currentDraft) return;
+    await postDraft(currentDraft.id, "mock_init_data_for_telethon");
   };
 
   const getStatusColor = (status: DraftComment['status']) => {
@@ -308,7 +298,7 @@ export const CommentManagementPanel: React.FC<CommentManagementPanelProps> = ({
             <p className="text-muted-foreground mb-4">
               No AI comment found for this post. Generate one using your configured persona.
             </p>
-            <Button onClick={handleGenerateComment} disabled={!initDataRaw} className="bg-blue-600 hover:bg-blue-700">
+            <Button onClick={handleGenerateComment} className="bg-blue-600 hover:bg-blue-700">
               <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
               </svg>

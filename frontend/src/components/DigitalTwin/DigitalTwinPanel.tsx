@@ -3,7 +3,6 @@
 import React, { useState } from 'react';
 import { userService } from '@/core/api/services/user-service';
 import { User } from '@/types/user';
-import { initData, useSignal } from '@telegram-apps/sdk-react';
 
 interface DigitalTwinPanelProps {
   user: User;
@@ -17,7 +16,6 @@ export const DigitalTwinPanel: React.FC<DigitalTwinPanelProps> = ({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<string>('');
   const [error, setError] = useState<string>('');
-  const initDataRaw = useSignal(initData.raw);
 
   const handleAnalyzeContext = async () => {
     if (isAnalyzing) return;
@@ -28,7 +26,7 @@ export const DigitalTwinPanel: React.FC<DigitalTwinPanelProps> = ({
 
     try {
       console.log('Starting context analysis...');
-      const response = await userService.analyzeUserContext(initDataRaw);
+      const response = await userService.analyzeUserContext("mock_init_data_for_telethon");
       
       if (response.success && response.data) {
         setAnalysisResult(`
@@ -41,7 +39,7 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
         // Refresh user data if needed
         if (onUserUpdate) {
           try {
-            const userResponse = await userService.getCurrentUser(initDataRaw);
+            const userResponse = await userService.getCurrentUser("mock_init_data_for_telethon");
             if (userResponse.success && userResponse.data) {
               onUserUpdate(userResponse.data);
             }
@@ -50,7 +48,7 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
           }
         }
       } else {
-        setError(response.error || 'Неизвестная ошибка');
+        setError(response.message || 'Неизвестная ошибка');
       }
     } catch (err: any) {
       console.error('Context analysis failed:', err);

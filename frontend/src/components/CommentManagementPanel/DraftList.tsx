@@ -6,12 +6,10 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 interface DraftListProps {
-  initDataRaw: string | null;
   onSelectDraft?: (draft: DraftComment) => void;
 }
 
 export const DraftList: React.FC<DraftListProps> = ({
-  initDataRaw,
   onSelectDraft,
 }) => {
   const { 
@@ -24,10 +22,8 @@ export const DraftList: React.FC<DraftListProps> = ({
 
   // Загружаем черновики при инициализации
   useEffect(() => {
-    if (initDataRaw) {
-      fetchDrafts(initDataRaw);
-    }
-  }, [initDataRaw, fetchDrafts]);
+    fetchDrafts("mock_init_data_for_telethon");
+  }, [fetchDrafts]);
 
   const getStatusColor = (status: DraftComment['status']) => {
     switch (status) {
@@ -61,14 +57,6 @@ export const DraftList: React.FC<DraftListProps> = ({
       minute: '2-digit'
     });
   };
-
-  if (!initDataRaw) {
-    return (
-      <div className="p-4 text-center text-muted-foreground">
-        <p>Authentication required to load drafts</p>
-      </div>
-    );
-  }
 
   return (
     <div className="flex flex-col h-full">

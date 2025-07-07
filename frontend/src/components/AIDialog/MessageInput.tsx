@@ -13,7 +13,6 @@ const DEFAULT_MAX_TOKENS = 2000;
 interface MessageInputProps {
   dialogId: string;
   onSendMessage: (dialogId: string, content: string) => Promise<void>;
-  initDataRaw?: string;
   isFirstMessage?: boolean;
   disabled?: boolean;
 }
@@ -21,7 +20,6 @@ interface MessageInputProps {
 export const MessageInput: FC<MessageInputProps> = ({ 
   dialogId, 
   onSendMessage, 
-  initDataRaw,
   isFirstMessage = false,
   disabled = false 
 }) => {
@@ -123,7 +121,7 @@ export const MessageInput: FC<MessageInputProps> = ({
       const audioFile = new File([audioBlob], 'recording.m4a', { type: 'audio/m4a' });
       
       // Send to transcription service
-      const response = await transcribeService.transcribe_audio(audioFile, initDataRaw);
+      const response = await transcribeService.transcribe_audio(audioFile, "mock_init_data_for_telethon");
       
       if (response.success && response.data) {
         // Append transcribed text to current message

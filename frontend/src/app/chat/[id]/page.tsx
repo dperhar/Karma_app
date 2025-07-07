@@ -1,7 +1,7 @@
 'use client';
 
-import { initData, useSignal } from '@telegram-apps/sdk-react';
 import { useTranslations } from 'next-intl';
+// import { initData, useSignal } from '@telegram-apps/sdk-react';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
@@ -31,7 +31,7 @@ export default function ChatDetailPage() {
   const chatId = typeof rawChatId === 'string' ? rawChatId : '';
   
   // Get initialization data from Telegram
-  const initDataRaw = useSignal(initData.raw);
+  // const initDataRaw = useSignal(initData.raw);
   
   // State for the current chat and dialogs
   const [currentChat, setCurrentChat] = useState<TelegramChat | null>(null);
@@ -62,43 +62,57 @@ export default function ChatDetailPage() {
   // Fetch chat data and dialogs on initial load
   useEffect(() => {
     const loadData = async () => {
-      if (!chatId || !initDataRaw) {
-        return;
-      }
-      
       try {
-        // Fetch chat data
-        await fetchChat(chatId, initDataRaw);
-      } catch (error) {
-        console.error('Error loading chat data:', error);
+        console.log('[ChatPage] loadData started');
+        
+        // Use mock initDataRaw for Telethon since backend still expects it
+        const mockInitDataRaw = "mock_init_data_for_telethon";
+        
+        if (typeof chatId === 'string') {
+          console.log(`[ChatPage] Loading chat with ID: ${chatId}`);
+          await fetchChat(chatId, mockInitDataRaw);
+        }
+        
+      } catch (err) {
+        console.error(`[ChatPage] Failed to load chat with ID: ${chatId}`, err);
       }
     };
+
+    // Check if user is authenticated via session (since we use Telethon, not SDK)
+    const isSessionAuthenticated = typeof window !== 'undefined' && 
+      sessionStorage.getItem("env-authenticated") === "1";
     
-    loadData();
+    // Only proceed with data loading if user is authenticated
+    if (isSessionAuthenticated) {
+      console.log('[ChatPage] Starting data load - user authenticated via session...');
+      loadData();
+    } else {
+      console.log('[ChatPage] Not loading data - user not authenticated');
+    }
     
     // Cleanup function
     return () => {
       // Reset AI dialog store when leaving the page
       useAIDialogStore.getState().reset();
     };
-  }, [chatId, fetchChat, initDataRaw]);
+  }, [chatId, fetchChat]);
   
   // When chat data is loaded, fetch the AI dialogs using the internal chat.id
   useEffect(() => {
-    if (chatData && initDataRaw) {
+    if (chatData && chatId) {
       setCurrentChat(chatData);
       
       // Use the chat's actual id to fetch dialogs, not the telegram_id
-      fetchDialogsByChat(chatData.id, initDataRaw);
+      fetchDialogsByChat(chatData.id, chatId);
       
       // Load chat messages using the telegram_id
       loadChatMessages(chatData.telegram_id);
     }
-  }, [chatData, fetchDialogsByChat, initDataRaw]);
+  }, [chatData, fetchDialogsByChat, chatId]);
   
   // Load chat messages from the API
   const loadChatMessages = async (telegramId: number) => {
-    if (!initDataRaw) return;
+    if (!chatId) return;
     
     try {
       setIsLoadingMessages(true);
@@ -110,7 +124,7 @@ export default function ChatDetailPage() {
       // Fetch messages from API
       const response = await chatService.getChatMessages(
         telegramId,
-        initDataRaw,
+        chatId,
         messagesLimit,
         0 // Start from the beginning
       );
@@ -130,10 +144,10 @@ export default function ChatDetailPage() {
   
   // Load selected dialog details when a dialog is selected
   useEffect(() => {
-    if (selectedDialog && initDataRaw) {
-      fetchDialogWithMessages(selectedDialog.id, initDataRaw);
+    if (selectedDialog && chatId) {
+      fetchDialogWithMessages(selectedDialog.id, chatId);
     }
-  }, [selectedDialog, fetchDialogWithMessages, initDataRaw]);
+  }, [selectedDialog, fetchDialogWithMessages, chatId]);
   
   // Handle dialog selection
   const handleDialogClick = (dialog: AIDialogResponse) => {
@@ -142,7 +156,7 @@ export default function ChatDetailPage() {
   
   // Handle creating a new dialog
   const handleCreateDialog = async () => {
-    if (!currentChat || !initDataRaw || isCreatingDialog) {
+    if (!currentChat || !chatId || isCreatingDialog) {
       return;
     }
     
@@ -152,7 +166,7 @@ export default function ChatDetailPage() {
       const newDialog = await createDialog({
         chat_id: currentChat.id,
         user_id: '' // Will be set by the backend from auth
-      }, initDataRaw);
+      }, chatId);
       
       if (newDialog) {
         setSelectedDialog(newDialog);
@@ -166,7 +180,7 @@ export default function ChatDetailPage() {
   
   // Handle sending a message
   const handleSendMessage = async (dialogId: string, content: string) => {
-    if (!initDataRaw) {
+    if (!chatId) {
       return;
     }
     
@@ -189,7 +203,7 @@ export default function ChatDetailPage() {
     console.log("Sending message with user preferences:", messageRequest);
     
     // Call the sendMessage function with the complete request object
-    await sendMessage(messageRequest, initDataRaw);
+    await sendMessage(messageRequest, chatId);
   };
   
   // Handle back navigation - use replace instead of push to avoid adding to history
@@ -341,7 +355,6 @@ export default function ChatDetailPage() {
                   <MessageInput 
                     dialogId={selectedDialog.id} 
                     onSendMessage={handleSendMessage}
-                    initDataRaw={initDataRaw}
                     isFirstMessage={!currentDialog?.messages.length}
                     disabled={dialogsLoading} 
                   />

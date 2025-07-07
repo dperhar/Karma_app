@@ -1,4 +1,4 @@
-import { initMockTelegramEnv } from './mockTelegramEnv';
+import { mockTelegramEnv } from './mockTelegramEnv';
 
 /**
  * Pre-initialize the application by setting up the mock environment
@@ -8,7 +8,7 @@ export function preInitializeApp(): void {
   console.log('🚀 Pre-initializing app...');
   
   // Set up mock Telegram environment first (synchronously)
-  initMockTelegramEnv();
+  mockTelegramEnv();
   
   console.log('✅ App pre-initialization complete');
 }
