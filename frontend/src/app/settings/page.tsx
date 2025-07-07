@@ -9,18 +9,10 @@ import { TelegramAuthModal } from '@/components/TelegramAuthModal/TelegramAuthMo
 import { userService } from '@/core/api/services/user-service';
 import { useUserStore } from '@/store/userStore';
 import { AIModel, UserUpdate } from '@/types/user';
-import { initData, useSignal } from '@telegram-apps/sdk-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 
 export default function SettingsPage() {
-  const initDataRaw = useSignal(initData.raw);
-  const initDataState = useSignal(initData.state);
-  const chatType = useSignal(initData.chatType);
-  const chatInstance = useSignal(initData.chatInstance);
-  const startParam = useSignal(initData.startParam);
-  const user = useSignal(initData.user);
-
   // Ref to track initial data load
   const initialLoadRef = useRef(false);
 
@@ -49,14 +41,14 @@ export default function SettingsPage() {
     
     const loadData = async () => {
       console.log('Fetching fresh user data from server on settings page (initial load)');
-      // Use initDataRaw if available, otherwise use mock data for development
-      const requestInitData = initDataRaw || "mock_init_data_for_telethon";
+      // Use mock data for development
+      const requestInitData = "mock_init_data_for_telethon";
       await fetchUser(requestInitData);
       initialLoadRef.current = true;
     };
     
     loadData();
-  }, [fetchUser, initDataRaw]);
+  }, [fetchUser]);
   
   // Update form when user data changes
   useEffect(() => {
@@ -105,8 +97,8 @@ export default function SettingsPage() {
     }
     
     try {
-      // Use initDataRaw if available, otherwise use mock data for development
-      const requestInitData = initDataRaw || "mock_init_data_for_telethon";
+      // Use mock data for development
+      const requestInitData = "mock_init_data_for_telethon";
       const response = await userService.updateUser(formData, requestInitData);
       if (response.success) {
         // response.data should be the complete User object from backend
@@ -221,7 +213,7 @@ export default function SettingsPage() {
                   <Button
                     onClick={async () => {
                       console.log('[Settings] Manual refresh button clicked');
-                      const requestInitData = initDataRaw || "mock_init_data_for_telethon";
+                      const requestInitData = "mock_init_data_for_telethon";
                       await fetchUser(requestInitData);
                       console.log('[Settings] User data refreshed, current session status:', userData?.has_valid_tg_session);
                     }}
@@ -438,28 +430,23 @@ export default function SettingsPage() {
           </section>
         </div>
 
-        <TelegramAuthModal
-          isOpen={showQRModal}
-          onClose={() => {
-            setShowQRModal(false);
-            // Refresh user data after modal closes (successful login)
-            const dataRaw = initDataRaw || "mock_init_data_for_telethon";
-            fetchUser(dataRaw);
-          }}
-          initDataRaw={initDataRaw || "mock_init_data_for_telethon"}
-          onSuccess={() => {
-            console.log('[Settings] Telegram authentication successful, reloading data...');
-            setShowQRModal(false);
-            // Reload user data with real authentication - this should update has_valid_tg_session
-            const dataRaw = initDataRaw || "mock_init_data_for_telethon";
-            fetchUser(dataRaw);
-            
-            // Clear any existing error message since telegram session is now available
-            setErrorMessage(null);
-            setSuccessMessage('Telegram authentication successful! You can now save settings.');
-            setTimeout(() => setSuccessMessage(null), 3000);
-          }}
-        />
+        {/* Telegram Auth Modal */}
+        {showQRModal && (
+        //  <TelegramAuthModal
+        //    isOpen={showQRModal}
+        //    onClose={() => {
+        //      setShowQRModal(false);
+        //    }}
+        //    initDataRaw={"mock_init_data_for_telethon"}
+        //    onSuccess={() => {
+        //      console.log('[Settings] Telegram authentication successful, reloading data...');
+        //      setShowQRModal(false);
+        //      const requestInitData = "mock_init_data_for_telethon";
+        //      fetchUser(requestInitData);
+        //    }}
+        //  />
+        )}
+        
       </div>
     </Page>
   );

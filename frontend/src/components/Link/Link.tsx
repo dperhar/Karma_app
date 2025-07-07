@@ -1,6 +1,6 @@
-import { openLink, classNames } from '@telegram-apps/sdk-react';
 import { type FC, type MouseEventHandler, type JSX, useCallback } from 'react';
 import { type LinkProps as NextLinkProps, default as NextLink } from 'next/link';
+import { clsx } from 'clsx';
 
 import './styles.css';
 
@@ -16,25 +16,9 @@ export const Link: FC<LinkProps> = ({
   const onClick = useCallback<MouseEventHandler<HTMLAnchorElement>>((e) => {
     propsOnClick?.(e);
 
-    // Compute if target path is external. In this case we would like to open link using
-    // TMA method.
-    let path: string;
-    if (typeof href === 'string') {
-      path = href;
-    } else {
-      const { search = '', pathname = '', hash = '' } = href;
-      path = `${pathname}?${search}#${hash}`;
-    }
-
-    const targetUrl = new URL(path, window.location.toString());
-    const currentUrl = new URL(window.location.toString());
-    const isExternal = targetUrl.protocol !== currentUrl.protocol
-      || targetUrl.host !== currentUrl.host;
-
-    if (isExternal) {
-      e.preventDefault();
-      openLink(targetUrl.toString());
-    }
+    // No need to intercept clicks, let the browser handle them.
+    // External links will open in a new tab by default if target="_blank" is used.
+    
   }, [href, propsOnClick]);
 
   return (
@@ -42,7 +26,7 @@ export const Link: FC<LinkProps> = ({
       {...rest}
       href={href}
       onClick={onClick}
-      className={classNames(className, 'link')}
+      className={clsx(className, 'link')}
     />
   );
 };

@@ -1,6 +1,5 @@
 'use client';
 
-import { initData, useSignal } from '@telegram-apps/sdk-react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from 'next/navigation';
 import { ChangeEvent, useEffect, useMemo, useState } from 'react';
@@ -26,10 +25,6 @@ export default function Home() {
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [showAuthModal, setShowAuthModal] = useState(false);
-  
-  // Get the Telegram initialization data
-  const initDataRaw = useSignal(initData.raw);
-  const initDataState = useSignal(initData.state);
   
   const { fetchUser, user, isLoading: userLoading, error: userError } = useUserStore();
   const { fetchChats, chats, isLoading: chatsLoading, error: chatsError } = useChatStore();
@@ -84,8 +79,7 @@ export default function Home() {
     
     const loadData = async () => {
       try {
-        console.log('[Page] loadData started - initDataRaw value:', initDataRaw?.substring(0, 50) + '...');
-        console.log('[Page] loadData started - initDataState value:', initDataState);
+        console.log('[Page] loadData started');
         
         // Use mock initDataRaw for Telethon since backend still expects it
         const mockInitDataRaw = "mock_init_data_for_telethon";
@@ -130,11 +124,7 @@ export default function Home() {
       console.log('[Page] Starting data load - user authenticated via session...');
       loadData();
     } else {
-      console.log('[Page] Not loading data - user not authenticated:', { 
-        isSessionAuthenticated,
-        initDataState: !!initDataState, 
-        hasInitDataRaw: !!initDataRaw 
-      });
+      console.log('[Page] Not loading data - user not authenticated');
     }
     
     // Cleanup function
@@ -277,32 +267,6 @@ export default function Home() {
         onSettingsClick={handleSettingsClick}
       />
       <div className="container mx-auto p-4">
-        {/* Диагностическая информация */}
-        <div className="alert alert-info mb-4">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="stroke-current shrink-0 w-6 h-6">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-          </svg>
-          <div>
-            <h3 className="font-bold">Диагностика:</h3>
-            <div className="text-xs">
-              <p>Всего чатов: {chats?.length || 0}</p>
-              <p>Отфильтрованных чатов: {filteredChats?.length || 0}</p>
-              <p>Поисковый запрос: "{searchQuery}"</p>
-              <p>Активный фильтр: {activeFilter}</p>
-              <p>Загрузка: {loading ? 'да' : 'нет'} | Загрузка чатов: {chatsLoading ? 'да' : 'нет'}</p>
-              <p>Ошибки: {chatsError || 'нет'}</p>
-              <p>initDataRaw доступен: {initDataRaw ? 'да' : 'нет'}</p>
-              <p>initDataState: {initDataState ? 'да' : 'нет'}</p>
-            </div>
-            <button 
-              className="btn btn-sm btn-primary mt-2"
-              onClick={handleForceReloadChats}
-              disabled={chatsLoading}
-            >
-              {chatsLoading ? 'Загружаем...' : 'Принудительно загрузить чаты'}
-            </button>
-          </div>
-        </div>
         
         {/* Navigation buttons */}
         <div className="flex gap-2 mb-6">

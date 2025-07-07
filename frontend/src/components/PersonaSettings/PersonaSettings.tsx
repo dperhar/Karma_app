@@ -13,29 +13,27 @@ interface PersonaData {
 }
 
 interface PersonaSettingsProps {
-  initDataRaw: string | null;
   onClose?: () => void;
 }
 
 class UserAPI extends ApiClient {
-  async getPersona(initDataRaw: string): Promise<APIResponse<PersonaData>> {
+  async getPersona(): Promise<APIResponse<PersonaData>> {
     return this.request<APIResponse<PersonaData>>('/user/persona', {
       method: 'GET',
-    }, initDataRaw);
+    });
   }
 
-  async updatePersona(data: PersonaData, initDataRaw: string): Promise<APIResponse<PersonaData>> {
+  async updatePersona(data: PersonaData): Promise<APIResponse<PersonaData>> {
     return this.request<APIResponse<PersonaData>>('/user/persona', {
       method: 'PUT',
       body: JSON.stringify(data),
-    }, initDataRaw);
+    });
   }
 }
 
 const userAPI = new UserAPI();
 
 export const PersonaSettings: React.FC<PersonaSettingsProps> = ({
-  initDataRaw,
   onClose,
 }) => {
   const [persona, setPersona] = useState<PersonaData>({
@@ -51,19 +49,15 @@ export const PersonaSettings: React.FC<PersonaSettingsProps> = ({
 
   // Загружаем текущие настройки персоны
   useEffect(() => {
-    if (initDataRaw) {
-      loadPersona();
-    }
-  }, [initDataRaw]);
+    loadPersona();
+  }, []);
 
   const loadPersona = async () => {
-    if (!initDataRaw) return;
-    
     setIsLoading(true);
     setError(null);
     
     try {
-      const response = await userAPI.getPersona(initDataRaw);
+      const response = await userAPI.getPersona();
       
       if (response.success && response.data) {
         setPersona({
@@ -82,13 +76,11 @@ export const PersonaSettings: React.FC<PersonaSettingsProps> = ({
   };
 
   const handleSave = async () => {
-    if (!initDataRaw) return;
-    
     setIsSaving(true);
     setError(null);
     
     try {
-      const response = await userAPI.updatePersona(persona, initDataRaw);
+      const response = await userAPI.updatePersona(persona);
       
       if (response.success) {
         console.log('Persona updated successfully');
@@ -127,14 +119,6 @@ export const PersonaSettings: React.FC<PersonaSettingsProps> = ({
       handleAddInterest();
     }
   };
-
-  if (!initDataRaw) {
-    return (
-      <div className="p-6 text-center">
-        <p className="text-muted-foreground">Authentication required to access persona settings</p>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6 p-6">

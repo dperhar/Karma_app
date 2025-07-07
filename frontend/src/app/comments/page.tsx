@@ -1,6 +1,5 @@
 'use client';
 
-import { initData, useSignal } from '@telegram-apps/sdk-react';
 import { useEffect, useState } from 'react';
 import { Header } from '@/components/Header';
 import { Page } from '@/components/Page';
@@ -16,8 +15,8 @@ export default function CommentsPage() {
   const [selectedPost, setSelectedPost] = useState<any>(null);
   
   // Get the Telegram initialization data
-  const initDataRaw = useSignal(initData.raw);
-  const initDataState = useSignal(initData.state);
+  // const initDataRaw = useSignal(initData.raw);
+  // const initDataState = useSignal(initData.state);
   
   const { user, fetchUser, isLoading: userLoading, error: userError } = useUserStore();
   const { posts, fetchPosts, isLoading: postsLoading, error: postsError } = usePostStore();
@@ -31,17 +30,13 @@ export default function CommentsPage() {
       try {
         console.log('Loading comment management data...');
         
-        // Check if we have valid initialization data
-        if (!initDataRaw) {
-          console.error('No Telegram init data available');
-          return;
-        }
+        const mockInitDataRaw = "mock_init_data_for_telethon";
         
         // Fetch user data first
-        await fetchUser(initDataRaw);
+        await fetchUser(mockInitDataRaw);
         
         // Fetch posts from user's channels/chats
-        await fetchPosts(initDataRaw);
+        await fetchPosts(mockInitDataRaw);
         
       } catch (err) {
         console.error('Failed to load data:', err);
@@ -52,26 +47,21 @@ export default function CommentsPage() {
       }
     };
 
-    // Only proceed with data loading if initialization data is available
-    if (initDataState && initDataRaw) {
-      loadData();
-    }
+    loadData();
     
     // Cleanup function
     return () => {
       isMounted = false;
     };
-  }, [fetchUser, fetchPosts, initDataRaw, initDataState]);
+  }, [fetchUser, fetchPosts]);
 
   const handlePostSelect = (post: any) => {
     setSelectedPost(post);
   };
 
   const handleGenerateComment = async (post: any) => {
-    if (!initDataRaw) return;
-    
     try {
-      await generateComment(post.telegram_id, post.channel_telegram_id, initDataRaw);
+      await generateComment(post.telegram_id, post.channel_telegram_id, "mock_init_data_for_telethon");
     } catch (error) {
       console.error('Failed to generate comment:', error);
     }
@@ -127,7 +117,6 @@ export default function CommentsPage() {
         <div className="w-1/2 overflow-hidden">
           <CommentManagementPanel
             selectedPost={selectedPost}
-            initDataRaw={initDataRaw || null}
           />
         </div>
       </div>
