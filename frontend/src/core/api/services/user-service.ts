@@ -14,6 +14,7 @@ interface UserContextAnalysisResult {
 
 export class UserService extends ApiClient {
   private readonly endpoint = '/users';
+  private readonly aiProfileEndpoint = '/users/me/ai-profile';
 
   constructor() {
     super();
@@ -42,6 +43,16 @@ export class UserService extends ApiClient {
       return response;
     } catch (error) {
       console.error('Failed to fetch current user:', error);
+      throw error;
+    }
+  }
+
+  async getMyAIProfile(initDataRaw?: string) {
+    try {
+      const response = await this.request<APIResponse<any>>(this.aiProfileEndpoint, { method: 'GET' }, initDataRaw);
+      return response;
+    } catch (error) {
+      console.error('Failed to fetch AI profile:', error);
       throw error;
     }
   }
@@ -90,6 +101,22 @@ export class UserService extends ApiClient {
       console.error('Failed to analyze user context:', error);
       throw error;
     }
+  }
+
+  async getAISettings(initDataRaw?: string) {
+    return this.request<APIResponse<any>>(`/users/me/ai-settings`, { method: 'GET' }, initDataRaw);
+  }
+
+  async updateAISettings(body: { model?: string; temperature?: number; max_output_tokens?: number }, initDataRaw?: string) {
+    return this.request<APIResponse<any>>(
+      `/users/me/ai-settings`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      initDataRaw
+    );
   }
 
 }

@@ -34,7 +34,7 @@ export const useUserStore = create<UserState>()(
           if (response.success) {
             set({ user: response.data });
           } else {
-            set({ error: response.error || 'Failed to fetch user data' });
+            set({ error: response.message || 'Failed to fetch user data' });
           }
         } catch (error) {
           set({ error: error instanceof Error ? error.message : 'Failed to fetch user data' });

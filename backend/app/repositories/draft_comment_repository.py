@@ -1,11 +1,12 @@
 """Repository for draft comment management operations."""
 
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
-from sqlalchemy import select
+from sqlalchemy import select, desc
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.models.draft_comment import DraftComment, DraftStatus
+from app.models.telegram_message import TelegramMessengerMessage
 from app.services.base_repository import BaseRepository
 
 
@@ -107,3 +108,52 @@ class DraftCommentRepository(BaseRepository):
             except SQLAlchemyError as e:
                 self.logger.error("Error getting pending drafts: %s", str(e), exc_info=True)
                 raise 
+
+    async def get_latest_context_for_chat(self, user_id: str, chat_db_id: str) -> Optional[Dict[str, Any]]:
+        """Return the latest generation_params that include context for a given chat.
+
+        Looks up the most recently updated draft by this user where the original
+        message belongs to the specified chat, and returns its generation_params
+        (if any). This avoids adding a new table while enabling persistent
+        per-channel context memory.
+        """
+        async with self.get_session() as session:
+            try:
+                query = (
+                    select(DraftComment)
+                    .join(
+                        TelegramMessengerMessage,
+                        DraftComment.original_message_id == TelegramMessengerMessage.id,
+                    )
+                    .where(
+                        DraftComment.user_id == user_id,
+                        TelegramMessengerMessage.chat_id == chat_db_id,
+                    )
+                    .order_by(DraftComment.updated_at.desc())
+                )
+                result = await session.execute(query)
+                latest: Optional[DraftComment] = result.scalars().first()
+                if latest and latest.generation_params:
+                    return dict(latest.generation_params)
+                return None
+            except SQLAlchemyError as e:
+                self.logger.error(
+                    "Error getting latest context for chat %s: %s", chat_db_id, str(e), exc_info=True
+                )
+                raise
+
+    async def get_recent_posted_by_user(self, user_id: str, limit: int = 10) -> List[DraftComment]:
+        """Return recently posted drafts for the user as positive examples."""
+        async with self.get_session() as session:
+            try:
+                query = (
+                    select(DraftComment)
+                    .where(DraftComment.user_id == user_id, DraftComment.status == DraftStatus.POSTED)
+                    .order_by(desc(DraftComment.updated_at))
+                    .limit(limit)
+                )
+                result = await session.execute(query)
+                return list(result.scalars().all())
+            except SQLAlchemyError as e:
+                self.logger.error("Error getting recent posted drafts: %s", str(e), exc_info=True)
+                raise

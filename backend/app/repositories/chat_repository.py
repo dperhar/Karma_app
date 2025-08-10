@@ -38,13 +38,19 @@ class ChatRepository(BaseRepository):
                     existing_chat = result.unique().scalar_one_or_none()
 
                     if existing_chat:
-                        # Update existing chat
+                        # Update existing chat and cautiously set comments_enabled if unknown
                         for key, value in chat.__dict__.items():
                             if key != "id" and not key.startswith("_"):
                                 setattr(existing_chat, key, value)
+                        # If comments_enabled is None/False and we detect a channel, default to True
+                        if existing_chat.comments_enabled is None:
+                            existing_chat.comments_enabled = True
                         result_chats.append(existing_chat)
                     else:
                         # Create new chat
+                        # Default comments_enabled True for channels to ensure feed
+                        if getattr(chat, "comments_enabled", None) is None:
+                            chat.comments_enabled = True
                         session.add(chat)
                         result_chats.append(chat)
 
@@ -183,4 +189,30 @@ class ChatRepository(BaseRepository):
             except SQLAlchemyError as e:
                 await session.rollback()
                 self.logger.error(f"Error updating chat last fetched message: {e!s}", exc_info=True)
+                raise
+
+    async def set_comments_enabled(
+        self, user_id: str, telegram_id: int, enabled: bool
+    ) -> Optional[TelegramMessengerChat]:
+        """Explicitly set comments_enabled for a chat."""
+        async with self.get_session() as session:
+            try:
+                query = select(TelegramMessengerChat).where(
+                    TelegramMessengerChat.user_id == user_id,
+                    TelegramMessengerChat.telegram_id == telegram_id,
+                )
+                result = await session.execute(query)
+                chat = result.unique().scalar_one_or_none()
+                if chat:
+                    chat.comments_enabled = enabled
+                    await session.commit()
+                    await session.refresh(chat)
+                    return chat
+                return None
+            except SQLAlchemyError as e:
+                await session.rollback()
+                self.logger.error(
+                    f"Error setting comments_enabled for chat {telegram_id}: {e!s}",
+                    exc_info=True,
+                )
                 raise

@@ -4,6 +4,7 @@ import { Post } from '@/core/api/services/post-service';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
+import { useEffect, useRef } from 'react';
 
 interface PostFeedViewProps {
   posts: Post[];
@@ -11,6 +12,9 @@ interface PostFeedViewProps {
   onPostSelect: (post: Post) => void;
   onGenerateComment: (post: Post) => void;
   isGenerating: boolean;
+  onLoadMore: () => void;
+  hasMore: boolean;
+  isLoadingMore: boolean;
 }
 
 export const PostFeedView: React.FC<PostFeedViewProps> = ({
@@ -19,8 +23,31 @@ export const PostFeedView: React.FC<PostFeedViewProps> = ({
   onPostSelect,
   onGenerateComment,
   isGenerating,
+  onLoadMore,
+  hasMore,
+  isLoadingMore,
 }) => {
-  if (posts.length === 0) {
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const handleScroll = () => {
+    if (listRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = listRef.current;
+      // Check if scrolled to near the bottom (e.g., 300px from the end)
+      if (scrollHeight - scrollTop < clientHeight + 300 && hasMore && !isLoadingMore) {
+        onLoadMore();
+      }
+    }
+  };
+
+  useEffect(() => {
+    const listElement = listRef.current;
+    if (listElement) {
+      listElement.addEventListener('scroll', handleScroll);
+      return () => listElement.removeEventListener('scroll', handleScroll);
+    }
+  }, [hasMore, isLoadingMore, onLoadMore]);
+
+  if (!posts || posts.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full p-8 text-center">
         <div className="text-muted-foreground mb-4">
@@ -41,12 +68,12 @@ export const PostFeedView: React.FC<PostFeedViewProps> = ({
       <div className="p-4 border-b border-border">
         <h2 className="text-lg font-semibold">Recent Posts</h2>
         <p className="text-sm text-muted-foreground">
-          {posts.length} posts from your channels and chats
+          {posts?.length || 0} posts from your channels and chats
         </p>
       </div>
       
-      <div className="flex-1 overflow-y-auto">
-        {posts.map((post) => (
+      <div ref={listRef} className="flex-1 overflow-y-auto">
+        {posts?.map((post) => (
           <PostItem
             key={`${post.channel_telegram_id}-${post.telegram_id}`}
             post={post}
@@ -56,6 +83,14 @@ export const PostFeedView: React.FC<PostFeedViewProps> = ({
             isGenerating={isGenerating}
           />
         ))}
+        {isLoadingMore && (
+          <div className="flex justify-center items-center p-4">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+          </div>
+        )}
+        {!hasMore && (posts?.length || 0) > 0 && (
+          <div className="p-4 text-center text-sm text-muted-foreground">No more posts to load.</div>
+        )}
       </div>
     </div>
   );
@@ -151,12 +186,12 @@ const PostItem: React.FC<PostItemProps> = ({
             {post.views.toLocaleString()}
           </span>
         )}
-        {post.reactions.length > 0 && (
+        {(post.reactions?.length ?? 0) > 0 && (
           <span className="flex items-center gap-1">
             <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
               <path fillRule="evenodd" d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z" clipRule="evenodd" />
             </svg>
-            {post.reactions.reduce((sum, r) => sum + r.count, 0)}
+            {post.reactions?.reduce((sum, r) => sum + r.count, 0)}
           </span>
         )}
         {post.replies && (

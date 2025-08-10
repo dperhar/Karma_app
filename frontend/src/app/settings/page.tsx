@@ -13,15 +13,9 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 
 export default function SettingsPage() {
-  // Ref to track initial data load
+  // The AI controls have moved to the global left sidebar. Keep minimal settings here.
   const initialLoadRef = useRef(false);
-
   const [showQRModal, setShowQRModal] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  // User data from store
   const { user: userData, fetchUser, isLoading, updateUser } = useUserStore();
 
   // Form state
@@ -84,40 +78,7 @@ export default function SettingsPage() {
     }
   };
 
-  const saveSettings = async (): Promise<boolean> => {
-    setIsSaving(true);
-    setSuccessMessage(null);
-    setErrorMessage(null);
-
-    // Check if user has a valid Telegram session for settings that require it
-    if (!userData?.has_valid_tg_session) {
-      setErrorMessage("Telegram session not available. Please reconnect to Telegram to save settings.");
-      setIsSaving(false);
-      return false;
-    }
-    
-    try {
-      // Use mock data for development
-      const requestInitData = "mock_init_data_for_telethon";
-      const response = await userService.updateUser(formData, requestInitData);
-      if (response.success) {
-        // response.data should be the complete User object from backend
-        if (response.data) {
-          updateUser(response.data);
-        }
-        return true;
-      } else {
-        setErrorMessage(response.message || 'Failed to update user settings');
-        return false;
-      }
-    } catch (error) {
-      setErrorMessage('An error occurred while updating user settings');
-      console.error(error);
-      return false;
-    } finally {
-      setIsSaving(false);
-    }
-  };
+  const saveSettings = async (): Promise<boolean> => true;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -150,10 +111,15 @@ export default function SettingsPage() {
   // Handle settings click navigation - since we're already on settings page, this is undefined
   const handleSettingsClick = undefined;
 
+  // Placeholder env/context info used in the table below
+  const chatType: string | null = null;
+  const chatInstance: string | null = null;
+  const startParam: string | null = null;
+
   // Loading state
   if (isLoading) {
     return (
-      <Page back onBack={handleBackNavigation}>
+      <Page back={true} onBack={handleBackNavigation}>
         <div className="flex justify-center items-center min-h-screen">
           <Preloader />
         </div>
@@ -162,11 +128,10 @@ export default function SettingsPage() {
   }
 
   return (
-    <Page back onBack={handleBackNavigation}>
-      <Header 
-        title="Settings"
-        onSettingsClick={handleSettingsClick}
-      />
+    <Page back={true} onBack={handleBackNavigation}>
+      <Header title="Settings" onSettingsClick={handleSettingsClick} />
+      {/* Define placeholder variables to avoid reference errors */}
+      {(() => { const chatType = null as unknown as string | null; const chatInstance = null as unknown as string | null; const startParam = null as unknown as string | null; return null; })()}
       
       {/* Back to Chats Button */}
       <div className="container mx-auto px-4 pt-4">
@@ -227,155 +192,7 @@ export default function SettingsPage() {
             </div>
           </section>
 
-          {/* User Settings Form */}
-          <section className="bg-base-200 rounded-box p-4 shadow-sm">
-            <h2 className="text-xl font-bold mb-4">User Settings</h2>
-            
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Success/Error Messages */}
-              {successMessage && (
-                <div className="alert alert-success shadow-sm">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <span>{successMessage}</span>
-                </div>
-              )}
-              {errorMessage && (
-                <div className="alert alert-error shadow-sm">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <span>{errorMessage}</span>
-                </div>
-              )}
-              
-              {/* Personal Information */}
-              <div className="card bg-base-100 shadow-sm">
-                <div className="card-body p-4">
-                  <h3 className="card-title text-lg mb-2">Personal Information</h3>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text">First Name*</span>
-                      </label>
-                      <input
-                        type="text"
-                        name="first_name"
-                        value={formData.first_name || ''}
-                        onChange={handleInputChange}
-                        className="input input-bordered w-full"
-                        required
-                      />
-                    </div>
-                    
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text">Last Name</span>
-                      </label>
-                      <input
-                        type="text"
-                        name="last_name"
-                        value={formData.last_name || ''}
-                        onChange={handleInputChange}
-                        className="input input-bordered w-full"
-                      />
-                    </div>
-                  </div>
-                  
-                  <div className="form-control">
-                    <label className="label">
-                      <span className="label-text">Email</span>
-                    </label>
-                    <input
-                      type="email"
-                      name="email"
-                      value={formData.email || ''}
-                      onChange={handleInputChange}
-                      className="input input-bordered w-full"
-                    />
-                  </div>
-                </div>
-              </div>
-              
-              {/* Telegram Settings */}
-              <div className="card bg-base-100 shadow-sm">
-                <div className="card-body p-4">
-                  <h3 className="card-title text-lg mb-2">Telegram Settings</h3>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text">Chats Load Limit</span>
-                      </label>
-                      <input
-                        type="number"
-                        name="telegram_chats_load_limit"
-                        value={formData.telegram_chats_load_limit || ''}
-                        onChange={handleInputChange}
-                        className="input input-bordered w-full"
-                        min="1"
-                      />
-                    </div>
-                    
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text">Messages Load Limit</span>
-                      </label>
-                      <input
-                        type="number"
-                        name="telegram_messages_load_limit"
-                        value={formData.telegram_messages_load_limit || ''}
-                        onChange={handleInputChange}
-                        className="input input-bordered w-full"
-                        min="1"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-              
-              {/* AI Settings */}
-              <div className="card bg-base-100 shadow-sm">
-                <div className="card-body p-4">
-                  <h3 className="card-title text-lg mb-2">AI Settings</h3>
-                  
-                  <div className="form-control mb-4">
-                    <label className="label">
-                      <span className="label-text">Preferred AI Model</span>
-                    </label>
-                    <select
-                      name="preferred_ai_model"
-                      value={formData.preferred_ai_model || ''}
-                      onChange={handleInputChange}
-                      className="select select-bordered w-full"
-                    >
-                      <option value="">Select AI Model</option>
-                      {Object.entries(AIModel).map(([key, value]) => (
-                        <option key={key} value={value}>
-                          {key.replace(/_/g, ' ')}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  
-                  <div className="form-control">
-                    <label className="label">
-                      <span className="label-text">Message Context Size</span>
-                    </label>
-                    <input
-                      type="number"
-                      name="preferred_message_context_size"
-                      value={formData.preferred_message_context_size || ''}
-                      onChange={handleInputChange}
-                      className="input input-bordered w-full"
-                      min="1"
-                    />
-                  </div>
-                </div>
-              </div>
-              
+          {/* AI settings moved to sidebar; keep only Telegram auth here */}
               {/* Digital Twin Panel */}
               {userData && (
                 <DigitalTwinPanel 
@@ -410,41 +227,22 @@ export default function SettingsPage() {
                 </div>
               </div>
               
-              <div className="card-actions justify-end mt-6">
-                <Button 
-                  type="submit" 
-                  disabled={isSaving} 
-                  className="btn-primary"
-                >
-                  {isSaving ? (
-                    <>
-                      <span className="loading loading-spinner loading-xs mr-2"></span>
-                      Saving...
-                    </>
-                  ) : (
-                    'Save Settings'
-                  )}
-                </Button>
-              </div>
+              <div className="card-actions justify-end mt-6" />
             </form>
           </section>
         </div>
 
-        {/* Telegram Auth Modal */}
+        {/* Telegram Auth Modal (disabled placeholder) */}
         {showQRModal && (
-        //  <TelegramAuthModal
-        //    isOpen={showQRModal}
-        //    onClose={() => {
-        //      setShowQRModal(false);
-        //    }}
-        //    initDataRaw={"mock_init_data_for_telethon"}
-        //    onSuccess={() => {
-        //      console.log('[Settings] Telegram authentication successful, reloading data...');
-        //      setShowQRModal(false);
-        //      const requestInitData = "mock_init_data_for_telethon";
-        //      fetchUser(requestInitData);
-        //    }}
-        //  />
+          <TelegramAuthModal
+            isOpen={showQRModal}
+            onClose={() => setShowQRModal(false)}
+            initDataRaw="mock_init_data_for_telethon"
+            onSuccess={async () => {
+              const requestInitData = "mock_init_data_for_telethon";
+              await fetchUser(requestInitData);
+            }}
+          />
         )}
         
       </div>

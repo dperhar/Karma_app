@@ -16,7 +16,7 @@ export interface Post {
   views?: number;
   forwards?: number;
   replies?: number;
-  reactions: Array<{
+  reactions?: Array<{
     reaction: any;
     count: number;
     chosen: boolean;
@@ -40,7 +40,7 @@ interface PostsResponse {
 }
 
 export class PostService extends ApiClient {
-  private readonly endpoint = '/posts';
+  private readonly endpoint = '/feed';
 
   constructor() {
     super();

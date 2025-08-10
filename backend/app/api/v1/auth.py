@@ -2,9 +2,10 @@
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
+import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
@@ -52,6 +53,10 @@ class TwoFactorAuthRequest(BaseModel):
 class CheckLoginRequest(BaseModel):
     """Request model for checking login status."""
 
+    token: str
+
+
+class WsTokenResponse(BaseModel):
     token: str
 
 
@@ -198,6 +203,27 @@ async def verify_qr_2fa(
         return APIResponse(
             success=False, message="Internal server error", status_code=500
         )
+
+
+@router.get("/ws-token", response_model=APIResponse[WsTokenResponse])
+async def get_ws_token(current_user: UserResponse = Depends(get_current_user)) -> APIResponse[WsTokenResponse]:
+    try:
+        # Centrifugo connection token with server-side subscription to user's channel
+        # Short-lived token to prevent expiry issues on reconnects
+        expire = datetime.utcnow() + timedelta(minutes=10)
+        channel = f"user:{current_user.id}"
+        payload = {
+            "sub": str(current_user.id),
+            "exp": expire,
+            "subs": {
+                channel: {}
+            }
+        }
+        token = pyjwt.encode(payload, settings.CENTRIFUGO_TOKEN_HMAC, algorithm="HS256")
+        return APIResponse(success=True, data=WsTokenResponse(token=token))
+    except Exception as e:
+        logger.error(f"Failed to generate WS token: {e}")
+        return APIResponse(success=False, message="Failed to generate WS token", status_code=500)
 
 
 router.include_router(telegram_router) 

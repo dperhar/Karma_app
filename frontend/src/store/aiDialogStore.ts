@@ -140,10 +140,16 @@ export const useAIDialogStore = create<AIDialogState>((set, get) => ({
       
       if (response.success && response.data) {
         // Add the new dialog to the list of dialogs
-        set(state => ({ 
-          dialogs: [...state.dialogs, response.data],
-          isLoading: false 
-        }));
+        set((state) => {
+          const nextDialogs: AIDialogResponse[] = [...state.dialogs];
+          if (response.data) {
+            nextDialogs.push(response.data as AIDialogResponse);
+          }
+          return {
+            dialogs: nextDialogs,
+            isLoading: false,
+          };
+        });
         return response.data;
       } else {
         set({ 

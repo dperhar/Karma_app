@@ -36,10 +36,11 @@ services:
       dockerfile: ../Dockerfile.dev
     image: karma-dev-backend:latest
     container_name: karma-dev-backend
+    working_dir: /app
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/karma
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres/karma
       - REDIS_URL=redis://redis:6379
       - IS_DEVELOP=true
       - FRONTEND_URL=http://localhost:3000
@@ -50,15 +51,22 @@ services:
       - "8000:8000"
     volumes:
       # Mount source code for instant hot reload - NO REBUILD NEEDED!
-      - ./backend/app:/app/app:ro
-      - ./backend/requirements.txt:/app/requirements.txt:ro
-      - ./backend/start.sh:/app/start.sh:ro
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/requirements.txt:/app/requirements.txt
+      - ./backend/start.sh:/app/start.sh
       - backend_dev_logs:/app/logs
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - karma-dev-network
     restart: unless-stopped
@@ -67,7 +75,7 @@ services:
   celery-worker:
     image: karma-dev-backend:latest
     container_name: karma-dev-celery-worker
-    command: watchmedo auto-restart --directory=/app/app --pattern="*.py" --recursive -- celery -A app.tasks.worker.celery_app worker --loglevel=info --queues=analysis,drafts,scheduler
+    command: watchmedo auto-restart --directory=/app/app --pattern="*.py" --recursive -- celery -A app.tasks.worker.celery_app worker --loglevel=info --queues=celery,analysis,drafts,scheduler
     env_file:
       - .env
     environment:
@@ -79,28 +87,36 @@ services:
       - ENCRYPTION_KEY=g-4imrdzJNd-qHXluWne6OIsy2GqyrRGR7IyYFFQQL0=
     volumes:
       # Hot reload for Celery tasks
-      - ./backend/app:/app/app:ro
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
       - backend_dev_logs:/app/logs
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
     networks:
       - karma-dev-network
     restart: unless-stopped
 
-  # Celery Beat Scheduler (Hot Reload)
+  # Celery Beat (Hot Reload)
   celery-beat:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile.dev
     image: karma-dev-backend:latest
     container_name: karma-dev-celery-beat
+    working_dir: /app
     command: celery -A app.tasks.worker.celery_app beat --loglevel=info
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/karma
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres/karma
       - REDIS_URL=redis://redis:6379
       - IS_DEVELOP=true
     volumes:
-      - ./backend/app:/app/app:ro
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
       - backend_dev_logs:/app/logs
     depends_on:
       celery-worker:
@@ -125,7 +141,8 @@ services:
       - /app/node_modules
       - /app/.next
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - karma-dev-network
     restart: unless-stopped

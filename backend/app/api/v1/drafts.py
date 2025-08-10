@@ -192,7 +192,7 @@ async def post_draft_comment(
     current_user=Depends(get_current_user),
     karma_service: KarmaService = Depends(get_karma_service),
 ) -> APIResponse[DraftCommentResponse]:
-    """Post an approved draft comment to Telegram."""
+    """Post a draft comment to Telegram and return updated draft."""
     try:
         if not current_user:
             raise HTTPException(
@@ -208,24 +208,15 @@ async def post_draft_comment(
                 detail="Draft comment not found"
             )
 
-        # For now, this is a placeholder - real implementation would need
-        # a proper way to get the user's Telegram client
-        # posted_draft = await karma_service.post_draft_comment(draft_id, client)
-        
-        # Instead, we'll just mark it as approved for now
-        posted_draft = await karma_service.approve_draft_comment(draft_id)
-        
-        if not posted_draft:
+        # Delegate to service to actually post to Telegram and persist status
+        result = await karma_service.post_draft_comment(draft_id=draft_id, user_id=current_user.id)
+        if not result:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Draft comment not found"
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Failed to post draft to Telegram"
             )
 
-        return APIResponse(
-            success=True,
-            data=posted_draft,
-            message="Draft comment posting initiated (placeholder implementation)"
-        )
+        return APIResponse(success=True, data=result, message="Draft posted to Telegram")
 
     except HTTPException:
         raise

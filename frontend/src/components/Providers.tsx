@@ -18,9 +18,7 @@ export const Providers = ({ children, locale, messages }: ProvidersProps) => {
   return (
     <I18nProvider messages={messages} locale={locale}>
       <StoreInitializer>
-        <Root>
-          {children}
-        </Root>
+        <Root>{children}</Root>
       </StoreInitializer>
     </I18nProvider>
   );

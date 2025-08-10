@@ -3,7 +3,7 @@
 from enum import Enum
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, Column, ForeignKey, Integer, String, DateTime, Text
+from sqlalchemy import BigInteger, Column, ForeignKey, Integer, String, DateTime, Text, Boolean
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import relationship
 
@@ -41,6 +41,10 @@ class TelegramMessengerChat(DBBase, TimestampMixin):
     type = Column(SQLEnum(TelegramMessengerChatType), nullable=False)
     title = Column(String, nullable=True)
     member_count = Column(Integer, nullable=True)
+    # Strict flag: whether this chat/channel allows comments (used to filter feed)
+    comments_enabled = Column(Boolean, nullable=False, default=False, server_default="0")
+    # Cached avatar path or URL (local file path or CDN URL)
+    avatar_url = Column(String, nullable=True)
     
     # Fields for tracking last fetched messages
     last_fetched_message_telegram_id = Column(BigInteger, nullable=True)

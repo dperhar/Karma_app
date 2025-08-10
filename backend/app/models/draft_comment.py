@@ -35,6 +35,7 @@ class DraftComment(DBBase, TimestampMixin):
     # Original post information - aligned with vision
     original_post_url = Column(String, nullable=True, comment="URL of the original post")
     original_post_content = Column(Text, nullable=True, comment="Full content of the original post")
+    ai_context_summary = Column(Text, nullable=True, comment="AI's summary of the post context")
     original_post_text_preview = Column(Text, nullable=True)  # Snippet of the original post
     
     # Comment content

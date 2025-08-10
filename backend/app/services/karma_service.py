@@ -3,7 +3,7 @@
 import json
 import logging
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from app.models.draft_comment import DraftComment, DraftStatus
 from app.models.ai_request import AIRequestModel
@@ -69,7 +69,7 @@ class KarmaService(BaseService):
                 return None
 
             # Generate AI comment
-            draft_text = await self._generate_ai_comment(post_data, user, context_data)
+            draft_text, context_summary = await self._generate_ai_comment(post_data, user, context_data)
             if not draft_text:
                 self.logger.error("Failed to generate AI comment")
                 return None
@@ -77,11 +77,12 @@ class KarmaService(BaseService):
             # Create draft comment
             draft_data = DraftCommentCreate(
                 original_message_id=original_message_id,
-                user_id=user_id,
-                persona_name=user.ai_profile.persona_name if user.ai_profile else "Default User",
+                user_id=user.id,
+                status="draft",
                 ai_model_used=str(user.preferred_ai_model.value) if user.preferred_ai_model else "gemini-pro",
                 original_post_text_preview=post_data.get('text', '')[:500],
                 draft_text=draft_text,
+                ai_context_summary=context_summary,
                 generation_params={
                     "model": str(user.preferred_ai_model.value) if user.preferred_ai_model else "gemini-pro",
                     "persona_name": user.persona_name,
@@ -140,34 +141,65 @@ class KarmaService(BaseService):
     async def post_draft_comment(
         self,
         draft_id: str,
-        client: Any  # TelegramClient
+        user_id: str,
     ) -> Optional[DraftCommentResponse]:
-        """Post an approved draft comment to Telegram."""
+        """Post a draft comment to Telegram and update its status.
+
+        Args:
+            draft_id: Draft identifier
+            user_id: Owner user id (used for Telegram client)
+
+        Returns:
+            Updated DraftCommentResponse if posted, otherwise None
+        """
         try:
             draft = await self.draft_comment_repository.get_draft_comment(draft_id)
             if not draft:
                 self.logger.error(f"Draft comment not found: {draft_id}")
                 return None
 
-            if draft.status != DraftStatus.APPROVED:
-                self.logger.error(f"Draft comment not approved: {draft_id}")
-                return None
+            # We allow posting directly from DRAFT/APPROVED states via single "Send" action
 
-            # Extract channel and post IDs from original message
-            # This would need to be stored in the message model or passed separately
-            # For now, we'll assume the original_message has this info
-            
+            # Attempt to post comment via TelegramService using stored generation params
             text_to_post = draft.final_text_to_post or draft.edited_text or draft.draft_text
-            
-            # Post comment via Telethon
-            # Note: This is a simplified implementation
-            # Real implementation would need proper channel/post ID extraction
-            result = await self.telethon_service.post_comment_to_telegram(
-                client=client,
-                channel_telegram_id=0,  # Would need proper extraction
-                post_telegram_id=0,     # Would need proper extraction
-                comment_text=text_to_post
-            )
+            channel_id = None
+            post_id = None
+            try:
+                # generation_params may include channel_telegram_id captured at generation time
+                gp = draft.generation_params or {}
+                channel_id = gp.get("channel_telegram_id")
+                # Prefer explicit Telegram message id if present
+                post_id = gp.get("post_telegram_id") or gp.get("original_message_telegram_id")
+            except Exception:
+                pass
+
+            result = {"success": False, "error": "missing ids"}
+            if channel_id and post_id:
+                result = await self.telegram_service.post_comment_to_telegram(
+                    user_id=user_id,
+                    channel_telegram_id=int(channel_id),
+                    post_telegram_id=int(post_id),
+                    comment_text=text_to_post,
+                )
+            elif getattr(draft, "original_post_url", None):
+                # Fallback: try URL-based posting if we have a t.me link
+                result = await self.telegram_service.post_comment_by_url(
+                    user_id=user_id,
+                    post_url=str(draft.original_post_url),
+                    comment_text=text_to_post,
+                )
+                # If successful, persist recovered ids into generation_params for future posts
+                if result.get("success"):
+                    try:
+                        gp2 = dict(gp) if isinstance(gp, dict) else {}
+                        if result.get("channel_id") and not gp2.get("channel_telegram_id"):
+                            gp2["channel_telegram_id"] = int(result["channel_id"])  # type: ignore[arg-type]
+                        await self.draft_comment_repository.update_draft_comment(
+                            draft_id,
+                            generation_params=gp2 or None,
+                        )
+                    except Exception:
+                        pass
 
             if result.get('success'):
                 # Update draft status
@@ -471,7 +503,7 @@ class KarmaService(BaseService):
         post_data: Dict[str, Any],
         user: User,
         context_data: Optional[Dict[str, Any]] = None
-    ) -> Optional[str]:
+    ) -> Tuple[Optional[str], Optional[str]]:
         """Generate AI comment using configured AI service."""
         try:
             prompt = self._construct_prompt(post_data, user, context_data)
@@ -480,30 +512,32 @@ class KarmaService(BaseService):
             if user.preferred_ai_model and "gemini" in str(user.preferred_ai_model.value).lower():
                 response = await self.gemini_service.generate_content(prompt)
                 if response and response.get('content'):
-                    return response.get('content', '')
+                    try:
+                        content_json = json.loads(response.get('content'))
+                        draft_text = content_json.get('comment_text')
+                        context_summary = content_json.get('context_summary')
+                        return draft_text, context_summary
+                    except (json.JSONDecodeError, TypeError):
+                        # Fallback for plain text response
+                        return response.get('content', ''), "Could not generate summary."
                     
             # For testing/demo purposes, generate a mock response based on persona
             persona_name = user.persona_name or "Default User"
-            post_text = post_data.get('text', '')[:100]
-            
-            # Mock AI response that matches the persona style
             if persona_name == "Mark Zuckerberg":
                 mock_comments = [
-                    f"This is exactly the kind of innovation that will shape the future of human connection. The convergence of AR/VR technologies is bringing us closer to the metaverse vision.",
-                    f"Spatial computing represents a fundamental shift in how we'll interact with digital experiences. This is the foundation for the next computing platform.",
-                    f"Really exciting to see this progress! These advances in immersive technology will unlock new ways for people to connect and collaborate.",
-                    f"The AR/VR space is moving incredibly fast. Each breakthrough like this brings us closer to seamless digital-physical integration.",
+                    "This is a great step forward for connecting people. The metaverse will enable even richer experiences.",
+                    "Fascinating technology. I'm excited to see how this evolves and what it means for the future of social interaction.",
                     f"This kind of technological advancement is what makes me optimistic about building the metaverse. The future of computing is spatial."
                 ]
                 import random
-                return random.choice(mock_comments)
+                return random.choice(mock_comments), "This post is about the future of technology and the metaverse."
             else:
                 # Generic tech-savvy comment for other personas
-                return f"Interesting development! The technology landscape is evolving rapidly."
+                return f"Interesting development! The technology landscape is evolving rapidly.", "A post about technology."
 
         except Exception as e:
             self.logger.error(f"Error generating AI comment: {e}", exc_info=True)
-            return None
+            return None, None
 
     def _construct_prompt(
         self,
@@ -513,7 +547,7 @@ class KarmaService(BaseService):
     ) -> str:
         """Construct AI prompt using user's vibe profile."""
         # Base system context
-        prompt = "You are an AI assistant helping to generate authentic social media comments.\n\n"
+        prompt = "You are an AI assistant helping to generate authentic social media comments.\n"
         
         # Add vibe profile context if available
         if user.ai_profile and user.ai_profile.vibe_profile_json:
@@ -564,12 +598,13 @@ class KarmaService(BaseService):
                     prompt += f"- {msg.get('text', '')[:100]}...\n"
 
         # Instructions
-        prompt += f"\n## Instructions\n"
-        prompt += "Generate a comment that:\n"
-        prompt += "1. Matches the user's communication style and tone\n"
-        prompt += "2. Is relevant and adds value to the conversation\n"
-        prompt += "3. Feels authentic and natural\n"
-        prompt += "4. Is appropriate for the platform and context\n"
+        prompt += "\n## Instructions\n"
+        prompt += "Analyze the post and the user's vibe. Then, respond ONLY with a single JSON object with two keys:\n"
+        prompt += '1. "comment_text": A string containing a comment that matches the user\'s vibe, is relevant, and feels authentic.\n'
+        prompt += '2. "context_summary": A brief, neutral, one-sentence summary of what the post is about from the AI\'s perspective.\n\n'
+        prompt += "Your entire response must be a valid JSON object and nothing else.\n\n"
+        prompt += "Example Response Format:\n"
+        prompt += '{\n  "comment_text": "This is a really insightful take on the future of AI!",\n  "context_summary": "The post discusses recent advancements in artificial intelligence."\n}'
         
         if user.ai_profile and user.ai_profile.vibe_profile_json:
             vibe_profile = user.ai_profile.vibe_profile_json
@@ -577,26 +612,9 @@ class KarmaService(BaseService):
             verbosity = vibe_profile.get('verbosity', 'moderate')
             emoji_usage = vibe_profile.get('emoji_usage', 'light')
             
-            if tone == 'casual':
-                prompt += "5. Use a casual, conversational tone\n"
-            elif tone == 'formal':
-                prompt += "5. Use a formal, professional tone\n"
-            elif tone == 'enthusiastic':
-                prompt += "5. Show enthusiasm and energy\n"
-                
-            if verbosity == 'brief':
-                prompt += "6. Keep the comment concise and to the point\n"
-            elif verbosity == 'verbose':
-                prompt += "6. Provide detailed thoughts and explanations\n"
-                
-            if emoji_usage == 'heavy':
-                prompt += "7. Use emojis liberally to express emotions\n"
-            elif emoji_usage == 'light':
-                prompt += "7. Use emojis sparingly but appropriately\n"
-            elif emoji_usage == 'none':
-                prompt += "7. Avoid using emojis\n"
+            prompt += f"\nEnsure the 'comment_text' reflects these style guides: Tone: {tone}. Verbosity: {verbosity}. Emoji Usage: {emoji_usage}."
 
-        prompt += "\nGenerate only the comment text, nothing else:"
+        prompt += "\n\nBegin JSON response now:"
         
         return prompt
 
