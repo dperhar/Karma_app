@@ -17,7 +17,7 @@ class FeedService(BaseService):
         self.message_repo = message_repo
 
     async def get_user_feed(
-        self, user_id: str, limit: int = 20, offset: int = 0, source: str = "channel"
+        self, user_id: str, limit: int = 20, offset: int = 0, source: str = "channels"
     ) -> FeedResponse:
         """Orchestrates fetching the user's feed."""
         raw_feed_items = await self.message_repo.get_feed_posts(
@@ -36,7 +36,7 @@ class FeedService(BaseService):
                     "id": item.get("channel_id", 0),
                     "title": item.get("channel_name", "Unknown Channel"),
                     "username": item.get("channel_username"),
-                    "type": "channel",
+                    "type": item.get("channel_type", "channel"),
                     "avatar_url": item.get("channel_avatar_url"),
                 },
                 date=post_obj.date.isoformat() if post_obj.date else "",

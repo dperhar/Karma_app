@@ -14,6 +14,7 @@ import { useUserStore } from '@/store/userStore';
 import { TelegramChat, TelegramMessengerChatType } from '@/types/chat';
 import { usePostStore } from '@/store/postStore';
 import { useCommentStore, DraftComment } from '@/store/commentStore';
+import { useWebSocket } from '@/hooks/useWebSocket';
 import { Button } from '@/components/ui/button';
 import DraftCard from '@/components/DraftCard';
 import Pager from '@/components/Pager';
@@ -36,8 +37,9 @@ export default function Home() {
   const { fetchUser, user, isLoading: userLoading, error: userError } = useUserStore();
   const { fetchChats, chats, isLoading: chatsLoading, error: chatsError } = useChatStore();
   const { posts, fetchPosts, currentPage, totalPages } = usePostStore();
-  const [feedSource, setFeedSource] = useState<'channel' | 'supergroup' | 'combined'>('channel');
-  const { drafts, fetchDrafts, updateDraft, approveDraft, postDraft, regenerateDraft } = useCommentStore();
+  const [feedSource, setFeedSource] = useState<'channels' | 'groups' | 'both'>('channels');
+  const { drafts, fetchDrafts, updateDraft, approveDraft, postDraft, regenerateDraft, generateDraftComment, upsertDraft } = useCommentStore();
+  const { lastMessage } = useWebSocket({ userId: useUserStore.getState().user?.id, initDataRaw: 'mock_init_data_for_telethon' });
 
   const [selectedChat, setSelectedChat] = useState<TelegramChat | null>(null);
   const [editingDrafts, setEditingDrafts] = useState<Record<string, string>>({});
@@ -138,6 +140,17 @@ export default function Home() {
     };
   }, [fetchUser, fetchChats, fetchPosts, fetchDrafts, feedSource]);
 
+  // Realtime: append new drafts without refresh
+  useEffect(() => {
+    if (!lastMessage) return;
+    if (lastMessage.event === 'new_ai_draft' && lastMessage.data?.draft) {
+      try {
+        const d = lastMessage.data.draft as DraftComment;
+        upsertDraft(d);
+      } catch {}
+    }
+  }, [lastMessage, upsertDraft]);
+
   const handleChatClick = (chat: TelegramChat) => {
     setSelectedChat(chat);
     // Navigate to the chat detail page
@@ -154,29 +167,76 @@ export default function Home() {
     router.push('/settings');
   };
 
+  // Ensure unique posts by DB id to avoid duplicate keys from backend duplicates
+  const uniquePosts = useMemo(() => {
+    const map = new Map<string, Post>();
+    for (const p of posts) {
+      const key = String(p.id);
+      if (!map.has(key)) map.set(key, p);
+    }
+    return Array.from(map.values());
+  }, [posts]);
+
   // Draft items to render on main page (show drafts even if no matching post found)
   const draftItems = useMemo(() => {
     // Keep only the latest draft per original_message_id
     const latestByMsgId = new Map<string, DraftComment>();
-    for (const d of drafts) {
+    const toTs = (d: DraftComment) => {
+      const c = new Date(d.created_at).getTime();
+      const u = new Date(d.updated_at || d.created_at).getTime();
+      return Math.max(c || 0, u || 0);
+    };
+    // Sort ascending by timestamp so the last write wins in the map
+    const sortedDrafts = [...drafts].sort((a, b) => toTs(a) - toTs(b));
+    for (const d of sortedDrafts) {
       const key = String(d.original_message_id);
       const prev = latestByMsgId.get(key);
-      const prevTs = prev ? new Date(prev.updated_at || prev.created_at).getTime() : -1;
-      const curTs = new Date(d.updated_at || d.created_at).getTime();
-      if (!prev || curTs >= prevTs) {
+      if (!prev) { latestByMsgId.set(key, d); continue; }
+      const prevTs = toTs(prev);
+      const curTs = toTs(d);
+      // Prefer newer by timestamp; on tie prefer current
+      if (curTs >= prevTs) {
         latestByMsgId.set(key, d);
       }
     }
 
+    // Prefer aligning to the current page's posts so channel names and context are present
+    const alignedRaw = uniquePosts
+      .map((p) => {
+        const d = latestByMsgId.get(String(p.id));
+        return d ? ({ post: p, draft: d } as { draft: DraftComment; post: Post }) : null;
+      })
+      .filter(Boolean) as { draft: DraftComment; post: Post }[];
+    // Deduplicate by draft id in case of accidental duplicates
+    const seen = new Set<string>();
+    const aligned = alignedRaw.filter(({ draft }) => {
+      if (seen.has(draft.id)) return false;
+      seen.add(draft.id);
+      return true;
+    });
+    if (aligned.length > 0) {
+      return aligned;
+    }
+
+    // Fallback: previous behavior (for pages without matched drafts)
     const items = Array.from(latestByMsgId.values()).map((draft) => {
-      const matchedPost = posts.find((p) => String(p.telegram_id) === String(draft.original_message_id));
+      const matchedPost = uniquePosts.find((p) => String(p.id) === String(draft.original_message_id));
       return { draft, post: matchedPost } as { draft: DraftComment; post: Post | undefined };
     });
-    // Sort by latest draft timestamp desc
     return items.sort(
       (a, b) => new Date(b.draft.updated_at || b.draft.created_at).getTime() - new Date(a.draft.updated_at || a.draft.created_at).getTime()
     );
   }, [posts, drafts]);
+
+  // Posts on current page that don't have a draft yet
+  const postsWithoutDraft = useMemo(() => {
+    const hasDraftByMsgId = new Set(draftItems.map(i => String(i.draft.original_message_id)));
+    const filtered = uniquePosts.filter(p => !hasDraftByMsgId.has(String(p.id)));
+    // Deduplicate again defensively by id to prevent duplicate keys
+    const map = new Map<string, Post>();
+    for (const p of filtered) map.set(String(p.id), p);
+    return Array.from(map.values());
+  }, [uniquePosts, draftItems]);
 
   const handleEditChange = (draftId: string, text: string) => {
     // Support nested context edits using keys like `${id}::channel_context`
@@ -219,16 +279,22 @@ export default function Home() {
 
   const handleRegenerate = async (draft: DraftComment, post?: Post) => {
     const feedback = regenFeedback[draft.id];
-    const fallbackTelegramId = Number.isFinite(Number(draft.original_message_id))
-      ? Number(draft.original_message_id)
-      : 0;
+    const payload = post
+      ? { id: post.id, telegram_id: post.telegram_id, original_message_id: String(post.id), text: post.text, channel_telegram_id: post.channel_telegram_id }
+      : { original_message_id: String(draft.original_message_id), text: draft.original_post_content } as any;
     await regenerateDraft(
       draft.id,
-      { telegram_id: post?.telegram_id ?? fallbackTelegramId, text: post?.text ?? draft.original_post_content },
+      payload,
       feedback,
       'mock_init_data_for_telethon'
     );
     setRegenFeedback((prev) => ({ ...prev, [draft.id]: '' }));
+    // Clear any local edit override so refreshed draft text is visible
+    setEditingDrafts((prev) => {
+      const copy = { ...prev };
+      delete copy[draft.id];
+      return copy;
+    });
   };
 
   const handleSend = async (draftId: string) => {
@@ -277,19 +343,19 @@ export default function Home() {
         {/* Feed source toggle (top-centered) */}
         <div className="flex items-center justify-center gap-2 mb-4">
           <span className="text-sm text-gray-400">Source:</span>
-          {(['channel','combined','supergroup'] as const).map(s => (
+          {(['channels','both','groups'] as const).map(s => (
             <button
               key={s}
               className={`px-2 py-1 rounded text-sm ${feedSource === s ? 'bg-blue-600 text-white' : 'bg-black/20 border border-white/10 text-gray-200'}`}
               onClick={() => setFeedSource(s)}
             >
-              {s}
+              {s === 'channels' ? 'Channels' : s === 'both' ? 'Both' : 'Groups'}
             </button>
           ))}
         </div>
 
         <div className="mb-6">
-          {/* Drafts list on main page */}
+          {/* Drafts matched to posts */}
           <div className="space-y-6">
             {draftItems.map(({ post, draft }) => (
               <DraftCard
@@ -308,6 +374,23 @@ export default function Home() {
                 onCtxSave={() => handleSaveEdit(draft.id)}
                 onCtxClose={() => setOpenBubbleKey(null)}
               />
+            ))}
+            {/* Posts without drafts yet */}
+            {postsWithoutDraft.map((post) => (
+              <div key={`postonly-${post.id}`} className="card tg-post border border-white/10">
+                <div className="card-body">
+                  <div className="mb-2 text-sm text-muted-foreground">{post.channel?.title || 'Channel'} · {new Date(post.date).toLocaleString()}</div>
+                  <div className="mb-3 whitespace-pre-wrap text-sm">{post.text || 'Media post'}</div>
+                  <div className="flex justify-end">
+                    <button
+                      className="btn btn-sm btn-outline"
+                      onClick={() => generateDraftComment(post.telegram_id, post.channel_telegram_id || 0, 'mock_init_data_for_telethon')}
+                    >
+                      Generate draft
+                    </button>
+                  </div>
+                </div>
+              </div>
             ))}
           </div>
         </div>

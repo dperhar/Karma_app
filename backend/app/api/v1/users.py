@@ -105,7 +105,7 @@ async def get_my_ai_settings(
     # For now, use defaults; can be extended to read persisted values later
     settings_payload = AISettings(
         model="gemini-2.5-pro",
-        temperature=0.2,
+        temperature=0.95,
         max_output_tokens=512,
         provider=(getattr(getattr(ai_profile, "vibe_profile_json", {}), "get", lambda *_: None)("gen_provider") or "google"),
     )
@@ -150,7 +150,7 @@ async def update_my_ai_settings(
         temperature=(
             settings_update.temperature
             if settings_update.temperature is not None
-            else float(gen_overrides.get("temperature", 0.2))
+            else float(gen_overrides.get("temperature", 0.95))
         ),
         max_output_tokens=(
             settings_update.max_output_tokens

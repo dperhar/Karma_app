@@ -8,7 +8,7 @@ class AISettings(BaseModel):
     """AI settings returned to the client."""
 
     model: str = Field(default="gemini-2.5-pro", description="Gemini model name")
-    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    temperature: float = Field(default=0.95, ge=0.0, le=2.0)
     max_output_tokens: int = Field(default=512, ge=1, le=8192)
     provider: str = Field(default="google", description="Provider to use: 'google' or 'proxy'")
 

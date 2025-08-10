@@ -73,7 +73,7 @@ class DraftCommentRepository(BaseRepository):
         async with self.get_session() as session:
             try:
                 query = select(DraftComment).where(DraftComment.original_message_id == original_message_id)
-                result = await session.execute(query)
+                result = await session.execute(query.order_by(desc(DraftComment.updated_at)))
                 drafts = result.unique().scalars().all()
                 return list(drafts)
             except SQLAlchemyError as e:

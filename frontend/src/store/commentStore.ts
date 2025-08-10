@@ -60,12 +60,12 @@ interface CommentStore {
   updateDraft: (draftId: string, editedText: string, initDataRaw: string, generationParams?: Record<string, any>) => Promise<void>;
   approveDraft: (draftId: string, initDataRaw: string) => Promise<void>;
   postDraft: (draftId: string, initDataRaw: string) => Promise<void>;
-  regenerateDraft: (
-    draftId: string,
-    post: { telegram_id: number; text?: string; channel_telegram_id?: number },
-    rejectionReason: string | undefined,
-    initDataRaw: string,
-  ) => Promise<void>;
+    regenerateDraft: (
+      draftId: string,
+      post: { id?: number; telegram_id?: number; original_message_id?: string; text?: string; channel_telegram_id?: number },
+      rejectionReason: string | undefined,
+      initDataRaw: string,
+    ) => Promise<void>;
   setCurrentDraft: (draft: DraftComment | null) => void;
   
   // Legacy actions (for backward compatibility)
@@ -79,14 +79,15 @@ interface CommentStore {
   // Common actions
   clearError: () => void;
   reset: () => void;
+  // Realtime helper
+  upsertDraft: (draft: DraftComment) => void;
 }
 
 // API client for draft comments
 class DraftCommentAPI extends ApiClient {
-  async generateDraft(postId: number, channelId: number, initDataRaw: string): Promise<APIResponse<DraftComment>> {
-    // For now, trigger manual generation - in future this could be automatic
-    // The actual generation happens on backend when new posts are detected
-    return this.request<APIResponse<DraftComment>>('/drafts/draft-comments/generate', {
+  async generateDraft(postId: number, channelId: number, initDataRaw: string): Promise<APIResponse<{ status: string }>> {
+    // Triggers background generation; draft arrives via WebSocket (new_ai_draft)
+    return this.request<APIResponse<{ status: string }>>('/drafts/draft-comments/generate', {
       method: 'POST',
       body: JSON.stringify({
         post_telegram_id: postId,
@@ -158,19 +159,10 @@ export const useCommentStore = create<CommentStore>()(
       set({ isGeneratingDraft: true, error: null });
       
       try {
-        // Generate draft comment via API
         const response = await draftAPI.generateDraft(postId, channelId, initDataRaw);
-        
-        if (response.success && response.data) {
-          const draft: DraftComment = response.data;
-          set(state => ({ 
-            drafts: [...state.drafts, draft],
-            currentDraft: draft,
-            isGeneratingDraft: false 
-          }));
-        } else {
-          throw new Error(response.message || 'Failed to generate draft');
-        }
+        if (!response.success) throw new Error(response.message || 'Failed to queue draft generation');
+        // Stop spinner; draft will come via WS
+        set({ isGeneratingDraft: false });
       } catch (error: any) {
         console.error('Error generating draft comment:', error);
         set({
@@ -185,7 +177,15 @@ export const useCommentStore = create<CommentStore>()(
         const response = await draftAPI.getDrafts(initDataRaw, status);
         
         if (response.success && response.data) {
-          set({ drafts: response.data });
+          // Coalesce to latest per original_message_id to avoid stale items on UI
+          const toTs = (d: DraftComment) => new Date(d.updated_at || d.created_at).getTime();
+          const map = new Map<string, DraftComment>();
+          for (const d of response.data) {
+            const k = String(d.original_message_id);
+            const prev = map.get(k);
+            if (!prev || toTs(d) >= toTs(prev)) map.set(k, d);
+          }
+          set({ drafts: Array.from(map.values()) });
         }
       } catch (error: any) {
         console.error('Error fetching drafts:', error);
@@ -256,21 +256,37 @@ export const useCommentStore = create<CommentStore>()(
 
     regenerateDraft: async (
       draftId: string,
-      post: { telegram_id: number; text?: string; channel_telegram_id?: number; },
+      post: { id?: number; telegram_id?: number; original_message_id?: string; text?: string; channel_telegram_id?: number; },
       rejectionReason: string | undefined,
       initDataRaw: string,
     ) => {
       try {
+        const originalId = post.original_message_id ?? (post.id != null ? String(post.id) : (post.telegram_id != null ? String(post.telegram_id) : ''));
+        const regenStartedAt = Date.now();
         await draftAPI.regenerateDraft(
           draftId,
           {
-            original_message_id: String(post.telegram_id),
+            original_message_id: originalId,
             original_post_content: post.text,
           },
           rejectionReason,
           initDataRaw
         );
-        // Optionally re-fetch drafts later via websocket event; for now do nothing
+        // Poll a couple of times to allow the worker to create the new draft and WS to settle
+        for (let i = 0; i < 12; i++) {
+          try {
+            await get().fetchDrafts(initDataRaw);
+            // Check if a newer draft for this message id exists
+            const latest = get().drafts
+              .filter(d => String(d.original_message_id) === String(originalId))
+              .sort((a,b)=> new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime())[0];
+            if (latest) {
+              const ts = new Date(latest.updated_at || latest.created_at).getTime();
+              if (ts >= regenStartedAt - 200) break;
+            }
+          } catch {}
+          await new Promise(res => setTimeout(res, 500));
+        }
       } catch (error: any) {
         console.error('Error regenerating draft:', error);
         set({ error: error.message || 'Failed to regenerate draft' });
@@ -407,6 +423,17 @@ export const useCommentStore = create<CommentStore>()(
       isGenerating: false,
       isPosting: false,
       error: null,
+    }),
+
+    // Upsert helper used by WebSocket handler
+    upsertDraft: (draft: DraftComment) => set((state) => {
+      const exists = state.drafts.findIndex(d => d.id === draft.id);
+      if (exists >= 0) {
+        const copy = [...state.drafts];
+        copy[exists] = draft;
+        return { drafts: copy } as any;
+      }
+      return { drafts: [...state.drafts, draft] } as any;
     }),
   }))
 ); 

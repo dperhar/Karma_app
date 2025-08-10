@@ -45,7 +45,7 @@ class GeminiService:
                 self.model = genai.GenerativeModel(
                     model_name='gemini-2.5-pro',
                     generation_config={
-                        "temperature": 0.2,
+                        "temperature": 0.95,
                         "response_mime_type": "application/json",
                     },
                 )
@@ -114,9 +114,9 @@ class GeminiService:
                 }
                 model_name = aliases.get(model_name, model_name)
             try:
-                temperature = float((overrides or {}).get("temperature", self.model.generation_config.get("temperature", 0.2)))
+                temperature = float((overrides or {}).get("temperature", self.model.generation_config.get("temperature", 0.95)))
             except Exception:
-                temperature = 0.2
+                temperature = 0.95
             try:
                 max_output_tokens = int((overrides or {}).get("max_output_tokens", 512))
             except Exception:

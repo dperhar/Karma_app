@@ -23,18 +23,27 @@ async def get_feed(
     page: int = Query(1, ge=1, description="Page number starting from 1"),
     limit: int = Query(20, ge=1, le=100, description="Number of posts per page"),
     source: str = Query(
-        "channel",
-        description="Source filter: 'channel' (default), 'supergroup', or 'combined'",
+        "channels",
+        description="Source filter: 'channels' (default), 'groups', or 'both'",
     ),
 ) -> APIResponse[FeedResponse]:
     """Get the user's personalized feed of posts and drafts."""
     # Convert page to offset for the service
     offset = (page - 1) * limit
     
+    # Normalize legacy values for backward compatibility
+    source_norm = source.lower()
+    if source_norm == "combined":
+        source_norm = "both"
+    elif source_norm == "channel":
+        source_norm = "channels"
+    elif source_norm == "supergroup":
+        source_norm = "groups"
+
     feed = await feed_service.get_user_feed(
         user_id=current_user.id,
         limit=limit,
         offset=offset,
-        source=source,
+        source=source_norm,
     )
     return APIResponse(success=True, data=feed, message="Feed retrieved successfully") 

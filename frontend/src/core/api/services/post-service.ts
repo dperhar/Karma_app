@@ -51,7 +51,7 @@ export class PostService extends ApiClient {
     initDataRaw: string,
     page: number = 1,
     limit: number = 50,
-    source: 'channel' | 'supergroup' | 'combined' = 'channel'
+    source: 'channels' | 'groups' | 'both' = 'channels'
   ): Promise<APIResponse<PostsResponse>> {
     console.log('getPosts called with page:', page, 'limit:', limit);
     try {

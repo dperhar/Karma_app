@@ -5,6 +5,7 @@ import re
 from typing import Any, Dict, Optional
 
 from app.core.dependencies import container
+import random
 from app.models.ai_profile import AnalysisStatus
 from app.models.draft_comment import DraftStatus
 from app.models.telegram_message import TelegramMessengerMessage
@@ -742,8 +743,17 @@ async def async_generate_draft_for_post(
     try:
         user = await user_repo.get_user(user_id)
         ai_profile = await ai_profile_repo.get_ai_profile_by_user(user_id)
-        if not user or not ai_profile or not getattr(ai_profile, "vibe_profile_json", None):
-            raise Exception("User AI profile not found or incomplete.")
+        if not user:
+            raise Exception("User not found.")
+        # Ensure AI profile exists in dev to avoid early exit
+        if not ai_profile or not getattr(ai_profile, "vibe_profile_json", None):
+            try:
+                from app.tasks.tasks import seed_ai_profile_dev  # self-import safe
+                seed_ai_profile_dev.delay(user_id=user_id)
+            except Exception:
+                pass
+            # Reload after seed (best effort)
+            ai_profile = await ai_profile_repo.get_ai_profile_by_user(user_id)
 
         # Handle regeneration case
         if rejected_draft_id:
@@ -762,7 +772,7 @@ async def async_generate_draft_for_post(
                     rejected_draft_id, status=DraftStatus.REJECTED
                 )
 
-        # Check post relevance (allow forced generation for initial seeding)
+        # Check post relevance (allow forced generation for regeneration & initial seeding)
         force_generate: bool = bool(post_data.get("force_generate", False))
         vibe_profile = ai_profile.vibe_profile_json
         topics_of_interest = vibe_profile.get("topics_of_interest", [])
@@ -812,7 +822,7 @@ async def async_generate_draft_for_post(
 
         # Pull user's recently POSTED drafts as positive examples to imitate
         try:
-            recent_posted = await draft_repo.get_recent_posted_by_user(user_id=user_id, limit=8)
+            recent_posted = await draft_repo.get_recent_posted_by_user(user_id=user_id, limit=20)
             examples_weighted: list[str] = []
             now_ts = __import__('time').time()
             for p in recent_posted:
@@ -825,9 +835,10 @@ async def async_generate_draft_for_post(
                 recency_w = max(0.3, 1.0 / (1.0 + age_hours / 24.0))  # >= 0.3
                 # User-curated boost if marked as style example
                 gp = getattr(p, 'generation_params', None) or {}
-                curated_boost = 0.2 if isinstance(gp, dict) and gp.get('is_style_example') else 0.0
+                # Strongly boost explicit style examples (posted via our app)
+                curated_boost = 0.6 if isinstance(gp, dict) and gp.get('is_style_example') else 0.0
                 # Baseline boost for anything the user actually sent
-                posted_boost = 0.1
+                posted_boost = 0.25
                 weight = min(1.0, recency_w + posted_boost + curated_boost)
                 examples_weighted.append(f"- [WEIGHT {weight:.2f}] {text}")
             positive_examples = "\n".join(examples_weighted)
@@ -885,15 +896,23 @@ async def async_generate_draft_for_post(
 
         # Graceful degrade: if any failure OR empty content, still create a minimal draft so feed stays useful
         if (not response or not response.get("success")) or not content_text:
-            draft_text = (
-                "Круто. Вижу тему, которая мне близка. Подписываюсь на апдейт. "
-                "(AI временно ограничен/недоступен, поэтому коротко.)"
-            )
+            # Distinct fallback so the user sees change after regeneration
+            if rejected_draft_id:
+                variations = [
+                    "Окей, возьму другой угол. По сути — коротко и по делу.",
+                    "Попробую иначе: компактно и ближе к сути.",
+                    "Скажу по‑другому: лаконично, без воды.",
+                ]
+                draft_text = random.choice(variations)
+            else:
+                draft_text = (
+                    "Круто. Вижу тему, которая мне близка. Подписываюсь на апдейт. "
+                    "(AI временно ограничен/недоступен, поэтому коротко.)"
+                )
         else:
             draft_text = content_text
 
-        # Save draft
-        # Enrich generation params with channel title for UI/learning and real Telegram IDs
+        # Ensure we have a DB message id; resolve or create using channel_telegram_id + post_telegram_id
         gen_params: Dict[str, Any] = {}
         try:
             if channel_telegram_id and db_chat:
@@ -903,20 +922,34 @@ async def async_generate_draft_for_post(
                 gen_params["channel_title"] = post_data.get("channel", {}).get("title")
                 if post_data.get("channel", {}).get("id"):
                     gen_params["channel_telegram_id"] = int(post_data.get("channel", {}).get("id"))
-            # Include original Telegram message id if available in payload
+
+            post_tg_id = None
             if post_data.get("original_message_telegram_id") and str(post_data.get("original_message_telegram_id")).isdigit():
-                gen_params["post_telegram_id"] = int(post_data.get("original_message_telegram_id"))
-            else:
-                # Try to resolve DB message id to Telegram id
-                try:
-                    db_msg_id = post_data.get("original_message_id")
-                    if db_msg_id and str(db_msg_id).isdigit():
-                        db_msg = await message_repo.get_message(str(db_msg_id))
-                        tg_id = getattr(db_msg, "telegram_id", None) if db_msg else None
-                        if tg_id:
-                            gen_params["post_telegram_id"] = int(tg_id)
-                except Exception:
-                    pass
+                post_tg_id = int(post_data.get("original_message_telegram_id"))
+                gen_params["post_telegram_id"] = post_tg_id
+
+            db_msg_id = post_data.get("original_message_id")
+            db_message = None
+            if db_msg_id and str(db_msg_id).isdigit():
+                db_message = await message_repo.get_message(str(db_msg_id))
+            elif db_chat and post_tg_id is not None:
+                # Try to find/create by chat and telegram id
+                db_message = await message_repo.get_message_by_chat_and_telegram_id(db_chat.id, post_tg_id)
+                if not db_message:
+                    # Create minimal message row
+                    created_list = await message_repo.create_or_update_messages(
+                        [
+                            TelegramMessengerMessage(
+                                telegram_id=post_tg_id,
+                                chat_id=db_chat.id,
+                                text=post_data.get("original_post_content") or "",
+                                date=telegram_service._convert_to_naive_utc(__import__('datetime').datetime.utcnow()),
+                            )
+                        ]
+                    )
+                    db_message = created_list[0] if created_list else None
+            if db_message:
+                post_data["original_message_id"] = str(db_message.id)
         except Exception:
             pass
 
@@ -1063,12 +1096,14 @@ async def async_generate_drafts_for_user_recent_posts(user_id: str, dialogs_limi
             if not db_chat:
                 # Create chat record on the fly so drafts can be generated immediately
                 from app.models.chat import TelegramMessengerChat, TelegramMessengerChatType
+                # Determine correct chat type: broadcast=True => CHANNEL, else SUPERGROUP
+                is_broadcast = bool(getattr(dialog.entity, "broadcast", False))
                 created_list = await chat_repo.create_or_update_chats(
                     [
                         TelegramMessengerChat(
                             telegram_id=int(dialog.id),
                             user_id=user.id,
-                            type=TelegramMessengerChatType.CHANNEL,
+                            type=TelegramMessengerChatType.CHANNEL if is_broadcast else TelegramMessengerChatType.SUPERGROUP,
                             title=getattr(dialog.entity, "title", "Unnamed Channel"),
                             comments_enabled=True,
                         )
@@ -1108,3 +1143,64 @@ async def async_generate_drafts_for_user_recent_posts(user_id: str, dialogs_limi
     finally:
         if client:
             await telegram_service.disconnect_client(user.id)
+
+
+# --- Maintenance tasks ---
+
+@celery_app.task(name="tasks.normalize_chat_types_for_user", queue="scheduler")
+def normalize_chat_types_for_user(user_id: str):
+    """Normalize saved chat types for a user in the background."""
+    logger.info("Starting normalize_chat_types_for_user for user_id=%s", user_id)
+    asyncio.run(async_normalize_chat_types_for_user(user_id))
+
+
+async def async_normalize_chat_types_for_user(user_id: str):
+    telegram_service = container.resolve(TelegramService)
+    chat_repo = container.resolve(ChatRepository)
+
+    client = await telegram_service.get_or_create_client(user_id)
+    if not client:
+        logger.warning("No Telegram client for user %s; aborting normalize chat types", user_id)
+        return
+
+    try:
+        saved_chats = await chat_repo.get_user_chats(user_id=user_id, limit=10000, offset=0)
+        if not saved_chats:
+            return
+
+        from app.models.chat import TelegramMessengerChat, TelegramMessengerChatType
+        from telethon.tl.types import Channel as TelethonChannel, Chat as TelethonChat, User as TelethonUser
+
+        updates: list[TelegramMessengerChat] = []
+        for chat in saved_chats:
+            try:
+                entity = await client.get_entity(int(chat.telegram_id))
+            except Exception:
+                continue
+
+            if isinstance(entity, TelethonChannel):
+                is_broadcast = bool(getattr(entity, "broadcast", False))
+                new_type = TelegramMessengerChatType.CHANNEL if is_broadcast else TelegramMessengerChatType.SUPERGROUP
+            elif isinstance(entity, TelethonChat):
+                new_type = TelegramMessengerChatType.GROUP
+            elif isinstance(entity, TelethonUser):
+                new_type = TelegramMessengerChatType.PRIVATE
+            else:
+                continue
+
+            if new_type != chat.type:
+                updates.append(
+                    TelegramMessengerChat(
+                        telegram_id=int(chat.telegram_id),
+                        user_id=user_id,
+                        type=new_type,
+                        title=chat.title,
+                        member_count=chat.member_count,
+                    )
+                )
+
+        if updates:
+            await chat_repo.create_or_update_chats(updates)
+            logger.info("Normalized %s chats for user %s", len(updates), user_id)
+    finally:
+        await telegram_service.disconnect_client(user_id)
