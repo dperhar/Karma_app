@@ -7,6 +7,7 @@ from aiogram import Bot
 from fastapi import Depends, HTTPException, Request, status
 
 from app.schemas.user import AdminResponse, UserResponse, UserTelegramResponse
+from app.core.config import settings
 from app.services.user_service import UserService
 from app.core.dependencies import container
 
@@ -44,6 +45,18 @@ async def get_current_user(
     logger.info(f"🔍 get_current_user - user from state: {user}")
 
     if not user:
+        # Dev fallback: return a mock user so FE can work without full auth/session
+        if settings.IS_DEVELOP:
+            logger.info("🔍 get_current_user - dev fallback user injected")
+            return UserResponse(
+                id="dev-user-109005276",
+                telegram_id=109005276,
+                username="dev_user",
+                first_name="Development",
+                last_name="User",
+                phone_number=None,
+                is_active=True,
+            )
         logger.info(f"🔍 get_current_user - no user in state, raising 401")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

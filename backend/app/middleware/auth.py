@@ -55,31 +55,31 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
         
         logger.info(f"🔧 AuthMiddleware - processing auth for path: {request.url.path}")
         
+        # Try session cookie via Redis, but don't let failures block dev fallback
         try:
-            # Check for session cookie first
             session_id = request.cookies.get(settings.SESSION_COOKIE_NAME)
             logger.info(f"🔧 AuthMiddleware - session_id: {session_id}")
-            
             if session_id:
                 logger.info(f"🔧 AuthMiddleware - Found session_id: {session_id}")
                 redis_service = container.resolve(RedisService)
                 session_data = redis_service.get_session(f"web_session:{session_id}")
                 logger.info(f"🔧 AuthMiddleware - Session data: {session_data}")
-                
                 if session_data and "user_id" in session_data:
                     user_service = container.resolve(UserService)
-                    user = await user_service.get_user(session_data["user_id"])
+                    user = await user_service.get_user(session_data["user_id"]) 
                     logger.info(f"🔧 AuthMiddleware - User from session: {user.id if user else None}")
-                    
-            # Development mode fallback - ALWAYS provide user for API endpoints
-            if not user and settings.IS_DEVELOP and request.url.path.startswith("/api/v1/"):
+        except Exception as e:
+            logger.error(f"🔧 AuthMiddleware - Session lookup error (continuing): {e}", exc_info=True)
+
+        # Development mode fallback should always run independently
+        if not user and settings.IS_DEVELOP and request.url.path.startswith("/api/v1/"):
+            try:
                 logger.info(f"🔧 AuthMiddleware - Using development fallback for: {request.url.path}")
                 user_service = container.resolve(UserService)
-                user = await user_service.get_user_by_telegram_id(109005276)  # Match frontend
+                user = await user_service.get_user_by_telegram_id(109005276)
                 logger.info(f"🔧 AuthMiddleware - Development user loaded: {user.id if user else None}")
-                    
-        except Exception as e:
-            logger.error(f"🔧 AuthMiddleware - Error: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"🔧 AuthMiddleware - Dev fallback error: {e}", exc_info=True)
 
         # Set user/admin in request state
         request.state.user = user

@@ -21,8 +21,107 @@ from app.services.domain.websocket_service import WebSocketService
 from app.services.gemini_service import GeminiService
 from app.services.telegram_service import TelegramService
 from app.tasks.worker import celery_app
+import requests
 
 logger = logging.getLogger(__name__)
+
+
+def _build_default_vibe_profile(lang: str = "en") -> Dict[str, Any]:
+    """Construct a minimal but useful default vibe profile for development.
+
+    Args:
+        lang: Preferred language code ("ru" or "en").
+
+    Returns:
+        Dict[str, Any]: Default profile content localized.
+    """
+    if lang == "ru":
+        return {
+            "tone": "неформальный, по делу, немного остроумный",
+            "verbosity": "средняя",
+            "emoji_usage": "немного",
+            "signature_phrases": [{"text": "погнали", "count": 3}],
+            "ngrams": {"bigrams": ["давай сделаем", "выглядит круто"], "trigrams": ["это выглядит круто"]},
+            "topics_of_interest": ["стартапы", "ИИ", "фаундерство", "рост"],
+            "topic_weights": {"ИИ": 0.9, "стартапы": 0.85},
+            "phrase_weights": {"погнали": 0.7},
+            "style_markers": {
+                "emoji_ratio": 0.01,
+                "caps_ratio": 0.02,
+                "avg_sentence_len_words": 9.5,
+                "sentence_types": {"question": 0.15, "exclamation": 0.05, "declarative": 0.8},
+                "punctuation": {
+                    "exclamation_total": 1,
+                    "question_total": 2,
+                    "ellipsis_total": 0,
+                    "dash_total": 0,
+                    "hyphen_total": 1,
+                    "quotes_angled_total": 0,
+                    "quotes_straight_total": 0,
+                    "parentheses_total": 0,
+                },
+                "language_distribution": {"ru_cyrillic": 1.0, "en_latin": 0.0},
+                "fillers": {},
+                "abbreviations": {"имхо": 1},
+            },
+            "digital_comm": {
+                "greetings": ["йо", "привет"],
+                "farewells": ["cheers"],
+                "addressing_style": "ты",
+                "typical_endings": ["."]
+            },
+            "signature_templates": [
+                "Мысль: {{point}}. Что думаешь?",
+                "Согласен по {{topic}} — я бы попробовал так: {{idea}}",
+            ],
+            "style_prompt": "Пиши кратко, по‑фаундерски, с лёгкой иронией и минимумом эмодзи.",
+            "do_list": ["быть конкретным", "держаться темы"],
+            "dont_list": ["пересказывать очевидное", "водить воду"],
+        }
+
+    # default EN
+    return {
+        "tone": "casual, concise, a bit witty",
+        "verbosity": "medium",
+        "emoji_usage": "light",
+        "signature_phrases": [{"text": "let's go", "count": 3}],
+        "ngrams": {"bigrams": ["let's go", "looks great"], "trigrams": ["this looks great"]},
+        "topics_of_interest": ["startups", "ai", "founders", "growth"],
+        "topic_weights": {"ai": 0.9, "startups": 0.85},
+        "phrase_weights": {"let's go": 0.7},
+        "style_markers": {
+            "emoji_ratio": 0.01,
+            "caps_ratio": 0.02,
+            "avg_sentence_len_words": 9.5,
+            "sentence_types": {"question": 0.15, "exclamation": 0.05, "declarative": 0.8},
+            "punctuation": {
+                "exclamation_total": 1,
+                "question_total": 2,
+                "ellipsis_total": 0,
+                "dash_total": 0,
+                "hyphen_total": 1,
+                "quotes_angled_total": 0,
+                "quotes_straight_total": 0,
+                "parentheses_total": 0,
+            },
+            "language_distribution": {"ru_cyrillic": 0.0, "en_latin": 1.0},
+            "fillers": {},
+            "abbreviations": {"imo": 1},
+        },
+        "digital_comm": {
+            "greetings": ["yo", "hey"],
+            "farewells": ["cheers"],
+            "addressing_style": "you",
+            "typical_endings": ["."]
+        },
+        "signature_templates": [
+            "Hot take: {{point}}. Curious what you think.",
+            "Agree on {{topic}} – here's the angle I'd try: {{idea}}",
+        ],
+        "style_prompt": "Write concise, founder-like replies with light wit and minimal emoji.",
+        "do_list": ["be concrete", "stay on-topic"],
+        "dont_list": ["over-explain", "generic fluff"],
+    }
 
 
 @celery_app.task(name="tasks.fetch_telegram_chats_task", queue="drafts")
@@ -346,7 +445,7 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
 
         RULES:
         - Ground all claims in PRECOMPUTED_STATS and SAMPLE_MESSAGES. Do not invent.
-        - If Russian share > 0.5, respond in Russian; otherwise English.
+        - LANGUAGE: If PRECOMPUTED_STATS.language_distribution.ru_cyrillic > 0.5, write ALL FIELDS IN RUSSIAN; else in ENGLISH.
         - signature_phrases should come from recurring tokens/phrases; include counts.
         - Keep arrays ≤ 12 items. Prefer exact phrases from messages when possible.
 
@@ -376,12 +475,29 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
 
         response = await gemini_service.generate_content(prompt, overrides=ai_overrides)
         if not response or not response.get("success"):
+            from app.core.config import settings
             err_msg = (response or {}).get("error", "LLM analysis failed.")
             logger.error(f"LLM analysis failed for user {user_id}: {err_msg}")
-            await websocket_service.send_user_notification(
-                user_id, "vibe_profile_failed", {"error": err_msg}
-            )
+            await websocket_service.send_user_notification(user_id, "vibe_profile_failed", {"error": err_msg})
             await notify("llm_failed", error=err_msg)
+            if settings.IS_DEVELOP:
+                await notify("dev_seed_start")
+                # Choose default profile language based on recent messages
+                try:
+                    dom_lang = "ru" if precomputed_stats.get("language_distribution", {}).get("ru_cyrillic", 0) > 0.5 else "en"
+                except Exception:
+                    dom_lang = "en"
+                default_profile = _build_default_vibe_profile(dom_lang)
+                ai_profile = await ai_profile_repo.get_ai_profile_by_user(user_id)
+                if not ai_profile:
+                    ai_profile = await ai_profile_repo.create_ai_profile(user_id=user_id)
+                await ai_profile_repo.mark_analysis_completed(
+                    profile_id=ai_profile.id,
+                    vibe_profile=default_profile,
+                    messages_count=0,
+                )
+                await websocket_service.send_user_notification(user_id, "vibe_profile_completed", {"profile": default_profile})
+                await notify("dev_seed_done")
             return
 
         content = response.get("content", "").strip()
@@ -397,6 +513,11 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
             return
 
         vibe_profile = json.loads(json_match.group(0))
+        try:
+            dom_lang = "ru" if precomputed_stats.get("language_distribution", {}).get("ru_cyrillic", 0) > 0.5 else "en"
+            vibe_profile["dominant_language"] = dom_lang
+        except Exception:
+            pass
         await notify("llm_parsed_ok")
 
         # Save the profile
@@ -440,6 +561,81 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
             await telegram_service.disconnect_client(user_id)
 
 
+@celery_app.task(name="tasks.seed_ai_profile_dev", queue="analysis")
+def seed_ai_profile_dev(user_id: str):
+    """Dev-only helper to mark AI profile as completed with a reasonable default.
+
+    Used when running locally without a Telegram session so the UI can function.
+    """
+    asyncio.run(async_seed_ai_profile_dev(user_id))
+
+
+async def async_seed_ai_profile_dev(user_id: str):
+    from app.repositories.ai_profile_repository import AIProfileRepository
+    websocket_service = container.resolve(WebSocketService)
+    ai_profile_repo = container.resolve(AIProfileRepository)
+
+    ai_profile = await ai_profile_repo.get_ai_profile_by_user(user_id)
+    if not ai_profile:
+        ai_profile = await ai_profile_repo.create_ai_profile(user_id=user_id)
+
+    # Minimal but useful vibe profile so UI can render
+    default_profile: Dict[str, Any] = {
+        "tone": "casual, concise, a bit witty",
+        "verbosity": "medium",
+        "emoji_usage": "light",
+        "signature_phrases": [{"text": "let's go", "count": 3}],
+        "ngrams": {"bigrams": ["let's go", "looks great"], "trigrams": ["this looks great"]},
+        "topics_of_interest": ["startups", "ai", "founders", "growth"],
+        "topic_weights": {"ai": 0.9, "startups": 0.85},
+        "phrase_weights": {"let's go": 0.7},
+        "style_markers": {
+            "emoji_ratio": 0.01,
+            "caps_ratio": 0.02,
+            "avg_sentence_len_words": 9.5,
+            "sentence_types": {"question": 0.15, "exclamation": 0.05, "declarative": 0.8},
+            "punctuation": {
+                "exclamation_total": 1,
+                "question_total": 2,
+                "ellipsis_total": 0,
+                "dash_total": 0,
+                "hyphen_total": 1,
+                "quotes_angled_total": 0,
+                "quotes_straight_total": 0,
+                "parentheses_total": 0,
+            },
+            "language_distribution": {"ru_cyrillic": 0.0, "en_latin": 1.0},
+            "fillers": {},
+            "abbreviations": {"imo": 1},
+        },
+        "digital_comm": {
+            "greetings": ["yo", "hey"],
+            "farewells": ["cheers"],
+            "addressing_style": "you",
+            "typical_endings": ["."]
+        },
+        "signature_templates": [
+            "Hot take: {{point}}. Curious what you think.",
+            "Agree on {{topic}} – here's the angle I'd try: {{idea}}",
+        ],
+        "style_prompt": "Write concise, founder-like replies with light wit and minimal emoji.",
+        "do_list": ["be concrete", "stay on-topic"],
+        "dont_list": ["over-explain", "generic fluff"],
+    }
+
+    await ai_profile_repo.mark_analysis_completed(
+        profile_id=ai_profile.id,
+        vibe_profile=default_profile,
+        messages_count=0,
+    )
+
+    try:
+        await websocket_service.send_user_notification(
+            user_id, "vibe_profile_completed", {"profile": default_profile}
+        )
+    except Exception:
+        pass
+
 @celery_app.task(name="tasks.generate_draft_for_post")
 def generate_draft_for_post(
     user_id: str,
@@ -455,6 +651,76 @@ def generate_draft_for_post(
         )
     )
 
+
+@celery_app.task(name="tasks.seed_dev_drafts_from_feed", queue="drafts")
+def seed_dev_drafts_from_feed(user_id: str, limit: int = 6):
+    """DEV: Seed initial drafts using the public feed when Telegram session is absent.
+
+    Pulls posts from the API feed and creates lightweight drafts so the UI is populated.
+    """
+    asyncio.run(async_seed_dev_drafts_from_feed(user_id, limit))
+
+
+async def async_seed_dev_drafts_from_feed(user_id: str, limit: int = 6):
+    from app.core.config import settings
+    draft_repo = container.resolve(DraftCommentRepository)
+    user_repo = container.resolve(UserRepository)
+    websocket_service = container.resolve(WebSocketService)
+
+    try:
+        # Fetch feed posts from API inside container
+        base = f"http://localhost:8000{settings.API_V1_STR}"
+        resp = requests.get(f"{base}/feed", params={"page": 1, "limit": limit}, timeout=5)
+        posts = (resp.json().get("data") or {}).get("posts") or []
+    except Exception:
+        posts = []
+
+    if not posts:
+        return
+
+    user = await user_repo.get_user(user_id)
+    lang = "ru"
+    try:
+        vp = getattr(user, "ai_profile", None).vibe_profile_json if getattr(user, "ai_profile", None) else {}
+        dom = (vp or {}).get("dominant_language")
+        if dom in ("ru", "en"):
+            lang = dom
+    except Exception:
+        pass
+
+    for idx, p in enumerate(posts):
+        try:
+            text = p.get("text") or ""
+            if not text:
+                continue
+            draft_text = (
+                f"Согласен. Интересная мысль. 🚀" if lang == "ru" else "Interesting take. I like it. 🚀"
+            )
+            gen_params: Dict[str, Any] = {}
+            ch = p.get("channel") or {}
+            if ch.get("title"):
+                gen_params["channel_title"] = ch.get("title")
+            if p.get("channel_telegram_id"):
+                gen_params["channel_telegram_id"] = int(p["channel_telegram_id"])  # type: ignore[arg-type]
+
+            create = DraftCommentCreate(
+                original_message_id=f"dev-seed-{idx}",
+                user_id=user_id,
+                persona_name=getattr(getattr(user, "ai_profile", None), "persona_name", None),
+                ai_model_used=str(getattr(getattr(user, "preferred_ai_model", None), "value", "gemini-pro")),
+                original_post_text_preview=text[:500],
+                original_post_content=text,
+                original_post_url=p.get("url"),
+                draft_text=draft_text,
+                generation_params=gen_params or None,
+            )
+            new_draft = await draft_repo.create_draft_comment(**create.model_dump())
+            if new_draft:
+                await websocket_service.send_user_notification(
+                    user_id, "new_ai_draft", {"draft": DraftCommentResponse.model_validate(new_draft).model_dump(mode="json")}
+                )
+        except Exception:
+            continue
 
 async def async_generate_draft_for_post(
     user_id: str,

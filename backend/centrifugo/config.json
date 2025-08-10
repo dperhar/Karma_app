@@ -1,34 +1,24 @@
 {
-  "client": {
-    "token": {
-      "hmac_secret_key": "65840621-4be3-4a74-a03c-6036545bc244"
-    },
-    "anonymous": true,
-    "allowed_origins": [
-      "http://localhost:3000",
-      "http://127.0.0.1:3000",
-      "http://localhost:8000",
-      "http://127.0.0.1:8000",
-      "https://app.doublekiss.zeenevents.ru",
-      "https://admin.doublekiss.zeenevents.ru",
-      "https://testbot.zeenevents.com"
-    ]
-  },
+  "token_hmac_secret_key": "65840621-4be3-4a74-a03c-6036545bc244",
+  "api_key": "65840621-4be3-4a74-a03c-6036545bc244",
+  "allowed_origins": [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "https://app.doublekiss.zeenevents.ru",
+    "https://admin.doublekiss.zeenevents.ru",
+    "https://testbot.zeenevents.com"
+  ],
   "admin": {
+    "enabled": true,
     "password": "password",
-    "secret": "secret",
-    "enabled": true
+    "secret": "secret"
   },
-  "http_api": {
-    "key": "65840621-4be3-4a74-a03c-6036545bc244"
-  },
-  "channel": {
-    "namespaces": [
-      {
-        "name": "user",
-        "anonymous": true,
-        "allow_subscribe": true
-      }
-    ]
-  }
+  "namespaces": [
+    {
+      "name": "user",
+      "allow_subscribe": true
+    }
+  ]
 }

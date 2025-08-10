@@ -63,6 +63,8 @@ export class ApiClient {
       
       const response = await fetch(`${this.baseUrl}${endpoint}`, {
         ...options,
+        // Ensure cookies (session) are sent to the API
+        credentials: 'include',
         headers,
         signal: controller.signal
       });
