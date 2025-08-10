@@ -15,6 +15,9 @@ import { TelegramChat, TelegramMessengerChatType } from '@/types/chat';
 import { usePostStore } from '@/store/postStore';
 import { useCommentStore, DraftComment } from '@/store/commentStore';
 import { Button } from '@/components/ui/button';
+import DraftCard from '@/components/DraftCard';
+import Pager from '@/components/Pager';
+import ContextBubble from '@/components/ContextBubble';
 import { Post } from '@/core/api/services/post-service';
 
 // Define filter types
@@ -211,30 +214,7 @@ export default function Home() {
     await postDraft(draftId, 'mock_init_data_for_telethon');
   };
 
-  const ContextBubble: React.FC<{ id: string; label: string; value: string; onChange: (v: string) => void; onSave: () => void; isOpen: boolean; onClose: () => void; }>=({ id, label, value, onChange, onSave, isOpen, onClose })=>{
-    if (!isOpen) return null;
-    return (
-      <div className="absolute bottom-full left-0 mb-2 z-50">
-        <div className="rounded-xl shadow-xl border border-border bg-base-100 p-3"
-             style={{ minWidth: '10rem', minHeight: '5rem', maxWidth: '25vw', maxHeight: '25vh' }}>
-          <div className="flex items-center mb-2 text-xs opacity-70">
-            <span className="font-medium mr-2">{label}</span>
-            <button className="ml-auto btn btn-ghost btn-xs" onClick={onClose}>✕</button>
-          </div>
-          <textarea
-            className="w-full bg-transparent outline-none text-sm resize-none overflow-auto"
-            style={{ maxHeight: '20vh' }}
-            value={value}
-            onChange={(e)=>onChange(e.target.value)}
-            rows={5}
-          />
-          <div className="mt-2 text-right">
-            <button className="btn btn-xs btn-primary" onClick={onSave}>Save</button>
-          </div>
-        </div>
-      </div>
-    );
-  };
+  // Local inline removed; we use components/ContextBubble.tsx
 
   const handleRegenerate = async (draft: DraftComment, post?: Post) => {
     const feedback = regenFeedback[draft.id];
@@ -297,189 +277,32 @@ export default function Home() {
           {/* Drafts list on main page */}
           <div className="space-y-6">
             {draftItems.map(({ post, draft }) => (
-              <div key={draft.id} className="card tg-post">
-                <div className="card-body">
-                  {post ? (
-                    <div className="mb-3">
-                      <div className="tg-post-header">
-                        <div className="tg-avatar">
-                          {post.channel.avatar_url ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={(post.channel as any).avatar_url} alt="avatar" className="h-full w-full object-cover" />
-                          ) : (
-                            (() => {
-                              const name = post.channel.title || '';
-                              const initials = name.split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
-                              return initials || '•';
-                            })()
-                          )}
-                        </div>
-                        <span className="tg-post-title">{post.channel.title}</span>
-                        <span>·</span>
-                        <span>{new Date(post.date).toLocaleString()}</span>
-                        {typeof post.replies === 'number' && (
-                          <span className="ml-auto">Replies: {post.replies}</span>
-                        )}
-                      </div>
-                      <p className="text-sm whitespace-pre-wrap">{post.text}</p>
-                      {Array.isArray(post.reactions) && post.reactions.length > 0 && (
-                        <div className="mt-2 tg-reactions flex flex-wrap gap-2 opacity-80">
-                          {post.reactions.map((r, idx) => (
-                            <span key={idx}>{(r.emoticon || (r.reaction as any))} {r.count}</span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="mb-3">
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-                        <div className="tg-avatar">
-                          {(() => {
-                            const name = (draft.generation_params as any)?.channel_title || '';
-                            const initials = name.split(' ').map((w:string) => w[0]).join('').slice(0,2).toUpperCase();
-                            return initials || '•';
-                          })()}
-                        </div>
-                        <span className="font-medium">{(draft.generation_params as any)?.channel_title || 'Original Post'}</span>
-                        {draft.original_post_url && (
-                          <a className="link ml-2" href={draft.original_post_url} target="_blank" rel="noreferrer">open</a>
-                        )}
-                        <span className="ml-auto">{new Date(draft.created_at).toLocaleString()}</span>
-                      </div>
-                      <p className="text-sm whitespace-pre-wrap">{draft.original_post_content || draft.original_post_text_preview || '—'}</p>
-                    </div>
-                  )}
-
-                  {/* Composer vs Posted bubble */}
-                  {draft.status === 'POSTED' ? (
-                    <div className="chat chat-end tg-draft-bubble tg-sent-bubble">
-                      <div className="chat-bubble whitespace-pre-wrap max-w-full w-full">
-                        {draft.final_text_to_post || draft.edited_text || draft.draft_text}
-                      </div>
-                      <div className="tg-sent-meta text-[11px] opacity-80">
-                        <span className="badge badge-success">Posted</span>
-                        {draft.original_post_url && (
-                          <a className="tg-thread-link" href={draft.original_post_url} target="_blank" rel="noreferrer">Open thread</a>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="chat chat-start tg-draft-bubble">
-                      <div className="relative chat-bubble bg-base-200 text-base-content whitespace-pre-wrap max-w-full w-full">
-                        <textarea
-                          className="w-full bg-transparent outline-none text-base leading-relaxed pr-24"
-                          value={editingDrafts[draft.id] ?? draft.edited_text ?? draft.draft_text}
-                          onChange={(e) => handleEditChange(draft.id, e.target.value)}
-                          rows={5}
-                        />
-                        <button
-                          className="absolute bottom-2 right-2 btn btn-sm bg-green-600 hover:bg-green-700"
-                          onClick={() => handleSend(draft.id)}
-                        >
-                          Send
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Context buttons above text */}
-                  <div className="mb-2 flex gap-2">
-                    <button
-                      className="btn btn-xs btn-outline"
-                      onClick={() => setOpenBubbleKey(prev => prev === `chan:${draft.id}` ? null : `chan:${draft.id}`)}
-                    >
-                      Channel context
-                    </button>
-                    <button
-                      className="btn btn-xs btn-outline"
-                      onClick={() => setOpenBubbleKey(prev => prev === `msg:${draft.id}` ? null : `msg:${draft.id}`)}
-                    >
-                      Digital twin context
-                    </button>
-                  </div>
-
-                  {/* Context bubbles: channel/topic + message context with edit capability */}
-                  <div className="grid md:grid-cols-2">
-                    <div className="relative">
-                      {/* Popovers */}
-                      <ContextBubble
-                        id={`chan:${draft.id}`}
-                        label="Channel context"
-                        value={(draft.generation_params as any)?.channel_context ?? ''}
-                        onChange={(v)=>handleEditChange(`${draft.id}::channel_context`, v)}
-                        onSave={()=>handleSaveEdit(draft.id)}
-                        isOpen={openBubbleKey === `chan:${draft.id}`}
-                        onClose={()=>setOpenBubbleKey(null)}
-                      />
-                      <ContextBubble
-                        id={`msg:${draft.id}`}
-                        label="Digital twin context"
-                        value={(draft.generation_params as any)?.message_context ?? ''}
-                        onChange={(v)=>handleEditChange(`${draft.id}::message_context`, v)}
-                        onSave={()=>handleSaveEdit(draft.id)}
-                        isOpen={openBubbleKey === `msg:${draft.id}`}
-                        onClose={()=>setOpenBubbleKey(null)}
-                      />
-                      {/* Style memory handled automatically; no UI */}
-                    </div>
-                  </div>
-
-                  {draft.status !== 'POSTED' && (
-                    <div className="mt-2 flex items-center gap-3 border-t border-white/10 pt-2">
-                      <input
-                        className="flex-1 px-3 py-2 border border-border rounded text-sm"
-                        placeholder="Feedback to improve next draft (optional)"
-                        value={regenFeedback[draft.id] ?? ''}
-                        onChange={(e) => setRegenFeedback(prev => ({ ...prev, [draft.id]: e.target.value }))}
-                      />
-                      <div className="ml-auto flex items-center gap-2">
-                        <Button size="sm" variant="outline" onClick={() => handleRegenerate(draft, post)}>Regenerate draft</Button>
-                        {/* Send button moved inside textarea bubble */}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
+              <DraftCard
+                key={draft.id}
+                post={post}
+                draft={draft}
+                editingText={editingDrafts[draft.id]}
+                feedback={regenFeedback[draft.id]}
+                openBubbleKey={openBubbleKey}
+                onChangeText={(text) => handleEditChange(draft.id, text)}
+                onSend={() => handleSend(draft.id)}
+                onRegenerate={() => handleRegenerate(draft, post)}
+                onToggleChannelCtx={() => setOpenBubbleKey((prev) => (prev === `chan:${draft.id}` ? null : `chan:${draft.id}`))}
+                onToggleMsgCtx={() => setOpenBubbleKey((prev) => (prev === `msg:${draft.id}` ? null : `msg:${draft.id}`))}
+                onCtxChange={(fieldKey, value) => handleEditChange(fieldKey, value)}
+                onCtxSave={() => handleSaveEdit(draft.id)}
+                onCtxClose={() => setOpenBubbleKey(null)}
+              />
             ))}
           </div>
         </div>
 
         {/* Pagination - centered bottom controls */}
-        <div className="mt-6 flex justify-center">
-          <div className="join shadow-xl bg-base-200/60 backdrop-blur supports-[backdrop-filter]:bg-base-200/40 rounded-full p-1">
-            <button
-              className="join-item btn btn-ghost btn-sm"
-              disabled={currentPage <= 1}
-              onClick={() => fetchPosts('mock_init_data_for_telethon', Math.max(1, currentPage - 1), 30)}
-            >
-              ‹
-            </button>
-            {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-              // windowed pages around current
-              const half = 2;
-              let start = Math.max(1, currentPage - half);
-              let end = Math.min(totalPages, start + 4);
-              if (end - start < 4) start = Math.max(1, end - 4);
-              const pageNum = start + i;
-              return (
-                <button
-                  key={pageNum}
-                  className={`join-item btn btn-sm ${pageNum === currentPage ? 'btn-primary' : 'btn-ghost'}`}
-                  onClick={() => fetchPosts('mock_init_data_for_telethon', pageNum, 30)}
-                >
-                  {pageNum}
-                </button>
-              );
-            })}
-            <button
-              className="join-item btn btn-ghost btn-sm"
-              disabled={currentPage >= totalPages}
-              onClick={() => fetchPosts('mock_init_data_for_telethon', Math.min(totalPages, currentPage + 1), 30)}
-            >
-              ›
-            </button>
-          </div>
-        </div>
+        <Pager
+          currentPage={currentPage}
+          totalPages={totalPages}
+          onPage={(p) => fetchPosts('mock_init_data_for_telethon', p, 30)}
+        />
 
         {selectedChat && (
           <div className="card bg-base-200 shadow-lg">
