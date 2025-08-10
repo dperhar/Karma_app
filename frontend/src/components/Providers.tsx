@@ -1,5 +1,6 @@
 'use client';
 
+import React from 'react';
 import { Root } from '@/components/Root/Root';
 import { I18nProvider } from '@/core/i18n/provider';
 import type { Locale } from '@/core/i18n/types';
