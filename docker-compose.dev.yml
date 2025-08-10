@@ -51,6 +51,11 @@ services:
       - TELETHON_API_ID=${TELETHON_API_ID}
       - TELETHON_API_HASH=${TELETHON_API_HASH}
       - ENCRYPTION_KEY=g-4imrdzJNd-qHXluWne6OIsy2GqyrRGR7IyYFFQQL0=
+      # LLM (pass-through from .env if present)
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_BASE_URL=${GEMINI_BASE_URL}
+      - GEMINI_API_VERSION=${GEMINI_API_VERSION}
+      - GEMINI_AUTH_SCHEME=${GEMINI_AUTH_SCHEME}
     ports:
       - "8000:8000"
     volumes:
@@ -60,6 +65,7 @@ services:
       - ./backend/alembic.ini:/app/alembic.ini
       - ./backend/requirements.txt:/app/requirements.txt
       - ./backend/start.sh:/app/start.sh
+      - ./.env:/app/.env:ro
       - backend_dev_logs:/app/logs
     depends_on:
       postgres:
@@ -106,11 +112,17 @@ services:
       - TELETHON_API_ID=${TELETHON_API_ID}
       - TELETHON_API_HASH=${TELETHON_API_HASH}
       - ENCRYPTION_KEY=g-4imrdzJNd-qHXluWne6OIsy2GqyrRGR7IyYFFQQL0=
+      # LLM (pass-through from .env if present)
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_BASE_URL=${GEMINI_BASE_URL}
+      - GEMINI_API_VERSION=${GEMINI_API_VERSION}
+      - GEMINI_AUTH_SCHEME=${GEMINI_AUTH_SCHEME}
     volumes:
       # Hot reload for Celery tasks
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
+      - ./.env:/app/.env:ro
       - backend_dev_logs:/app/logs
     depends_on:
       backend:

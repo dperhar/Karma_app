@@ -8,6 +8,7 @@ import asyncio
 import requests
 import google.generativeai as genai
 from pydantic import BaseModel
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,11 @@ class GeminiService:
     def __init__(self):
         raw_key = os.getenv("GEMINI_API_KEY", "")
         self.api_key = raw_key.strip()
-        self.rest_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+        # Base URL selection: Google default or proxy from settings
+        base_url = (settings.GEMINI_BASE_URL or "https://generativelanguage.googleapis.com").rstrip("/")
+        api_version = settings.GEMINI_API_VERSION or "v1beta"
+        self.base_url = base_url
+        self.api_version = api_version
         # Rate limit/backoff config
         self.max_retries = int(os.getenv("GEMINI_MAX_RETRIES", "4"))
         self.backoff_base = float(os.getenv("GEMINI_BACKOFF_BASE", "1.8"))
@@ -101,6 +106,13 @@ class GeminiService:
 
             # Resolve per-request overrides
             model_name = (overrides or {}).get("model") or "gemini-2.5-pro"
+            # Normalize model names for proxy compatibility
+            if "hubai" in self.base_url:
+                aliases = {
+                    "gemini-1.5-flash": "gemini-2.0-flash-lite",
+                    "gemini-2.5-pro": "gemini-2.0-flash-lite",
+                }
+                model_name = aliases.get(model_name, model_name)
             try:
                 temperature = float((overrides or {}).get("temperature", self.model.generation_config.get("temperature", 0.2)))
             except Exception:
@@ -118,12 +130,18 @@ class GeminiService:
             except Exception:
                 pass
 
-            # Prefer REST v1beta call for deterministic behavior with gemini-2.5-pro
+            # Prefer REST call for deterministic behavior, honoring base URL and auth scheme
             async def _rest_call() -> Dict[str, Any]:
-                headers = {
-                    "Content-Type": "application/json",
-                    "X-goog-api-key": self.api_key,
-                }
+                headers = {"Content-Type": "application/json"}
+                # Auth header selection
+                scheme = (settings.GEMINI_AUTH_SCHEME or "auto").lower()
+                # Allow per-request provider override through gen_overrides
+                provider = (overrides or {}).get("provider")
+                use_proxy = bool(provider == "proxy") or (scheme == "bearer") or (scheme == "auto" and "hubai" in self.base_url)
+                if use_proxy:
+                    headers["Authorization"] = f"Bearer {self.api_key}"
+                else:
+                    headers["X-goog-api-key"] = self.api_key
                 body = {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {
@@ -131,18 +149,39 @@ class GeminiService:
                         "maxOutputTokens": max_output_tokens,
                     },
                 }
-                rest_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+                # Route selection: Google uses models/*:generateContent, some proxies expose OpenAI-like /chat/completions
+                if use_proxy:
+                    # OpenAI-compatible proxy
+                    rest_url = f"{self.base_url}/{settings.GEMINI_API_VERSION}/chat/completions"
+                    body = {
+                        "model": model_name,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": temperature,
+                        "max_tokens": max_output_tokens,
+                    }
+                else:
+                    rest_url = f"{self.base_url}/{self.api_version}/models/{model_name}:generateContent"
                 resp = requests.post(rest_url, json=body, headers=headers, timeout=60)
                 if resp.status_code == 200:
                     data = resp.json()
-                    text_segments: list[str] = []
-                    for cand in data.get("candidates", [])[:1]:
-                        content = cand.get("content", {})
-                        for part in content.get("parts", []):
-                            t = part.get("text")
-                            if t:
-                                text_segments.append(t)
-                    content_text = "".join(text_segments).strip()
+                    # Parse Google response
+                    if "candidates" in data:
+                        text_segments: list[str] = []
+                        for cand in data.get("candidates", [])[:1]:
+                            content = cand.get("content", {})
+                            for part in content.get("parts", []):
+                                t = part.get("text")
+                                if t:
+                                    text_segments.append(t)
+                        content_text = "".join(text_segments).strip()
+                    else:
+                        # Parse OpenAI-like proxy response
+                        choices = data.get("choices") or []
+                        if choices and isinstance(choices[0], dict):
+                            msg = choices[0].get("message") or {}
+                            content_text = (msg.get("content") or "").strip()
+                        else:
+                            content_text = ""
                     if content_text:
                         return {"success": True, "content": content_text}
                     return {"success": False, "error": "Empty content"}

@@ -872,19 +872,25 @@ async def async_generate_draft_for_post(
         except Exception:
             ai_overrides = {}
 
-        response = await gemini_service.generate_content(prompt, overrides=ai_overrides)
-        if not response or not response.get("success"):
-            # Graceful degrade: create minimal draft if rate-limited, so feed stays useful
-            error_text = str(response.get("error", "unknown error")) if isinstance(response, dict) else "unknown"
-            if "RESOURCE_EXHAUSTED" in error_text or "429" in error_text:
-                draft_text = (
-                    "Круто. Вижу тему, которая мне близка. Подписываюсь на апдейт. "
-                    "(AI временно ограничен по квоте, поэтому коротко.)"
-                )
-            else:
-                raise Exception("LLM comment generation failed.")
+        # Call LLM with protective try/except so we can fallback on failures
+        try:
+            response = await gemini_service.generate_content(prompt, overrides=ai_overrides)
+        except Exception as e:
+            # Normalize into response dict so the fallback below can trigger
+            response = {"success": False, "error": str(e)}
+        error_text = str(response.get("error", "")) if isinstance(response, dict) else ""
+        content_text: str = ""
+        if response and response.get("success"):
+            content_text = (response.get("content") or "").strip()
+
+        # Graceful degrade: if any failure OR empty content, still create a minimal draft so feed stays useful
+        if (not response or not response.get("success")) or not content_text:
+            draft_text = (
+                "Круто. Вижу тему, которая мне близка. Подписываюсь на апдейт. "
+                "(AI временно ограничен/недоступен, поэтому коротко.)"
+            )
         else:
-            draft_text = response.get("content", "").strip()
+            draft_text = content_text
 
         # Save draft
         # Enrich generation params with channel title for UI/learning and real Telegram IDs

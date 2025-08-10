@@ -83,10 +83,14 @@ async def get_my_ai_profile(
 
 @router.get("/me/ai-settings", response_model=APIResponse[AISettings])
 async def get_my_ai_settings(
-    current_user: Optional[UserResponse] = Depends(get_current_user),
+    current_user: Optional[UserResponse] = Depends(get_optional_user),
 ) -> APIResponse[AISettings]:
     """Return current user's AI generation settings (model, temperature, tokens)."""
+    # In development, allow returning defaults even if session is not fully established,
+    # so the UI can render controls and not show "AI unavailable".
     if not current_user:
+        if settings.IS_DEVELOP:
+            return APIResponse(success=True, data=AISettings())
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
         )
@@ -103,6 +107,7 @@ async def get_my_ai_settings(
         model="gemini-2.5-pro",
         temperature=0.2,
         max_output_tokens=512,
+        provider=(getattr(getattr(ai_profile, "vibe_profile_json", {}), "get", lambda *_: None)("gen_provider") or "google"),
     )
     return APIResponse(success=True, data=settings_payload)
 
@@ -124,12 +129,35 @@ async def update_my_ai_settings(
     if not ai_profile:
         ai_profile = await repo.create_ai_profile(user_id=current_user.id)
 
-    # For MVP, we don't add DB columns; settings will be applied ad-hoc via request
-    # Return merged values
+    # Persist lightweight generation overrides into vibe_profile_json under 'gen_overrides'
+    vp = dict(getattr(ai_profile, "vibe_profile_json", {}) or {})
+    gen_overrides = dict(vp.get("gen_overrides", {}) or {})
+    if settings_update.model is not None:
+        gen_overrides["model"] = settings_update.model
+    if settings_update.temperature is not None:
+        gen_overrides["temperature"] = settings_update.temperature
+    if settings_update.max_output_tokens is not None:
+        gen_overrides["max_output_tokens"] = settings_update.max_output_tokens
+    if settings_update.provider is not None:
+        vp["gen_provider"] = settings_update.provider
+    if gen_overrides:
+        vp["gen_overrides"] = gen_overrides
+        await repo.update_ai_profile(ai_profile.id, vibe_profile_json=vp)
+
+    # Return merged values for immediate UI reflection
     merged = AISettings(
-        model=settings_update.model or "gemini-2.5-pro",
-        temperature=settings_update.temperature if settings_update.temperature is not None else 0.2,
-        max_output_tokens=settings_update.max_output_tokens if settings_update.max_output_tokens is not None else 512,
+        model=(settings_update.model or gen_overrides.get("model") or "gemini-2.5-pro"),
+        temperature=(
+            settings_update.temperature
+            if settings_update.temperature is not None
+            else float(gen_overrides.get("temperature", 0.2))
+        ),
+        max_output_tokens=(
+            settings_update.max_output_tokens
+            if settings_update.max_output_tokens is not None
+            else int(gen_overrides.get("max_output_tokens", 512))
+        ),
+        provider=(settings_update.provider or vp.get("gen_provider") or "google"),
     )
 
     return APIResponse(success=True, data=merged)

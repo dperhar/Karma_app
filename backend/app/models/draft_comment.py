@@ -52,4 +52,4 @@ class DraftComment(DBBase, TimestampMixin):
     # Relationships
     original_message = relationship("TelegramMessengerMessage")
     user = relationship("User")
-    negative_feedback = relationship("NegativeFeedback", back_populates="draft_comment") 
+    negative_feedback = relationship("NegativeFeedback", back_populates="draft_comment")

@@ -50,12 +50,13 @@ export class PostService extends ApiClient {
   async getPosts(
     initDataRaw: string,
     page: number = 1,
-    limit: number = 50
+    limit: number = 50,
+    source: 'channel' | 'supergroup' | 'combined' = 'channel'
   ): Promise<APIResponse<PostsResponse>> {
     console.log('getPosts called with page:', page, 'limit:', limit);
     try {
       const response = await this.request<APIResponse<PostsResponse>>(
-        `${this.endpoint}?page=${page}&limit=${limit}`,
+        `${this.endpoint}?page=${page}&limit=${limit}&source=${source}`,
         {
           method: 'GET',
         },
