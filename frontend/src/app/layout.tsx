@@ -1,4 +1,5 @@
 import { Providers } from '@/components/Providers';
+import { AIControlSidebar } from '@/components/AIControlSidebar';
 import type { Locale } from '@/core/i18n/types';
 import type { Metadata } from 'next';
 import { getLocale, getMessages } from 'next-intl/server';
@@ -22,7 +23,8 @@ export default async function RootLayout({
     <html lang={locale} data-theme="dark">
       <body className="min-h-screen bg-base-200">
         <Providers locale={locale} messages={messages}>
-          {children}
+          <AIControlSidebar />
+          <div className="pl-72">{children}</div>
         </Providers>
       </body>
     </html>

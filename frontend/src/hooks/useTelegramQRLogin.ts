@@ -84,7 +84,7 @@ export const useTelegramQRLogin = (initDataRaw: string) => {
         console.error('Polling error:', err);
         // On network errors, continue polling but limit retries
       }
-    }, 5000);
+    }, 15000); // Poll every 15 seconds
 
     intervalRef.current = interval;
   }, [initDataRaw]);

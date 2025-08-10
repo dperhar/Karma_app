@@ -48,7 +48,7 @@ class TelegramMessengerAuthService:
             # Clean up from memory storage
             self._memory_sessions.pop(f"{self.session_prefix}{key}", None)
 
-    async def _delayed_cleanup(self, key: str, delay: int = 1800):
+    async def _delayed_cleanup(self, key: str, delay: int = 180):
         """Cleanup client after delay.
 
         Args:
@@ -58,7 +58,7 @@ class TelegramMessengerAuthService:
         await asyncio.sleep(delay)
         await self._cleanup_client(key)
 
-    def _create_cleanup_task(self, key: str, delay: int = 1800):
+    def _create_cleanup_task(self, key: str, delay: int = 180):
         """Create and store a cleanup task.
 
         Args:
@@ -188,7 +188,7 @@ class TelegramMessengerAuthService:
             # Check if session is too old (additional safety check)
             created_at = session_data.get("created_at", 0)
             current_time = asyncio.get_event_loop().time()
-            if current_time - created_at > 1800:  # 30 minutes
+            if current_time - created_at > 180:  # 3 minutes
                 logger.warning(f"Session too old, rejecting")
                 await self._cleanup_client(token)
                 raise ValueError("Session expired")

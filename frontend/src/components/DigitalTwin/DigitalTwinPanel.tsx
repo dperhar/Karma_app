@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { userService } from '@/core/api/services/user-service';
 import { User } from '@/types/user';
+import { useWebSocket } from '@/hooks/useWebSocket';
 
 interface DigitalTwinPanelProps {
   user: User;
@@ -16,6 +17,73 @@ export const DigitalTwinPanel: React.FC<DigitalTwinPanelProps> = ({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<string>('');
   const [error, setError] = useState<string>('');
+  const [logs, setLogs] = useState<string[]>([]);
+
+  const initDataRaw = 'mock_init_data_for_telethon';
+  const { lastMessage, isConnected } = useWebSocket({ userId: user.id, initDataRaw });
+
+  // On mount, fetch AI profile once to hydrate status if backend already saved earlier
+  useEffect(() => {
+    (async () => {
+      try {
+        const aiProfile = await userService.getMyAIProfile(initDataRaw);
+        if (aiProfile.success && aiProfile.data && onUserUpdate) {
+          onUserUpdate({
+            ...user,
+            context_analysis_status: aiProfile.data.analysis_status ?? user.context_analysis_status,
+            last_context_analysis_at: aiProfile.data.last_analyzed_at ?? user.last_context_analysis_at,
+            persona_name: aiProfile.data.persona_name ?? user.persona_name,
+          } as any);
+        }
+      } catch {}
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!lastMessage) return;
+    const ts = new Date().toLocaleTimeString();
+    setLogs((prev) => [
+      `[${ts}] ${lastMessage.event}: ${JSON.stringify(lastMessage.data)}`,
+      ...prev
+    ].slice(0, 50));
+
+    if (lastMessage.event === 'vibe_profile_analyzing') {
+      setIsAnalyzing(true);
+    }
+    if (lastMessage.event === 'vibe_profile_completed') {
+      setIsAnalyzing(false);
+      // refresh user data to show new profile
+      (async () => {
+        try {
+          const userResponse = await userService.getCurrentUser(initDataRaw);
+          if (userResponse.success && userResponse.data && onUserUpdate) {
+            onUserUpdate(userResponse.data);
+          }
+          // Also fetch AI profile to show persisted status even if user object lacks derived fields
+          try {
+            const aiProfile = await userService.getMyAIProfile(initDataRaw);
+            if (aiProfile.success) {
+              setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ai_profile_refreshed: ${JSON.stringify(aiProfile.data)}`, ...prev].slice(0,50));
+              // Optimistically update visible status/time from AI profile
+              if (onUserUpdate && userResponse.success && userResponse.data) {
+                onUserUpdate({
+                  ...userResponse.data,
+                  context_analysis_status: aiProfile.data?.analysis_status ?? user.context_analysis_status,
+                  last_context_analysis_at: aiProfile.data?.last_analyzed_at ?? user.last_context_analysis_at,
+                  persona_name: aiProfile.data?.persona_name ?? user.persona_name,
+                } as any);
+              }
+            }
+          } catch {}
+        } catch {}
+      })();
+    }
+    if (lastMessage.event === 'vibe_profile_failed') {
+      setIsAnalyzing(false);
+      setError(lastMessage.data?.error || 'Анализ не удался');
+    }
+  }, [lastMessage, onUserUpdate]);
 
   const handleAnalyzeContext = async () => {
     if (isAnalyzing) return;
@@ -95,6 +163,29 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
               </span>
             </div>
           </div>
+
+          {/* Live Progress */}
+          <div className="grid grid-cols-1 gap-2">
+            <div className="flex items-center gap-2">
+              <span className={`badge ${isAnalyzing ? 'badge-warning' : 'badge-ghost'}`}>
+                {isAnalyzing ? 'Идет анализ (реальное время)...' : isConnected ? 'WS connected' : 'WS disconnected'}
+              </span>
+              {isAnalyzing && <span className="loading loading-dots loading-sm" />}
+            </div>
+            {isAnalyzing && (
+              <progress className="progress progress-primary w-full" />
+            )}
+          </div>
+
+          {/* Debug Logs */}
+          <details className="collapse collapse-arrow bg-base-200">
+            <summary className="collapse-title text-sm">Debug Logs</summary>
+            <div className="collapse-content">
+              <pre className="text-xs whitespace-pre-wrap max-h-64 overflow-auto">
+                {logs.join('\n') || 'No events yet'}
+              </pre>
+            </div>
+          </details>
 
           {/* Style Description */}
           {user.persona_style_description && (

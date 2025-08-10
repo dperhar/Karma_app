@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from typing import ClassVar, TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 
@@ -40,7 +41,8 @@ class BaseRepository(metaclass=SingletonMeta):
             self.logger.debug("Using SQLite database, skipping pool configuration")
             self.async_engine = create_async_engine(
                 settings.DATABASE_URL,
-                echo=False,  # Enable SQL query logging if needed
+                echo=False,
+                poolclass=NullPool,
             )
         else:
             self.logger.debug("Initializing database connection pool with settings:")
@@ -49,15 +51,13 @@ class BaseRepository(metaclass=SingletonMeta):
             self.logger.debug(f"Pool timeout: {settings.DB_POOL_TIMEOUT}")
             self.logger.debug(f"Pool recycle: {settings.DB_POOL_RECYCLE}")
             
+            # Use NullPool to avoid reusing connections across different event loops
+            # in Celery tasks (prevents 'Event loop is closed' transport errors).
             self.async_engine = create_async_engine(
                 settings.DATABASE_URL,
                 pool_pre_ping=True,
-                echo=False,  # Enable SQL query logging
-                pool_size=settings.DB_POOL_SIZE,
-                max_overflow=settings.DB_MAX_OVERFLOW,
-                pool_timeout=settings.DB_POOL_TIMEOUT,
-                pool_recycle=settings.DB_POOL_RECYCLE,
-                pool_use_lifo=True,
+                echo=False,
+                poolclass=NullPool,
             )
             
         self.async_session_factory = async_sessionmaker(

@@ -53,6 +53,13 @@ class UserResponse(UserBase):
     id: str
     telegram_session_string: Optional[str] = Field(default=None, exclude=True)
     has_valid_tg_session: bool = Field(default=False)
+    # AI persona fields merged from AIProfile for convenience in UI
+    persona_name: Optional[str] = None
+    persona_style_description: Optional[str] = None
+    persona_interests_json: Optional[str] = None
+    user_system_prompt: Optional[str] = None
+    last_context_analysis_at: Optional[datetime] = None
+    context_analysis_status: Optional[str] = None
 
     model_config = ConfigDict(
         from_attributes=True,

@@ -1,5 +1,6 @@
 services:
   turbomanager:
+    profiles: ["turbo"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -9,6 +10,8 @@ services:
       - ../.env
     environment:
       IS_DEVELOP: "true"
+      CELERY_BROKER_URL: redis://turbomanager-redis:6379
+      CELERY_RESULT_BACKEND: redis://turbomanager-redis:6379
     ports:
       - "8000:8000"
     depends_on:
@@ -22,6 +25,7 @@ services:
       - default
 
   turbomanager-db:
+    profiles: ["turbo"]
     image: postgres:16-alpine
     restart: unless-stopped
     container_name: turbomanager-db
@@ -37,6 +41,7 @@ services:
       - default
 
   turbomanager-redis:
+    profiles: ["turbo"]
     image: redis:7-alpine
     restart: unless-stopped
     container_name: turbomanager-redis
@@ -49,6 +54,7 @@ services:
       - default
 
   turbomanager_pgadmin:
+    profiles: ["turbo"]
     image: dpage/pgadmin4
     container_name: turbomanager_pgadmin
     environment:
@@ -64,6 +70,7 @@ services:
       - turbomanager-new-pgadmin_data:/var/lib/pgadmin
 
   centrifugo:
+    profiles: ["turbo"]
     image: centrifugo/centrifugo:v6.1.0
     container_name: turbomanager-centrifugo
     restart: unless-stopped
@@ -81,6 +88,7 @@ services:
       - default
 
   celery-worker:
+    profiles: ["turbo"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -91,6 +99,8 @@ services:
       - ../.env
     environment:
       - REDIS_URL=redis://turbomanager-redis:6379
+      - CELERY_BROKER_URL=redis://turbomanager-redis:6379
+      - CELERY_RESULT_BACKEND=redis://turbomanager-redis:6379
     depends_on:
       - turbomanager-redis
       - turbomanager-db
@@ -98,6 +108,7 @@ services:
       - default
 
   celery-beat:
+    profiles: ["turbo"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -108,6 +119,8 @@ services:
       - ../.env
     environment:
       - REDIS_URL=redis://turbomanager-redis:6379
+      - CELERY_BROKER_URL=redis://turbomanager-redis:6379
+      - CELERY_RESULT_BACKEND=redis://turbomanager-redis:6379
     depends_on:
       - turbomanager-redis
     networks:

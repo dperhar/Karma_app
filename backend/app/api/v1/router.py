@@ -1,14 +1,25 @@
-"""Main API router for v1."""
+"""Main API v1 router."""
 
 from fastapi import APIRouter
 
-from . import auth, drafts, users, telegram
-from app.api.telegram.auth import router as telegram_auth_router
+from app.api.v1.auth import router as auth_router
+from app.api.v1.drafts import router as drafts_router
+from app.api.v1.feed import router as feed_router
+from app.api.v1.telegram import router as telegram_router
+from app.api.v1.users import router as users_router
 
 api_router = APIRouter()
 
-api_router.include_router(auth.router, prefix="/auth", tags=["v1-authentication"])
-api_router.include_router(users.router, prefix="/users", tags=["v1-users"])
-api_router.include_router(drafts.router, prefix="/drafts", tags=["v1-drafts"])
-api_router.include_router(telegram.router, prefix="/telegram", tags=["v1-telegram"])
-api_router.include_router(telegram_auth_router, tags=["telegram-auth"]) 
+# Include sub-routers
+api_router.include_router(auth_router, prefix="/auth", tags=["auth"])
+api_router.include_router(users_router, prefix="/users", tags=["users"])
+api_router.include_router(drafts_router, prefix="/drafts", tags=["drafts"])
+api_router.include_router(feed_router, prefix="/feed", tags=["feed"])
+api_router.include_router(telegram_router, prefix="/telegram", tags=["telegram"])
+
+
+# Health check endpoint
+@api_router.get("/health")
+def health_check():
+    """API root endpoint."""
+    return {"message": "Karma App API v1"} 

@@ -27,6 +27,9 @@ from app.core.config import settings
 from app.db.session import engine # For Alembic, if tables are created here
 # from app.db.base import Base # If creating tables directly without Alembic
 
+# Ensure models are imported so SQLAlchemy relationship targets are registered
+import app.models  # noqa: F401
+
 IS_DEVELOP = (
     os.getenv("IS_DEVELOP", "true").lower() == "true"
 )  # Default to true for development
@@ -147,11 +150,24 @@ app = FastAPI(
 # Настройка CORS - должна быть первым middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.BACKEND_CORS_ORIGINS,
+    allow_origins=[
+        settings.FRONTEND_URL,
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "null",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/api/v1/health")
+def health_check():
+    return {"status": "ok"}
 
 # Остальные middleware
 if not IS_DEVELOP:

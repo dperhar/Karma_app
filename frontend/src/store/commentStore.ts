@@ -57,9 +57,15 @@ interface CommentStore {
   // Draft comment actions
   generateDraftComment: (postId: number, channelId: number, initDataRaw: string) => Promise<void>;
   fetchDrafts: (initDataRaw: string, status?: string) => Promise<void>;
-  updateDraft: (draftId: string, editedText: string, initDataRaw: string) => Promise<void>;
+  updateDraft: (draftId: string, editedText: string, initDataRaw: string, generationParams?: Record<string, any>) => Promise<void>;
   approveDraft: (draftId: string, initDataRaw: string) => Promise<void>;
   postDraft: (draftId: string, initDataRaw: string) => Promise<void>;
+  regenerateDraft: (
+    draftId: string,
+    post: { telegram_id: number; text?: string; channel_telegram_id?: number },
+    rejectionReason: string | undefined,
+    initDataRaw: string,
+  ) => Promise<void>;
   setCurrentDraft: (draft: DraftComment | null) => void;
   
   // Legacy actions (for backward compatibility)
@@ -80,7 +86,7 @@ class DraftCommentAPI extends ApiClient {
   async generateDraft(postId: number, channelId: number, initDataRaw: string): Promise<APIResponse<DraftComment>> {
     // For now, trigger manual generation - in future this could be automatic
     // The actual generation happens on backend when new posts are detected
-    return this.request<APIResponse<DraftComment>>('/draft-comments/generate', {
+    return this.request<APIResponse<DraftComment>>('/drafts/draft-comments/generate', {
       method: 'POST',
       body: JSON.stringify({
         post_telegram_id: postId,
@@ -91,27 +97,42 @@ class DraftCommentAPI extends ApiClient {
 
   async getDrafts(initDataRaw: string, status?: string): Promise<APIResponse<DraftComment[]>> {
     const params = status ? `?status=${status}` : '';
-    return this.request<APIResponse<DraftComment[]>>(`/draft-comments${params}`, {
+    return this.request<APIResponse<DraftComment[]>>(`/drafts/draft-comments${params}`, {
       method: 'GET',
     }, initDataRaw);
   }
 
-  async updateDraft(draftId: string, data: { edited_text?: string; status?: string }, initDataRaw: string): Promise<APIResponse<DraftComment>> {
-    return this.request<APIResponse<DraftComment>>(`/draft-comments/${draftId}`, {
+  async updateDraft(draftId: string, data: { edited_text?: string; status?: string; generation_params?: Record<string, any> }, initDataRaw: string): Promise<APIResponse<DraftComment>> {
+    return this.request<APIResponse<DraftComment>>(`/drafts/draft-comments/${draftId}`, {
       method: 'PUT',
       body: JSON.stringify(data),
     }, initDataRaw);
   }
 
   async approveDraft(draftId: string, initDataRaw: string): Promise<APIResponse<DraftComment>> {
-    return this.request<APIResponse<DraftComment>>(`/draft-comments/${draftId}/approve`, {
+    return this.request<APIResponse<DraftComment>>(`/drafts/draft-comments/${draftId}/approve`, {
       method: 'POST',
     }, initDataRaw);
   }
 
   async postDraft(draftId: string, initDataRaw: string): Promise<APIResponse<DraftComment>> {
-    return this.request<APIResponse<DraftComment>>(`/draft-comments/${draftId}/post`, {
+    return this.request<APIResponse<DraftComment>>(`/drafts/draft-comments/${draftId}/post`, {
       method: 'POST',
+    }, initDataRaw);
+  }
+
+  async regenerateDraft(
+    draftId: string,
+    postData: { original_message_id: string; original_post_url?: string; original_post_content?: string },
+    rejectionReason: string | undefined,
+    initDataRaw: string
+  ): Promise<APIResponse<{ status: string }>> {
+    return this.request<APIResponse<{ status: string }>>(`/drafts/draft-comments/${draftId}/regenerate`, {
+      method: 'POST',
+      body: JSON.stringify({
+        post_data: postData,
+        rejection_reason: rejectionReason,
+      }),
     }, initDataRaw);
   }
 }
@@ -172,9 +193,11 @@ export const useCommentStore = create<CommentStore>()(
       }
     },
 
-    updateDraft: async (draftId: string, editedText: string, initDataRaw: string) => {
+    updateDraft: async (draftId: string, editedText: string, initDataRaw: string, generationParams?: Record<string, any>) => {
       try {
-        const response = await draftAPI.updateDraft(draftId, { edited_text: editedText }, initDataRaw);
+        const payload: any = { edited_text: editedText };
+        if (generationParams) payload.generation_params = generationParams;
+        const response = await draftAPI.updateDraft(draftId, payload, initDataRaw);
         
         if (response.success && response.data) {
           const updatedDraft: DraftComment = response.data;
@@ -228,6 +251,29 @@ export const useCommentStore = create<CommentStore>()(
           error: error.message || 'Failed to post draft',
           isPosting: false,
         });
+      }
+    },
+
+    regenerateDraft: async (
+      draftId: string,
+      post: { telegram_id: number; text?: string; channel_telegram_id?: number; },
+      rejectionReason: string | undefined,
+      initDataRaw: string,
+    ) => {
+      try {
+        await draftAPI.regenerateDraft(
+          draftId,
+          {
+            original_message_id: String(post.telegram_id),
+            original_post_content: post.text,
+          },
+          rejectionReason,
+          initDataRaw
+        );
+        // Optionally re-fetch drafts later via websocket event; for now do nothing
+      } catch (error: any) {
+        console.error('Error regenerating draft:', error);
+        set({ error: error.message || 'Failed to regenerate draft' });
       }
     },
 
@@ -337,7 +383,7 @@ export const useCommentStore = create<CommentStore>()(
         set({ error: error.message || 'Failed to fetch comments' });
       }
     },
-
+    
     setCurrentComment: (comment: Comment | null) => {
       set({ currentComment: comment });
       

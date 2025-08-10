@@ -14,6 +14,7 @@ class DraftCommentBase(BaseModel):
     ai_model_used: Optional[str] = None
     original_post_url: Optional[str] = None
     original_post_content: Optional[str] = None
+    ai_context_summary: Optional[str] = None
     original_post_text_preview: Optional[str] = None
     draft_text: str
     edited_text: Optional[str] = None
@@ -35,6 +36,7 @@ class DraftCommentUpdate(BaseModel):
     status: Optional[DraftStatus] = None
     final_text_to_post: Optional[str] = None
     failure_reason: Optional[str] = None
+    generation_params: Optional[Dict[str, Any]] = None
 
 
 class DraftCommentResponse(DraftCommentBase):

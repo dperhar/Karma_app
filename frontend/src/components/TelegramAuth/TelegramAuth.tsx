@@ -178,7 +178,7 @@ export const TelegramAuth: React.FC<TelegramAuthProps> = ({
           <p style={{ fontSize: '14px', color: '#666' }}>
             1. Open Telegram on your phone<br />
             2. Go to Settings → Privacy and Security → Active Sessions<br />
-            3. Tap "Link Desktop Device"<br />
+            3. Tap &quot;Link Desktop Device&quot;<br />
             4. Point your camera at the QR code above
           </p>
           {polling && (

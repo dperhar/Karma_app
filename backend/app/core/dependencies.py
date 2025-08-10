@@ -23,6 +23,7 @@ from app.services.admin_service import AdminService
 from app.services.ai_dialog_service import AIDialogService
 from app.services.ai_service import AIService
 from app.services.data_fetching_service import DataFetchingService
+from app.services.feed_service import FeedService
 from app.services.draft_generation_service import DraftGenerationService
 from app.services.draft_service import DraftService
 from app.core.security import EncryptionService
@@ -65,6 +66,7 @@ container.register(AdminService)
 container.register(AIDialogService)
 container.register(AIService)
 container.register(DataFetchingService)
+container.register(FeedService)
 container.register(DraftGenerationService)
 container.register(DraftService)
 container.register(EncryptionService, scope=Scope.singleton)

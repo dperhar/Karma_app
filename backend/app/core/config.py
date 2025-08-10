@@ -66,6 +66,7 @@ class Settings:
     # Centrifugo WebSocket
     CENTRIFUGO_API_KEY: str = os.getenv("CENTRIFUGO_API_KEY", "dummy-centrifugo-key")
     CENTRIFUGO_API_URL: str = os.getenv("CENTRIFUGO_API_URL", "http://localhost:8000/api")
+    CENTRIFUGO_TOKEN_HMAC: str = os.getenv("CENTRIFUGO_TOKEN_HMAC", "65840621-4be3-4a74-a03c-6036545bc244")
 
     # Session configuration
     SESSION_COOKIE_NAME: str = os.getenv("SESSION_COOKIE_NAME", "karma_session")
