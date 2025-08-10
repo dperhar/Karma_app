@@ -8,7 +8,7 @@ import ContextBubble from './ContextBubble';
 
 export interface DraftCardProps {
   post?: Post;
-  draft?: DraftComment;
+  draft: DraftComment;
   editingText: string | undefined;
   feedback: string | undefined;
   openBubbleKey: string | null;
@@ -105,7 +105,7 @@ export function DraftCard(props: DraftCardProps) {
           </div>
         )}
 
-        {draft && draft.status === 'POSTED' ? (
+        {draft.status === 'POSTED' ? (
           <div className="chat chat-end tg-draft-bubble tg-sent-bubble">
             <div className="chat-bubble whitespace-pre-wrap max-w-full w-full">
               {draft.final_text_to_post || draft.edited_text || draft.draft_text}
@@ -119,7 +119,7 @@ export function DraftCard(props: DraftCardProps) {
               )}
             </div>
           </div>
-        ) : draft ? (
+        ) : (
           <div className="chat chat-start tg-draft-bubble">
             <div className="relative chat-bubble bg-base-200 text-base-content whitespace-pre-wrap max-w-full w-full">
               <textarea
@@ -131,14 +131,6 @@ export function DraftCard(props: DraftCardProps) {
               <button className="absolute bottom-2 right-2 btn btn-sm bg-green-600 hover:bg-green-700" onClick={onSend}>
                 Send
               </button>
-            </div>
-          </div>
-        ) : (
-          // No draft yet – show a small inline generating placeholder
-          <div className="chat chat-start tg-draft-bubble">
-            <div className="chat-bubble bg-base-200/50 text-base-content whitespace-pre-wrap max-w-full w-full flex items-center gap-2">
-              <span className="loading loading-spinner loading-xs text-primary" />
-              <span className="text-sm opacity-90">Generating AI draft…</span>
             </div>
           </div>
         )}
@@ -154,8 +146,7 @@ export function DraftCard(props: DraftCardProps) {
 
         <div className="grid md:grid-cols-2">
           <div className="relative">
-            {draft && (
-              <ContextBubble
+            <ContextBubble
               id={`chan:${draft.id}`}
               label="Channel context"
               value={(draft.generation_params as any)?.channel_context ?? ''}
@@ -164,8 +155,6 @@ export function DraftCard(props: DraftCardProps) {
               isOpen={openBubbleKey === `chan:${draft.id}`}
               onClose={onCtxClose}
             />
-            )}
-            {draft && (
             <ContextBubble
               id={`msg:${draft.id}`}
               label="Digital twin context"
@@ -175,11 +164,10 @@ export function DraftCard(props: DraftCardProps) {
               isOpen={openBubbleKey === `msg:${draft.id}`}
               onClose={onCtxClose}
             />
-            )}
           </div>
         </div>
 
-        {draft && draft.status !== 'POSTED' && (
+        {draft.status !== 'POSTED' && (
           <div className="mt-2 flex items-center gap-3 border-t border-white/10 pt-2">
             <input
               className="flex-1 px-3 py-2 border border-border rounded text-sm"

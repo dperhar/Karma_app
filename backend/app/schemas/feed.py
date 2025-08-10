@@ -8,13 +8,6 @@ from pydantic import BaseModel, Field
 from .draft_comment import DraftCommentResponse
 
 
-class DraftMeta(BaseModel):
-    """Minimal draft info for a post in the feed."""
-    id: Optional[str] = None
-    status: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
 class PostForFeed(BaseModel):
     """Represents a post within a feed item."""
     id: str = Field(..., description="Internal UUID of the message")
@@ -30,7 +23,6 @@ class PostForFeed(BaseModel):
     replies: Optional[int] = None
     created_at: str = Field(..., description="Created timestamp")
     updated_at: str = Field(..., description="Updated timestamp")
-    draft_meta: Optional[DraftMeta] = None
 
     class Config:
         from_attributes = True
