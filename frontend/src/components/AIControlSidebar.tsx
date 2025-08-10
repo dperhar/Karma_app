@@ -7,8 +7,8 @@ import { userService } from '@/core/api/services/user-service';
 type Option = { label: string; value: string };
 
 const MODELS: Option[] = [
-  { label: 'GPT-5 (preview)', value: 'gpt-5' },
   { label: 'Gemini 2.5 Pro', value: 'gemini-2.5-pro' },
+  { label: 'Gemini 1.5 Flash', value: 'gemini-1.5-flash' },
   { label: 'Claude Opus 4', value: 'claude-opus-4' },
 ];
 
@@ -21,26 +21,32 @@ export const AIControlSidebar: React.FC = () => {
   useEffect(() => {
     (async () => {
       try {
+        // Ensure session is established before fetching AI settings
+        const me = await userService.getCurrentUser();
+        if (!me?.success || !me?.data?.id) return;
+
         const res = await userService.getAISettings();
         if (res?.success && res?.data) {
           setSettings({
             model: (res.data.model || 'gemini-2.5-pro') as any,
             temperature: typeof res.data.temperature === 'number' ? res.data.temperature : 0.2,
             maxOutputTokens: typeof res.data.max_output_tokens === 'number' ? res.data.max_output_tokens : 512,
+            provider: (res.data.provider === 'proxy' ? 'proxy' : 'google') as any,
           });
         }
       } catch (e) {
-        // ignore
+        // ignore (e.g., 401 during early mount)
       }
     })();
   }, [setSettings]);
 
-  const persist = async (patch: Partial<{ model: string; temperature: number; max_output_tokens: number }>) => {
+  const persist = async (patch: Partial<{ model: string; temperature: number; max_output_tokens: number; provider: 'google' | 'proxy' }>) => {
     try {
       await userService.updateAISettings({
         model: patch.model,
         temperature: patch.temperature,
         max_output_tokens: patch.max_output_tokens,
+        provider: patch.provider,
       });
     } catch (e) {
       // ignore for now
@@ -112,6 +118,30 @@ export const AIControlSidebar: React.FC = () => {
             />
           </div>
         )}
+
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Provider</label>
+          <div className="flex gap-2">
+            <button
+              className={`px-2 py-1 rounded text-sm ${settings.provider === 'google' ? 'bg-blue-600 text-white' : 'bg-black/20 border border-white/10 text-gray-200'}`}
+              onClick={async () => {
+                setSettings({ provider: 'google' as any });
+                await persist({ provider: 'google' });
+              }}
+            >
+              Google
+            </button>
+            <button
+              className={`px-2 py-1 rounded text-sm ${settings.provider === 'proxy' ? 'bg-blue-600 text-white' : 'bg-black/20 border border-white/10 text-gray-200'}`}
+              onClick={async () => {
+                setSettings({ provider: 'proxy' as any });
+                await persist({ provider: 'proxy' });
+              }}
+            >
+              Proxy
+            </button>
+          </div>
+        </div>
 
         <div>
           <label className="block text-xs text-gray-400 mb-1">Daily token cap</label>

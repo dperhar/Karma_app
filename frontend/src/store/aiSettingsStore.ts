@@ -1,11 +1,12 @@
 import { create } from 'zustand';
 
-type ModelKey = 'gpt-5' | 'gemini-2.5-pro' | 'claude-opus-4';
+type ModelKey = 'gpt-5' | 'gemini-2.5-pro' | 'gemini-1.5-flash' | 'claude-opus-4';
 
 export type AISettings = {
   model: ModelKey;
   temperature: number;
   maxOutputTokens: number;
+  provider?: 'google' | 'proxy';
 };
 
 type AISettingsState = {
@@ -22,6 +23,7 @@ export const useAISettingsStore = create<AISettingsState>((set) => ({
     model: 'gemini-2.5-pro',
     temperature: 0.2,
     maxOutputTokens: 512,
+    provider: 'google',
   },
   tokensUsedApprox: 0,
   dailyTokenCap: 100000, // default session cap

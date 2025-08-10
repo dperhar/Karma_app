@@ -6,8 +6,12 @@ from typing import List
 
 from dotenv import load_dotenv
 
-# Load .env from parent directory (project root)
-env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), '.env')
+# Load .env from project root inside container: /app/.env
+# __file__ -> /app/app/core/config.py; go up 3 levels -> /app
+env_path = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    '.env',
+)
 load_dotenv(env_path)
 
 
@@ -62,6 +66,12 @@ class Settings:
 
     # LLM
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY")
+    # Optional proxy/base override (e.g., https://hubai.loe.gg)
+    GEMINI_BASE_URL: str | None = os.getenv("GEMINI_BASE_URL")
+    # API version for REST calls (google uses v1beta; proxies may use v1)
+    GEMINI_API_VERSION: str = os.getenv("GEMINI_API_VERSION", "v1beta")
+    # Auth scheme: 'auto' (infer), 'bearer' (Authorization header), or 'x-goog' (X-goog-api-key)
+    GEMINI_AUTH_SCHEME: str = os.getenv("GEMINI_AUTH_SCHEME", "auto").lower()
 
     # Centrifugo WebSocket
     CENTRIFUGO_API_KEY: str = os.getenv("CENTRIFUGO_API_KEY", "dummy-centrifugo-key")

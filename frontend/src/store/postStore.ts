@@ -8,7 +8,7 @@ interface PostStore {
   currentPage: number;
   totalPages: number;
   
-  fetchPosts: (initDataRaw: string, page?: number, limit?: number) => Promise<void>;
+  fetchPosts: (initDataRaw: string, page?: number, limit?: number, source?: 'channel' | 'supergroup' | 'combined') => Promise<void>;
   fetchPost: (postId: number, channelId: number, initDataRaw: string) => Promise<Post | null>;
   clearError: () => void;
   reset: () => void;
@@ -21,11 +21,11 @@ export const usePostStore = create<PostStore>((set, get) => ({
   currentPage: 1,
   totalPages: 1,
 
-  fetchPosts: async (initDataRaw: string, page = 1, limit = 20) => {
+  fetchPosts: async (initDataRaw: string, page = 1, limit = 20, source: 'channel' | 'supergroup' | 'combined' = 'channel') => {
     set({ isLoading: true, error: null });
     
     try {
-      const response = await postService.getPosts(initDataRaw, page, limit);
+      const response = await postService.getPosts(initDataRaw, page, limit, source);
 
       if (response.success && response.data) {
         set({

@@ -17,11 +17,11 @@ class FeedService(BaseService):
         self.message_repo = message_repo
 
     async def get_user_feed(
-        self, user_id: str, limit: int = 20, offset: int = 0
+        self, user_id: str, limit: int = 20, offset: int = 0, source: str = "channel"
     ) -> FeedResponse:
         """Orchestrates fetching the user's feed."""
         raw_feed_items = await self.message_repo.get_feed_posts(
-            user_id=user_id, limit=limit, offset=offset
+            user_id=user_id, limit=limit, offset=offset, source=source
         )
 
         posts: List[PostForFeed] = []
@@ -51,7 +51,7 @@ class FeedService(BaseService):
 
         # Calculate page number and total with accurate count
         page = (offset // limit) + 1 if limit > 0 else 1
-        total = await self.message_repo.get_feed_posts_total(user_id)
+        total = await self.message_repo.get_feed_posts_total(user_id, source=source)
 
         return FeedResponse(
             posts=posts,

@@ -36,6 +36,7 @@ export default function Home() {
   const { fetchUser, user, isLoading: userLoading, error: userError } = useUserStore();
   const { fetchChats, chats, isLoading: chatsLoading, error: chatsError } = useChatStore();
   const { posts, fetchPosts, currentPage, totalPages } = usePostStore();
+  const [feedSource, setFeedSource] = useState<'channel' | 'supergroup' | 'combined'>('channel');
   const { drafts, fetchDrafts, updateDraft, approveDraft, postDraft, regenerateDraft } = useCommentStore();
 
   const [selectedChat, setSelectedChat] = useState<TelegramChat | null>(null);
@@ -100,7 +101,7 @@ export default function Home() {
         const userData = useUserStore.getState().user;
         const limit = userData?.telegram_chats_load_limit || DEFAULT_CHAT_LOAD_LIMIT;
         await fetchChats(mockInitDataRaw, limit);
-          await fetchPosts(mockInitDataRaw, 1, 30);
+          await fetchPosts(mockInitDataRaw, 1, 30, feedSource);
         await fetchDrafts(mockInitDataRaw);
         
         // Log current state after fetch
@@ -135,7 +136,7 @@ export default function Home() {
     return () => {
       isMounted = false;
     };
-  }, [fetchUser, fetchChats, fetchPosts, fetchDrafts]);
+  }, [fetchUser, fetchChats, fetchPosts, fetchDrafts, feedSource]);
 
   const handleChatClick = (chat: TelegramChat) => {
     setSelectedChat(chat);
@@ -297,11 +298,25 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Feed source toggle */}
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-sm text-gray-400">Source:</span>
+          {(['channel','combined','supergroup'] as const).map(s => (
+            <button
+              key={s}
+              className={`px-2 py-1 rounded text-sm ${feedSource === s ? 'bg-blue-600 text-white' : 'bg-black/20 border border-white/10 text-gray-200'}`}
+              onClick={() => setFeedSource(s)}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+
         {/* Pagination - centered bottom controls */}
         <Pager
           currentPage={currentPage}
           totalPages={totalPages}
-          onPage={(p) => fetchPosts('mock_init_data_for_telethon', p, 30)}
+          onPage={(p) => fetchPosts('mock_init_data_for_telethon', p, 30, feedSource)}
         />
 
         {selectedChat && (

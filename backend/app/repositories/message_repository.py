@@ -140,7 +140,7 @@ class MessageRepository(BaseRepository):
                 raise
 
     async def get_feed_posts(
-        self, user_id: str, limit: int = 20, offset: int = 0
+        self, user_id: str, limit: int = 20, offset: int = 0, source: str = "channel"
     ) -> List[dict]:
         """
         Get recent posts from channels for a user's feed, with optional draft comments.
@@ -168,7 +168,15 @@ class MessageRepository(BaseRepository):
                     )
                     .where(
                         TelegramMessengerChat.user_id == user_id,
-                        TelegramMessengerChat.type == TelegramMessengerChatType.CHANNEL,
+                        (
+                            (TelegramMessengerChat.type == TelegramMessengerChatType.CHANNEL)
+                            if source == "channel"
+                            else (
+                                (TelegramMessengerChat.type == TelegramMessengerChatType.SUPERGROUP)
+                                if source == "supergroup"
+                                else (TelegramMessengerChat.type.in_([TelegramMessengerChatType.CHANNEL, TelegramMessengerChatType.SUPERGROUP]))
+                            )
+                        ),
                         TelegramMessengerChat.comments_enabled.is_(True),
                     )
                     .order_by(desc(TelegramMessengerMessage.date))
@@ -194,7 +202,7 @@ class MessageRepository(BaseRepository):
                 self.logger.error(f"Error getting feed posts for user {user_id}: {e}", exc_info=True)
                 raise
 
-    async def get_feed_posts_total(self, user_id: str) -> int:
+    async def get_feed_posts_total(self, user_id: str, source: str = "channel") -> int:
         """Return the total count of posts available for the user's feed (for pagination)."""
         async with self.get_session() as session:
             try:
@@ -206,7 +214,15 @@ class MessageRepository(BaseRepository):
                     )
                     .where(
                         TelegramMessengerChat.user_id == user_id,
-                        TelegramMessengerChat.type == TelegramMessengerChatType.CHANNEL,
+                        (
+                            (TelegramMessengerChat.type == TelegramMessengerChatType.CHANNEL)
+                            if source == "channel"
+                            else (
+                                (TelegramMessengerChat.type == TelegramMessengerChatType.SUPERGROUP)
+                                if source == "supergroup"
+                                else (TelegramMessengerChat.type.in_([TelegramMessengerChatType.CHANNEL, TelegramMessengerChatType.SUPERGROUP]))
+                            )
+                        ),
                         TelegramMessengerChat.comments_enabled.is_(True),
                     )
                 )
