@@ -90,6 +90,25 @@ class MessageRepository(BaseRepository):
                 self.logger.error(f"Error getting message: {e!s}", exc_info=True)
                 raise
 
+    async def get_message_by_chat_and_telegram_id(
+        self, chat_id: str, telegram_msg_id: int
+    ) -> Optional[TelegramMessengerMessage]:
+        """Get message by chat DB id and Telegram message id."""
+        async with self.get_session() as session:
+            try:
+                query = select(TelegramMessengerMessage).where(
+                    TelegramMessengerMessage.chat_id == chat_id,
+                    TelegramMessengerMessage.telegram_id == int(telegram_msg_id),
+                )
+                result = await session.execute(query)
+                return result.unique().scalar_one_or_none()
+            except Exception as e:
+                self.logger.error(
+                    f"Error getting message by chat {chat_id} and telegram_id {telegram_msg_id}: {e!s}",
+                    exc_info=True,
+                )
+                raise
+
     async def get_chat_messages(
         self, chat_id: str, limit: int = 100, offset: int = 0
     ) -> list[TelegramMessengerMessage]:
@@ -140,7 +159,7 @@ class MessageRepository(BaseRepository):
                 raise
 
     async def get_feed_posts(
-        self, user_id: str, limit: int = 20, offset: int = 0, source: str = "channel"
+        self, user_id: str, limit: int = 20, offset: int = 0, source: str = "channels"
     ) -> List[dict]:
         """
         Get recent posts from channels for a user's feed, with optional draft comments.
@@ -155,6 +174,7 @@ class MessageRepository(BaseRepository):
                         TelegramMessengerMessage,
                         TelegramMessengerChat.title.label("channel_name"),
                         TelegramMessengerChat.telegram_id.label("channel_telegram_id"),
+                        TelegramMessengerChat.type.label("channel_type"),
                         user_draft,
                     )
                     .join(
@@ -170,11 +190,11 @@ class MessageRepository(BaseRepository):
                         TelegramMessengerChat.user_id == user_id,
                         (
                             (TelegramMessengerChat.type == TelegramMessengerChatType.CHANNEL)
-                            if source == "channel"
+                            if source == "channels"
                             else (
-                                (TelegramMessengerChat.type == TelegramMessengerChatType.SUPERGROUP)
-                                if source == "supergroup"
-                                else (TelegramMessengerChat.type.in_([TelegramMessengerChatType.CHANNEL, TelegramMessengerChatType.SUPERGROUP]))
+                                (TelegramMessengerChat.type.in_([TelegramMessengerChatType.GROUP, TelegramMessengerChatType.SUPERGROUP]))
+                                if source == "groups"
+                                else (TelegramMessengerChat.type.in_([TelegramMessengerChatType.CHANNEL, TelegramMessengerChatType.GROUP, TelegramMessengerChatType.SUPERGROUP]))
                             )
                         ),
                         TelegramMessengerChat.comments_enabled.is_(True),
@@ -189,11 +209,12 @@ class MessageRepository(BaseRepository):
 
                 # Try to fetch avatar URL or leave None (placeholder; actual fetching requires extra API/storage)
                 feed_items = []
-                for message, channel_name, channel_telegram_id, draft in rows:
+                for message, channel_name, channel_telegram_id, channel_type, draft in rows:
                     feed_items.append({
                         "post": message,
                         "channel_name": channel_name,
                         "channel_telegram_id": channel_telegram_id,
+                        "channel_type": channel_type,
                         "channel_avatar_url": None,
                         "draft": draft,
                     })
@@ -202,7 +223,7 @@ class MessageRepository(BaseRepository):
                 self.logger.error(f"Error getting feed posts for user {user_id}: {e}", exc_info=True)
                 raise
 
-    async def get_feed_posts_total(self, user_id: str, source: str = "channel") -> int:
+    async def get_feed_posts_total(self, user_id: str, source: str = "channels") -> int:
         """Return the total count of posts available for the user's feed (for pagination)."""
         async with self.get_session() as session:
             try:
@@ -216,11 +237,11 @@ class MessageRepository(BaseRepository):
                         TelegramMessengerChat.user_id == user_id,
                         (
                             (TelegramMessengerChat.type == TelegramMessengerChatType.CHANNEL)
-                            if source == "channel"
+                            if source == "channels"
                             else (
-                                (TelegramMessengerChat.type == TelegramMessengerChatType.SUPERGROUP)
-                                if source == "supergroup"
-                                else (TelegramMessengerChat.type.in_([TelegramMessengerChatType.CHANNEL, TelegramMessengerChatType.SUPERGROUP]))
+                                (TelegramMessengerChat.type.in_([TelegramMessengerChatType.GROUP, TelegramMessengerChatType.SUPERGROUP]))
+                                if source == "groups"
+                                else (TelegramMessengerChat.type.in_([TelegramMessengerChatType.CHANNEL, TelegramMessengerChatType.GROUP, TelegramMessengerChatType.SUPERGROUP]))
                             )
                         ),
                         TelegramMessengerChat.comments_enabled.is_(True),

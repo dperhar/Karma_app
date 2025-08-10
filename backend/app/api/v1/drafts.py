@@ -2,6 +2,7 @@
 
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 
 from app.models.draft_comment import DraftStatus
 from app.schemas.base import APIResponse
@@ -186,6 +187,42 @@ async def approve_draft_comment(
         ) from e
 
 
+class GenerateDraftRequest(BaseModel):
+    """Request body for generating a draft for a specific Telegram post."""
+    post_telegram_id: int
+    channel_telegram_id: int
+
+
+@router.post("/generate", response_model=APIResponse[dict])
+async def generate_draft_comment_for_post(
+    body: GenerateDraftRequest,
+    current_user=Depends(get_current_user),
+):
+    """Queue draft generation for a post via Celery.
+
+    This endpoint only validates input and dispatches a background task, keeping the API thin.
+    """
+    try:
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
+        # Minimal, serializable payload. Task will fetch any additional context it needs.
+        post_data = {
+            "original_message_id": "unknown",  # DB message ID may not exist; task can still proceed
+            "original_message_telegram_id": int(body.post_telegram_id),
+            "channel_telegram_id": int(body.channel_telegram_id),
+            # Encourage generation even if relevance filter would otherwise skip
+            "force_generate": True,
+        }
+        generate_draft_for_post.delay(user_id=current_user.id, post_data=post_data)
+        return APIResponse(success=True, data={"status": "queued"}, message="Draft generation queued")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to queue draft generation: {e!s}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to queue draft generation")
+
+
 @router.post("/{draft_id}/post", response_model=APIResponse[DraftCommentResponse])
 async def post_draft_comment(
     draft_id: str,
@@ -240,9 +277,12 @@ async def regenerate_draft_comment(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required"
         )
 
+    # Force generation on regeneration so we always produce a new draft
+    payload = regenerate_request.post_data.model_dump()
+    payload.setdefault("force_generate", True)
     generate_draft_for_post.delay(
         user_id=current_user.id,
-        post_data=regenerate_request.post_data.model_dump(),
+        post_data=payload,
         rejected_draft_id=draft_id,
         rejection_reason=regenerate_request.rejection_reason,
     )

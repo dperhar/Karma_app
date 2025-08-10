@@ -202,12 +202,20 @@ class KarmaService(BaseService):
                         pass
 
             if result.get('success'):
-                # Update draft status
+                # Update draft status and mark as a style example to enrich the user's profile
+                try:
+                    base_params = dict(draft.generation_params or {})
+                except Exception:
+                    base_params = {}
+                base_params["is_style_example"] = True
+                base_params["last_posted_at"] = datetime.now().isoformat()
+
                 updated_draft = await self.draft_comment_repository.update_draft_comment(
                     draft_id,
                     status=DraftStatus.POSTED,
                     posted_telegram_message_id=result.get('message_id'),
-                    final_text_to_post=text_to_post
+                    final_text_to_post=text_to_post,
+                    generation_params=base_params or None,
                 )
                 
                 if updated_draft:

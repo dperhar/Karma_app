@@ -14,6 +14,7 @@ from app.core.dependencies import container
 from app.services.auth_service import TelegramMessengerAuthService
 from app.core.config import settings
 from app.services.redis_service import RedisService
+from pydantic import BaseModel, Field
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -246,6 +247,33 @@ async def sync_messages(
             message="Failed to start message synchronization. Please try again."
         )
 
+
+class BackfillRequest(BaseModel):
+    dialogs_limit: int = Field(default=50, ge=1, le=200)
+    per_dialog_messages: int = Field(default=50, ge=1, le=200)
+
+
+@router.post("/messages/backfill", response_model=APIResponse[dict])
+async def backfill_messages(
+    body: BackfillRequest,
+    current_user: UserResponse = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """Trigger a deeper historical backfill to increase feed pages.
+
+    This dispatches a Celery task that scans more dialogs and messages per dialog.
+    """
+    try:
+        from app.tasks.tasks import generate_drafts_for_user_recent_posts
+        task = generate_drafts_for_user_recent_posts.delay(
+            user_id=str(current_user.id),
+            dialogs_limit=body.dialogs_limit,
+            per_dialog_messages=body.per_dialog_messages,
+        )
+        return APIResponse(success=True, data={"task_id": task.id}, message="Backfill queued")
+    except Exception as e:
+        logger.error("Failed to queue backfill: %s", e)
+        return APIResponse(success=False, data={"status": "failed"}, message="Failed to queue backfill")
+
 @router.get("/chats/list")
 async def get_chats(
     limit: int = Query(default=50, ge=1, le=100),
@@ -382,3 +410,16 @@ async def get_chat_details(
             success=False,
             message=f"An error occurred while fetching chat details: {e}",
         ) 
+
+
+@router.post("/chats/normalize-types")
+async def normalize_chat_types(
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Trigger background normalization of saved chat types for the current user."""
+    try:
+        from app.tasks.tasks import normalize_chat_types_for_user
+        task = normalize_chat_types_for_user.delay(str(current_user.id))
+        return APIResponse(success=True, data={"task_id": task.id}, message="Normalization queued")
+    except Exception as e:
+        return APIResponse(success=False, data=None, message=f"Failed to queue normalization: {e}")

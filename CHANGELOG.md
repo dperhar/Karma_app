@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.0] - 10.08.2025 🥂 First Stable Release
+
+### 🚀 New
+- Telegram Feed with source filters (Channels / Groups / Both) and pagination
+- Async draft generation pipeline (Celery) with real-time WS updates (Centrifugo)
+- One-click “Generate draft” for posts without drafts
+- Negative feedback capture and regeneration flow
+- Digital Twin (Vibe Profile) analysis tasks (quick and deep modes)
+- Posted comments prioritized as style exemplars for future drafts
+
+### 🔧 Improved
+- Correct group/channel filtering and type normalization
+- Robust message upsert, resolving/creating `original_message_id` automatically
+- Default generation temperature set to 0.95
+- Frontend real-time draft upsert; no page refresh required
+- Deduped feed rendering to prevent duplicate keys and collisions
+
+### 🛡️ Architecture
+- API remains thin; heavy work runs in Celery tasks (Telegram, LLM, backfill)
+- Repositories isolate DB access; services orchestrate logic
+- Strict separation per Hyper-Lean Task-Oriented Architecture
+
+### 🧪 Developer
+- New backfill endpoint to deepen feed history
+- Clearer logs and safer defaults for dev sessions
+
+— We’re shipping. v1.0 is live. 🥂
+
 ## [v0.3.0] - 16.12.2025 🎉 **MAJOR AUTHENTICATION OVERHAUL**
 
 ### 🚀 **NEW FEATURES**
