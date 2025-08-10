@@ -101,7 +101,7 @@ export default function Home() {
         const userData = useUserStore.getState().user;
         const limit = userData?.telegram_chats_load_limit || DEFAULT_CHAT_LOAD_LIMIT;
         await fetchChats(mockInitDataRaw, limit);
-          await fetchPosts(mockInitDataRaw, 1, 30, feedSource);
+          await fetchPosts(mockInitDataRaw, 1, 20, feedSource);
         await fetchDrafts(mockInitDataRaw);
         
         // Log current state after fetch
@@ -274,6 +274,20 @@ export default function Home() {
     >
       <Header title="AI Draft Feed" onSettingsClick={handleSettingsClick} />
       <div className="container mx-auto p-4 tg-feed">
+        {/* Feed source toggle (top-centered) */}
+        <div className="flex items-center justify-center gap-2 mb-4">
+          <span className="text-sm text-gray-400">Source:</span>
+          {(['channel','combined','supergroup'] as const).map(s => (
+            <button
+              key={s}
+              className={`px-2 py-1 rounded text-sm ${feedSource === s ? 'bg-blue-600 text-white' : 'bg-black/20 border border-white/10 text-gray-200'}`}
+              onClick={() => setFeedSource(s)}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+
         <div className="mb-6">
           {/* Drafts list on main page */}
           <div className="space-y-6">
@@ -298,25 +312,11 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Feed source toggle */}
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-sm text-gray-400">Source:</span>
-          {(['channel','combined','supergroup'] as const).map(s => (
-            <button
-              key={s}
-              className={`px-2 py-1 rounded text-sm ${feedSource === s ? 'bg-blue-600 text-white' : 'bg-black/20 border border-white/10 text-gray-200'}`}
-              onClick={() => setFeedSource(s)}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-
         {/* Pagination - centered bottom controls */}
         <Pager
           currentPage={currentPage}
           totalPages={totalPages}
-          onPage={(p) => fetchPosts('mock_init_data_for_telethon', p, 30, feedSource)}
+          onPage={(p) => fetchPosts('mock_init_data_for_telethon', p, 20, feedSource)}
         />
 
         {selectedChat && (
