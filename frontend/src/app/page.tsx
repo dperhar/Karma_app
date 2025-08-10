@@ -19,6 +19,7 @@ import DraftCard from '@/components/DraftCard';
 import Pager from '@/components/Pager';
 import ContextBubble from '@/components/ContextBubble';
 import { Post } from '@/core/api/services/post-service';
+import GeneratingNotice from '@/components/GeneratingNotice';
 
 // Define filter types
 type FilterType = 'all' | 'private' | 'group' | 'channel';
@@ -36,7 +37,7 @@ export default function Home() {
   const { fetchUser, user, isLoading: userLoading, error: userError } = useUserStore();
   const { fetchChats, chats, isLoading: chatsLoading, error: chatsError } = useChatStore();
   const { posts, fetchPosts, currentPage, totalPages } = usePostStore();
-  const { drafts, fetchDrafts, updateDraft, approveDraft, postDraft, regenerateDraft } = useCommentStore();
+  const { drafts, fetchDrafts, updateDraft, approveDraft, postDraft, regenerateDraft, queueDraftsForPosts } = useCommentStore();
 
   const [selectedChat, setSelectedChat] = useState<TelegramChat | null>(null);
   const [editingDrafts, setEditingDrafts] = useState<Record<string, string>>({});
@@ -45,6 +46,7 @@ export default function Home() {
   const [styleMemoryOpen, setStyleMemoryOpen] = useState<string | null>(null);
 
   const router = useRouter();
+  const [pageState, setPageState] = useState<number>(1);
 
   // First filter by search query
   const searchedChats = useMemo(() => {
@@ -100,7 +102,7 @@ export default function Home() {
         const userData = useUserStore.getState().user;
         const limit = userData?.telegram_chats_load_limit || DEFAULT_CHAT_LOAD_LIMIT;
         await fetchChats(mockInitDataRaw, limit);
-          await fetchPosts(mockInitDataRaw, 1, 30);
+        await fetchPosts(mockInitDataRaw, 1, 30, { bustCache: true, queueMissing: true });
         await fetchDrafts(mockInitDataRaw);
         
         // Log current state after fetch
@@ -153,29 +155,73 @@ export default function Home() {
     router.push('/settings');
   };
 
-  // Draft items to render on main page (show drafts even if no matching post found)
+  // Draft items to render – scoped to CURRENT PAGE posts only
   const draftItems = useMemo(() => {
-    // Keep only the latest draft per original_message_id
+    if (!posts?.length) return [] as { post: Post; draft: DraftComment }[];
+    // Build latest draft per message id
     const latestByMsgId = new Map<string, DraftComment>();
     for (const d of drafts) {
       const key = String(d.original_message_id);
       const prev = latestByMsgId.get(key);
       const prevTs = prev ? new Date(prev.updated_at || prev.created_at).getTime() : -1;
       const curTs = new Date(d.updated_at || d.created_at).getTime();
-      if (!prev || curTs >= prevTs) {
-        latestByMsgId.set(key, d);
+      if (!prev || curTs >= prevTs) latestByMsgId.set(key, d);
+    }
+    // Pair each page post with its draft (by telegram_id or db id)
+    const items: { post: Post; draft: DraftComment }[] = [];
+    for (const p of posts) {
+      const candIds = [String(p.telegram_id), String(p.id)];
+      let found: DraftComment | undefined;
+      for (const id of candIds) {
+        const d = latestByMsgId.get(id);
+        if (d) { found = d; break; }
+      }
+      if (found) items.push({ post: p, draft: found });
+    }
+    return items;
+  }, [posts, drafts]);
+
+  // Show generating notice only when the current page has posts but no matching latest drafts
+  // Build a set of latest draft keys for quick lookup
+  const latestDraftKeySet = useMemo(() => {
+    const latestByMsgId = new Map<string, DraftComment>();
+    for (const d of drafts) {
+      const key = String(d.original_message_id);
+      const prev = latestByMsgId.get(key);
+      const prevTs = prev ? new Date(prev.updated_at || prev.created_at).getTime() : -1;
+      const curTs = new Date(d.updated_at || d.created_at).getTime();
+      if (!prev || curTs >= prevTs) latestByMsgId.set(key, d);
+    }
+    return new Set(Array.from(latestByMsgId.keys()));
+  }, [drafts]);
+
+  const isGeneratingForPage = useMemo(() => {
+    if (!posts?.length) return false;
+    // Show notice only if NONE of the posts have drafts yet
+    for (const p of posts) {
+      if (latestDraftKeySet.has(String(p.telegram_id)) || latestDraftKeySet.has(String(p.id))) {
+        return false;
       }
     }
+    return true;
+  }, [posts, latestDraftKeySet]);
 
-    const items = Array.from(latestByMsgId.values()).map((draft) => {
-      const matchedPost = posts.find((p) => String(p.telegram_id) === String(draft.original_message_id));
-      return { draft, post: matchedPost } as { draft: DraftComment; post: Post | undefined };
-    });
-    // Sort by latest draft timestamp desc
-    return items.sort(
-      (a, b) => new Date(b.draft.updated_at || b.draft.created_at).getTime() - new Date(a.draft.updated_at || a.draft.created_at).getTime()
+  useEffect(() => {
+    // Queue generation for any post on the page that lacks a draft (even if some have drafts)
+    if (!posts.length) return;
+    const missing = posts.filter(
+      (p) => !latestDraftKeySet.has(String(p.telegram_id)) && !latestDraftKeySet.has(String(p.id))
     );
-  }, [posts, drafts]);
+    if (missing.length) {
+      const payload = missing.map((p) => ({
+        original_message_id: String(p.id),
+        original_post_content: p.text,
+        original_post_url: p.url,
+        channel_telegram_id: p.channel_telegram_id,
+      }));
+      queueDraftsForPosts(payload, 'mock_init_data_for_telethon');
+    }
+  }, [posts, latestDraftKeySet, queueDraftsForPosts]);
 
   const handleEditChange = (draftId: string, text: string) => {
     // Support nested context edits using keys like `${id}::channel_context`
@@ -273,27 +319,34 @@ export default function Home() {
     >
       <Header title="AI Draft Feed" onSettingsClick={handleSettingsClick} />
       <div className="container mx-auto p-4 tg-feed">
-        <div className="mb-6">
+        <div className="mb-6 space-y-6">
+          {isGeneratingForPage && (
+            <GeneratingNotice />
+          )}
           {/* Drafts list on main page */}
           <div className="space-y-6">
-            {draftItems.map(({ post, draft }) => (
+            {posts.map((post) => {
+              const pair = draftItems.find((x) => String(x.post.id) === String(post.id));
+              const draft = pair?.draft;
+              return (
               <DraftCard
-                key={draft.id}
+                key={post.id}
                 post={post}
                 draft={draft}
-                editingText={editingDrafts[draft.id]}
-                feedback={regenFeedback[draft.id]}
+                editingText={draft ? editingDrafts[draft.id] : ''}
+                feedback={draft ? regenFeedback[draft.id] : ''}
                 openBubbleKey={openBubbleKey}
-                onChangeText={(text) => handleEditChange(draft.id, text)}
-                onSend={() => handleSend(draft.id)}
-                onRegenerate={() => handleRegenerate(draft, post)}
-                onToggleChannelCtx={() => setOpenBubbleKey((prev) => (prev === `chan:${draft.id}` ? null : `chan:${draft.id}`))}
-                onToggleMsgCtx={() => setOpenBubbleKey((prev) => (prev === `msg:${draft.id}` ? null : `msg:${draft.id}`))}
+                onChangeText={(text) => draft && handleEditChange(draft.id, text)}
+                onSend={() => draft && handleSend(draft.id)}
+                onRegenerate={() => draft && handleRegenerate(draft, post)}
+                onToggleChannelCtx={() => draft && setOpenBubbleKey((prev) => (prev === `chan:${draft.id}` ? null : `chan:${draft.id}`))}
+                onToggleMsgCtx={() => draft && setOpenBubbleKey((prev) => (prev === `msg:${draft.id}` ? null : `msg:${draft.id}`))}
                 onCtxChange={(fieldKey, value) => handleEditChange(fieldKey, value)}
-                onCtxSave={() => handleSaveEdit(draft.id)}
+                onCtxSave={() => draft && handleSaveEdit(draft.id)}
                 onCtxClose={() => setOpenBubbleKey(null)}
               />
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -301,7 +354,10 @@ export default function Home() {
         <Pager
           currentPage={currentPage}
           totalPages={totalPages}
-          onPage={(p) => fetchPosts('mock_init_data_for_telethon', p, 30)}
+          onPage={(p) => {
+            setPageState(p);
+            fetchPosts('mock_init_data_for_telethon', p, 30, { queueMissing: true });
+          }}
         />
 
         {selectedChat && (

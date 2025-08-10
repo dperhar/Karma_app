@@ -50,12 +50,18 @@ export class PostService extends ApiClient {
   async getPosts(
     initDataRaw: string,
     page: number = 1,
-    limit: number = 50
+    limit: number = 50,
+    opts?: { bustCache?: boolean; queueMissing?: boolean }
   ): Promise<APIResponse<PostsResponse>> {
     console.log('getPosts called with page:', page, 'limit:', limit);
     try {
+      const params = new URLSearchParams();
+      params.set('page', String(page));
+      params.set('limit', String(limit));
+      if (opts?.queueMissing) params.set('queue_missing', 'true');
+      if (opts?.bustCache) params.set('_t', String(Date.now()));
       const response = await this.request<APIResponse<PostsResponse>>(
-        `${this.endpoint}?page=${page}&limit=${limit}`,
+        `${this.endpoint}?${params.toString()}`,
         {
           method: 'GET',
         },

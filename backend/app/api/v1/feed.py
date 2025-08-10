@@ -22,6 +22,7 @@ async def get_feed(
     feed_service: FeedService = Depends(get_feed_service),
     page: int = Query(1, ge=1, description="Page number starting from 1"),
     limit: int = Query(20, ge=1, le=100, description="Number of posts per page"),
+    queue_missing: bool = Query(False, description="If true, queue AI draft generation for posts on this page that lack drafts"),
 ) -> APIResponse[FeedResponse]:
     """Get the user's personalized feed of posts and drafts."""
     # Convert page to offset for the service
@@ -32,4 +33,22 @@ async def get_feed(
         limit=limit,
         offset=offset
     )
+
+    # Thin dispatch: queue missing drafts for posts on this page
+    if queue_missing and feed and feed.posts:
+        try:
+            from app.tasks.tasks import generate_draft_for_post
+            for p in feed.posts:
+                # If no draft_meta, queue generation
+                if not getattr(p, 'draft_meta', None):
+                    post_data = {
+                        "original_message_id": p.id,
+                        "original_post_content": p.text,
+                        "original_post_url": p.url,
+                        "channel_telegram_id": p.channel_telegram_id,
+                        "force_generate": True,
+                    }
+                    generate_draft_for_post.delay(user_id=current_user.id, post_data=post_data)
+        except Exception:
+            pass
     return APIResponse(success=True, data=feed, message="Feed retrieved successfully") 
