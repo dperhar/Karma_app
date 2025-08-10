@@ -10,10 +10,33 @@ from app.schemas.draft_comment import (
     DraftCommentResponse,
     DraftCommentUpdate,
     RegenerateRequest,
+    BatchGenerateRequest,
 )
 from app.core.dependencies import container
 from app.services.karma_service import KarmaService
 from app.tasks.tasks import generate_draft_for_post
+@router.post("/batch-generate", response_model=APIResponse[dict])
+async def batch_generate_drafts(
+    req: BatchGenerateRequest,
+    current_user=Depends(get_current_user),
+):
+    """Queue draft generation for all posts on the page that lack drafts."""
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    queued = 0
+    for p in req.posts:
+        try:
+            generate_draft_for_post.delay(user_id=current_user.id, post_data={
+                "original_message_id": p.original_message_id,
+                "original_post_content": p.original_post_content,
+                "original_post_url": p.original_post_url,
+                "channel_telegram_id": p.channel_telegram_id,
+                "force_generate": True,
+            })
+            queued += 1
+        except Exception:
+            continue
+    return APIResponse(success=True, data={"queued": queued}, message="Draft generation queued")
 
 router = APIRouter(prefix="/draft-comments", tags=["draft-comments"])
 

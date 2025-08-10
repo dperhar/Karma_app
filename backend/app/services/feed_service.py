@@ -46,6 +46,15 @@ class FeedService(BaseService):
                 replies=getattr(post_obj, 'replies', None),
                 created_at=post_obj.created_at.isoformat() if hasattr(post_obj, 'created_at') and post_obj.created_at else "",
                 updated_at=post_obj.updated_at.isoformat() if hasattr(post_obj, 'updated_at') and post_obj.updated_at else "",
+                draft_meta=(
+                    {
+                        "id": getattr(item.get("draft"), 'id', None),
+                        "status": str(getattr(item.get("draft"), 'status', None)) if getattr(item.get("draft"), 'status', None) is not None else None,
+                        "updated_at": getattr(item.get("draft"), 'updated_at', None).isoformat() if getattr(item.get("draft"), 'updated_at', None) else None,
+                    }
+                    if item.get("draft")
+                    else None
+                ),
             )
             posts.append(post_data)
 

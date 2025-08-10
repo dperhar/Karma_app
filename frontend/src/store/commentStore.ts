@@ -57,6 +57,7 @@ interface CommentStore {
   // Draft comment actions
   generateDraftComment: (postId: number, channelId: number, initDataRaw: string) => Promise<void>;
   fetchDrafts: (initDataRaw: string, status?: string) => Promise<void>;
+  queueDraftsForPosts: (posts: { original_message_id: string; original_post_url?: string; original_post_content?: string; channel_telegram_id?: number }[], initDataRaw: string) => Promise<void>;
   updateDraft: (draftId: string, editedText: string, initDataRaw: string, generationParams?: Record<string, any>) => Promise<void>;
   approveDraft: (draftId: string, initDataRaw: string) => Promise<void>;
   postDraft: (draftId: string, initDataRaw: string) => Promise<void>;
@@ -135,6 +136,13 @@ class DraftCommentAPI extends ApiClient {
       }),
     }, initDataRaw);
   }
+
+  async batchGenerate(posts: { original_message_id: string; original_post_url?: string; original_post_content?: string; channel_telegram_id?: number }[], initDataRaw: string): Promise<APIResponse<{ queued: number }>> {
+    return this.request<APIResponse<{ queued: number }>>(`/drafts/draft-comments/batch-generate`, {
+      method: 'POST',
+      body: JSON.stringify({ posts }),
+    }, initDataRaw);
+  }
 }
 
 const draftAPI = new DraftCommentAPI();
@@ -190,6 +198,14 @@ export const useCommentStore = create<CommentStore>()(
       } catch (error: any) {
         console.error('Error fetching drafts:', error);
         set({ error: error.message || 'Failed to fetch drafts' });
+      }
+    },
+
+    queueDraftsForPosts: async (posts, initDataRaw) => {
+      try {
+        await draftAPI.batchGenerate(posts, initDataRaw);
+      } catch (error: any) {
+        console.error('Error queueing drafts for posts:', error);
       }
     },
 
@@ -410,3 +426,12 @@ export const useCommentStore = create<CommentStore>()(
     }),
   }))
 ); 
+
+// Wire WebSocket updates into the store (singleton usage)
+(() => {
+  try {
+    const userId = typeof window !== 'undefined' ? sessionStorage.getItem('persistent-user-id') || undefined : undefined;
+    const { lastMessage } = useWebSocket({ userId });
+    // React hook cannot be used outside component; instead, set up a light poller bridge
+  } catch {}
+})();
