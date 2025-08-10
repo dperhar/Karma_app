@@ -1,7 +1,7 @@
 """Pydantic schemas for draft comments."""
 
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 
 from pydantic import BaseModel
 
@@ -63,16 +63,3 @@ class RegenerateRequest(BaseModel):
     """Schema for draft regeneration request."""
     post_data: PostData
     rejection_reason: Optional[str] = None
-
-
-class PostGenerateItem(BaseModel):
-    """Minimal data to queue AI draft generation for a post."""
-    original_message_id: str
-    original_post_content: Optional[str] = None
-    original_post_url: Optional[str] = None
-    channel_telegram_id: Optional[int] = None
-
-
-class BatchGenerateRequest(BaseModel):
-    """Batch of posts to generate drafts for."""
-    posts: List[PostGenerateItem]
