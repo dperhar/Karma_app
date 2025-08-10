@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button';
 import DraftCard from '@/components/DraftCard';
 import Pager from '@/components/Pager';
 import ContextBubble from '@/components/ContextBubble';
+import GeneratingNotice from '@/components/GeneratingNotice';
 import { Post } from '@/core/api/services/post-service';
 
 // Define filter types
@@ -177,6 +178,22 @@ export default function Home() {
     );
   }, [posts, drafts]);
 
+  const isGeneratingForPage = useMemo(() => {
+    // If there are posts but none of them have a matching latest draft, show notice
+    if (!posts?.length) return false;
+    const postIds = new Set(posts.map((p) => String(p.telegram_id)));
+    const latestByMsgId = new Map<string, DraftComment>();
+    for (const d of drafts) {
+      const key = String(d.original_message_id);
+      const prev = latestByMsgId.get(key);
+      const prevTs = prev ? new Date(prev.updated_at || prev.created_at).getTime() : -1;
+      const curTs = new Date(d.updated_at || d.created_at).getTime();
+      if (!prev || curTs >= prevTs) latestByMsgId.set(key, d);
+    }
+    const anyDraftForPage = Array.from(postIds).some((id) => latestByMsgId.has(id));
+    return !anyDraftForPage;
+  }, [posts, drafts]);
+
   const handleEditChange = (draftId: string, text: string) => {
     // Support nested context edits using keys like `${id}::channel_context`
     const [baseId, field] = draftId.split('::');
@@ -273,7 +290,10 @@ export default function Home() {
     >
       <Header title="AI Draft Feed" onSettingsClick={handleSettingsClick} />
       <div className="container mx-auto p-4 tg-feed">
-        <div className="mb-6">
+        <div className="mb-6 space-y-6">
+          {isGeneratingForPage && (
+            <GeneratingNotice />
+          )}
           {/* Drafts list on main page */}
           <div className="space-y-6">
             {draftItems.map(({ post, draft }) => (
