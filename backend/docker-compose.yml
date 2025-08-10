@@ -1,5 +1,6 @@
 services:
   turbomanager:
+    profiles: ["turbo"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -9,6 +10,8 @@ services:
       - ../.env
     environment:
       IS_DEVELOP: "true"
+      CELERY_BROKER_URL: redis://turbomanager-redis:6379
+      CELERY_RESULT_BACKEND: redis://turbomanager-redis:6379
     ports:
       - "8000:8000"
     depends_on:
@@ -18,8 +21,11 @@ services:
     volumes:
       - .:/app:delegated
       - venv:/app/.venv
+    networks:
+      - default
 
   turbomanager-db:
+    profiles: ["turbo"]
     image: postgres:16-alpine
     restart: unless-stopped
     container_name: turbomanager-db
@@ -27,20 +33,28 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: turbomanager-new
+    ports:
+      - "5433:5432"
     volumes:
       - turbomanager-new-postgres_data:/var/lib/postgresql/data
+    networks:
+      - default
 
   turbomanager-redis:
+    profiles: ["turbo"]
     image: redis:7-alpine
     restart: unless-stopped
     container_name: turbomanager-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     command: redis-server --save 60 1 --loglevel warning
     volumes:
       - turbomanager-new-redis_data:/data
+    networks:
+      - default
 
   turbomanager_pgadmin:
+    profiles: ["turbo"]
     image: dpage/pgadmin4
     container_name: turbomanager_pgadmin
     environment:
@@ -50,10 +64,13 @@ services:
       - "5051:80"
     depends_on:
       - turbomanager-db
+    networks:
+      - default
     volumes:
       - turbomanager-new-pgadmin_data:/var/lib/pgadmin
 
   centrifugo:
+    profiles: ["turbo"]
     image: centrifugo/centrifugo:v6.1.0
     container_name: turbomanager-centrifugo
     restart: unless-stopped
@@ -67,6 +84,47 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    networks:
+      - default
+
+  celery-worker:
+    profiles: ["turbo"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.tasks.worker.celery_app worker --loglevel=info
+    volumes:
+      - .:/app:delegated
+    env_file:
+      - ../.env
+    environment:
+      - REDIS_URL=redis://turbomanager-redis:6379
+      - CELERY_BROKER_URL=redis://turbomanager-redis:6379
+      - CELERY_RESULT_BACKEND=redis://turbomanager-redis:6379
+    depends_on:
+      - turbomanager-redis
+      - turbomanager-db
+    networks:
+      - default
+
+  celery-beat:
+    profiles: ["turbo"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.tasks.worker.celery_app beat --loglevel=info
+    volumes:
+      - .:/app:delegated
+    env_file:
+      - ../.env
+    environment:
+      - REDIS_URL=redis://turbomanager-redis:6379
+      - CELERY_BROKER_URL=redis://turbomanager-redis:6379
+      - CELERY_RESULT_BACKEND=redis://turbomanager-redis:6379
+    depends_on:
+      - turbomanager-redis
+    networks:
+      - default
 
 volumes:
   turbomanager-new-postgres_data:

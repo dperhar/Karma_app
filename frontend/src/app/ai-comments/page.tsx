@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { initData, useSignal } from '@telegram-apps/sdk-react';
+// import { initData, useSignal } from '@telegram-apps/sdk-react';
 import { useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 
 import { Page } from '@/components/Page';
 import { Header } from '@/components/Header';
@@ -19,24 +20,25 @@ import { Post } from '@/core/api/services/post-service';
 
 type ViewMode = 'drafts' | 'posts' | 'persona';
 
-export default function AICommentsPage() {
+export default function AIComments() {
+  const t = useTranslations('i18n');
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>('drafts');
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
   
-  // Get Telegram initialization data
-  const initDataRaw = useSignal(initData.raw);
-  const initDataState = useSignal(initData.state);
+  // Get the Telegram initialization data
+  // const initDataRaw = useSignal(initData.raw);
+  // const initDataState = useSignal(initData.state);
   
-  const { user, fetchUser } = useUserStore();
+  const { user, fetchUser, isLoading: userLoading, error: userError } = useUserStore();
   const { posts, fetchPosts } = usePostStore();
   const { drafts, fetchDrafts } = useCommentStore();
   
   // WebSocket connection for real-time updates
   const { isConnected: wsConnected, error: wsError } = useWebSocket({
     userId: user?.id,
-    initDataRaw
+    // initDataRaw
   });
 
   // Load initial data
@@ -45,19 +47,17 @@ export default function AICommentsPage() {
     
     const loadData = async () => {
       try {
-        if (!initDataRaw) {
-          console.error('No Telegram init data available');
-          return;
-        }
+        // Use mock initDataRaw for Telethon since backend still expects it
+        const mockInitDataRaw = "mock_init_data_for_telethon";
         
-        // Load user and their persona settings
-        await fetchUser(initDataRaw);
+        // Fetch fresh user data from server first
+        await fetchUser(mockInitDataRaw);
         
         // Load drafts
-        await fetchDrafts(initDataRaw);
+        await fetchDrafts(mockInitDataRaw);
         
         // Load recent posts for reference
-        await fetchPosts(initDataRaw, 1, 20);
+        await fetchPosts(mockInitDataRaw, 1, 20);
       } catch (err) {
         console.error('Failed to load AI comments data:', err);
       } finally {
@@ -67,14 +67,23 @@ export default function AICommentsPage() {
       }
     };
 
-    if (initDataState && initDataRaw) {
+    // Check if user is authenticated via session (since we use Telethon, not SDK)
+    const isSessionAuthenticated = typeof window !== 'undefined' && 
+      sessionStorage.getItem("env-authenticated") === "1";
+    
+    // Only proceed with data loading if user is authenticated
+    if (isSessionAuthenticated) {
+      console.log('[AIComments] Starting data load - user authenticated via session...');
       loadData();
+    } else {
+      console.log('[AIComments] Not loading data - user not authenticated');
     }
     
+    // Cleanup function
     return () => {
       isMounted = false;
     };
-  }, [initDataRaw, initDataState, fetchUser, fetchDrafts, fetchPosts]);
+  }, [fetchUser, fetchDrafts, fetchPosts]);
 
   const handleBackClick = () => {
     router.push('/');
@@ -171,7 +180,7 @@ export default function AICommentsPage() {
               {/* Drafts list */}
               <div className="w-1/3 border-r border-border">
                 <DraftList 
-                  initDataRaw={initDataRaw || null}
+                  // initDataRaw={initDataRaw || null}
                   onSelectDraft={(draft) => {
                     // Find the post for this draft if available
                     const post = posts.find(p => p.telegram_id.toString() === draft.original_message_id);
@@ -186,7 +195,7 @@ export default function AICommentsPage() {
               <div className="flex-1">
                 <CommentManagementPanel
                   selectedPost={selectedPost}
-                  initDataRaw={initDataRaw || null}
+                  // initDataRaw={initDataRaw || null}
                 />
               </div>
             </div>
@@ -248,7 +257,7 @@ export default function AICommentsPage() {
               <div className="flex-1">
                 <CommentManagementPanel
                   selectedPost={selectedPost}
-                  initDataRaw={initDataRaw || null}
+                  // initDataRaw={initDataRaw || null}
                 />
               </div>
             </div>
@@ -257,7 +266,7 @@ export default function AICommentsPage() {
           {viewMode === 'persona' && (
             <div className="w-full overflow-y-auto">
               <PersonaSettings
-                initDataRaw={initDataRaw || null}
+                // initDataRaw={initDataRaw || null}
               />
             </div>
           )}

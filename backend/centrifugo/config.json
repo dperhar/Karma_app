@@ -3,6 +3,7 @@
     "token": {
       "hmac_secret_key": "65840621-4be3-4a74-a03c-6036545bc244"
     },
+    "anonymous": true,
     "allowed_origins": [
       "http://localhost:3000",
       "http://127.0.0.1:3000",
@@ -24,10 +25,10 @@
   "channel": {
     "namespaces": [
       {
-        "name": "user"
+        "name": "user",
+        "anonymous": true,
+        "allow_subscribe": true
       }
     ]
-  },
-  "allow_subscribe_for_client": true,
-  "allow_publish_for_client": true
+  }
 }

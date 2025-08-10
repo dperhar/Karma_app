@@ -114,6 +114,91 @@
   body {
     @apply bg-background text-foreground;
   }
+
+/* Telegram for macOS inspired feed visuals */
+.tg-feed {
+  @apply max-w-3xl mx-auto;
+}
+.tg-post {
+  background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.00));
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 18px;
+  box-shadow: 0 2px 24px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.05);
+  position: relative;
+}
+.tg-post-header {
+  @apply flex items-center gap-2 text-xs text-muted-foreground mb-2;
+}
+.tg-post-title {
+  @apply font-semibold text-sm;
+}
+.tg-avatar {
+  height: 28px;
+  width: 28px;
+  border-radius: 9999px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0.1);
+  font-size: 10px;
+  font-weight: 600;
+}
+.tg-reactions span {
+  @apply px-2 py-1 rounded bg-base-200 text-xs;
+}
+.tg-draft-bubble .chat-bubble {
+  border-radius: 16px 16px 16px 6px;
+}
+
+/* Sent bubble aesthetic (2025 Telegram style) */
+.tg-sent-bubble {
+  --bubble-bg: linear-gradient(135deg, rgba(64,134,255,0.20), rgba(64,134,255,0.06));
+  --bubble-border: rgba(64,134,255,0.35);
+  --bubble-shadow: 0 8px 28px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.tg-sent-bubble .chat-bubble {
+  background: var(--bubble-bg) !important;
+  border: 1px solid var(--bubble-border) !important;
+  box-shadow: var(--bubble-shadow) !important;
+  color: #EAF1FF !important;
+  border-radius: 16px 16px 6px 16px !important;
+  backdrop-filter: saturate(140%) blur(8px);
+}
+.tg-sent-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.tg-sent-meta .badge-success {
+  background: rgba(46, 204, 113, 0.18) !important;
+  color: #B8FFD6 !important;
+  border: 1px solid rgba(46, 204, 113, 0.35) !important;
+}
+.tg-thread-link {
+  color: #BFD5FF !important;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* stronger separation between posts */
+.tg-feed > div > .card.tg-post::after {
+  content: '';
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: -8px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent);
+}
+
+/* Footer actions like Telegram composer */
+.tg-actions {
+  position: sticky;
+  bottom: 0;
+  backdrop-filter: blur(8px);
+}
 }
 
 /* Swiper custom styles */

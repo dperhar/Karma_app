@@ -1,0 +1,218 @@
+"""Service for user management operations."""
+
+import logging
+from typing import Optional
+from datetime import datetime
+
+from app.schemas.user import UserCreate, UserResponse, UserUpdate
+from app.services.base_service import BaseService
+from app.repositories.user_repository import UserRepository
+from app.core.config import settings
+from app.services.domain.websocket_service import WebSocketService
+
+logger = logging.getLogger(__name__)
+
+
+class UserService(BaseService):
+    """Service class for user management."""
+
+    def __init__(self, user_repository: UserRepository):
+        super().__init__()
+        self.user_repository = user_repository
+        self.websocket_service = WebSocketService()
+        # Make config values accessible to the service if needed elsewhere
+        self.SESSION_COOKIE_NAME = settings.SESSION_COOKIE_NAME
+        self.SESSION_EXPIRY_SECONDS = settings.SESSION_EXPIRY_SECONDS
+        self.IS_DEVELOP = settings.IS_DEVELOP
+
+    async def _send_user_update_notification(
+        self, user_id: str, event: str, data: dict
+    ):
+        """Send WebSocket notification about user data changes."""
+        try:
+            await self.websocket_service.send_user_notification(
+                user_id=user_id, event=event, data=data
+            )
+        except Exception as e:
+            logger.error(f"Error sending WebSocket notification: {e}")
+            # Don't raise the exception to prevent breaking the main flow
+
+    async def create_user(self, user_data: UserCreate) -> UserResponse:
+        """Create a new user with the provided data."""
+        user_dict = user_data.model_dump()
+        db_user = await self.user_repository.create_user(**user_dict)
+        user_dict = db_user.__dict__.copy()
+        user_dict['has_valid_tg_session'] = db_user.has_valid_tg_session()
+        user_response = UserResponse.model_validate(user_dict)
+
+        # Send notification about user creation
+        await self._send_user_update_notification(
+            user_id=user_response.id,
+            event="user_created",
+            data=user_response.model_dump(),
+        )
+
+        return user_response
+
+    async def get_user(self, user_id: str) -> Optional[UserResponse]:
+        """Get user by ID."""
+        user = await self.user_repository.get_user(user_id)
+        if user:
+            user_dict = user.__dict__.copy()
+            user_dict['has_valid_tg_session'] = user.has_valid_tg_session()
+            return UserResponse.model_validate(user_dict)
+        return None
+
+    async def get_user_by_telegram_id(self, telegram_id: int) -> Optional[UserResponse]:
+        """Get user by Telegram ID."""
+        user = await self.user_repository.get_user_by_telegram_id(telegram_id)
+        if user:
+            user_dict = user.__dict__.copy()
+            user_dict['has_valid_tg_session'] = user.has_valid_tg_session()
+            return UserResponse.model_validate(user_dict)
+        return None
+
+    async def update_user(
+        self,
+        user_id: str,
+        user_data: Optional[UserUpdate] = None,
+        **kwargs
+    ) -> Optional[UserResponse]:
+        """Update user data."""
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"UserService.update_user called with: user_id={user_id}, user_data={user_data}, kwargs={kwargs}"
+        )
+
+        if user_data is not None:
+            update_data = user_data.model_dump(exclude_unset=True)
+        else:
+            update_data = kwargs
+        
+        if "last_telegram_auth_at" in update_data and update_data["last_telegram_auth_at"] is None: # Pydantic might convert unset to None
+            update_data["last_telegram_auth_at"] = datetime.utcnow()
+
+        logger.info(f"Calling repository.update_user with data: {update_data}")
+
+        user = await self.user_repository.update_user(user_id=user_id, **update_data)
+
+        if user:
+            logger.info(f"User updated successfully: {user.id}")
+            logger.info(
+                f"User data: first_name={user.first_name}, last_name={user.last_name}, username={user.username}"
+            )
+            user_dict = user.__dict__.copy()
+            user_dict['has_valid_tg_session'] = user.has_valid_tg_session()
+            user_response = UserResponse.model_validate(user_dict)
+
+            # Send notification about user update
+            await self._send_user_update_notification(
+                user_id=user_id,
+                event="user_updated",
+                data=user_response.model_dump(exclude={"telegram_session_string"}, mode="json"),
+            )
+
+            return user_response
+        else:
+            logger.error(f"Failed to update user with id: {user_id}")
+            return None
+
+    async def get_users(self) -> list[UserResponse]:
+        """Get all users."""
+        users = await self.user_repository.get_users()
+        user_responses = []
+        for user in users:
+            user_dict = user.__dict__.copy()
+            user_dict['has_valid_tg_session'] = user.has_valid_tg_session()
+            user_responses.append(UserResponse.model_validate(user_dict))
+        return user_responses
+
+    async def update_user_tg_session(
+        self, user_id: str, session_string: str
+    ) -> Optional[UserResponse]:
+        """Update user's Telegram session string and last_telegram_auth_at."""
+        # This method is called upon successful TG auth, so it's a "login" event
+        # Update last_telegram_auth_at and save session to telegram_connections table
+        from app.repositories.telegram_connection_repository import TelegramConnectionRepository
+        from app.core.security import get_encryption_service
+        
+        # Encrypt the session string before storing
+        encryption_service = get_encryption_service()
+        encrypted_session = encryption_service.encrypt_session_string(session_string)
+        
+        # Save to telegram_connections table
+        connection_repo = TelegramConnectionRepository()
+        await connection_repo.create_or_update(
+            user_id=user_id,
+            session_string_encrypted=encrypted_session,
+            is_active=True,
+            validation_status="VALID",
+            last_validation_at=datetime.utcnow()
+        )
+        
+        # Update user's last_telegram_auth_at
+        user = await self.user_repository.update_user(
+            user_id=user_id, last_telegram_auth_at=datetime.utcnow()
+        )
+        
+        if user:
+            user_dict = user.__dict__.copy()
+            user_dict['has_valid_tg_session'] = user.has_valid_tg_session()
+            user_response = UserResponse.model_validate(user_dict)
+            await self._send_user_update_notification(
+                user_id=user_id,
+                event="user_updated",
+                data=user_response.model_dump(mode="json"),
+            )
+            return user_response
+        return None
+
+    async def update_user_from_telegram(
+        self, user_id: str, telegram_user
+    ) -> Optional[UserResponse]:
+        """Update user data from Telegram user object after successful authorization."""
+        try:
+            # Extract data from Telegram user object
+            update_data = {
+                "first_name": telegram_user.first_name,
+                "last_name": getattr(telegram_user, 'last_name', None),
+                "username": getattr(telegram_user, 'username', None),
+                "last_telegram_auth_at": datetime.utcnow(),
+            }
+            
+            # Only update telegram_id if it's not already set for this user
+            # This prevents unique constraint violations
+            current_user = await self.user_repository.get_user(user_id)
+            if current_user and not current_user.telegram_id:
+                # Check if this telegram_id is already used by another user
+                existing_user = await self.user_repository.get_user_by_telegram_id(telegram_user.id)
+                if not existing_user:
+                    update_data["telegram_id"] = telegram_user.id
+                else:
+                    logger.warning(f"Telegram ID {telegram_user.id} already exists for another user")
+            
+            logger.info(f"Updating user {user_id} with Telegram data: {update_data}")
+            
+            user = await self.user_repository.update_user(user_id=user_id, **update_data)
+            
+            if user:
+                logger.info(f"User {user_id} updated successfully with Telegram data")
+                user_dict = user.__dict__.copy()
+                user_dict['has_valid_tg_session'] = user.has_valid_tg_session()
+                user_response = UserResponse.model_validate(user_dict)
+                
+                # Send notification about user update
+                await self._send_user_update_notification(
+                    user_id=user_id,
+                    event="user_updated",
+                    data=user_response.model_dump(exclude={"telegram_session_string"}, mode="json"),
+                )
+                
+                return user_response
+            else:
+                logger.error(f"Failed to update user {user_id} with Telegram data")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error updating user {user_id} from Telegram: {e}")
+            return None

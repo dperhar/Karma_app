@@ -1,6 +1,5 @@
 'use client';
 
-import { useLaunchParams } from '@telegram-apps/sdk-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 
@@ -24,7 +23,6 @@ function getStartParam() {
 
 export function InitialRouteHandler() {
   const router = useRouter();
-  const lp = useLaunchParams();
   const hasRedirected = useRef(false);
 
   useEffect(() => {

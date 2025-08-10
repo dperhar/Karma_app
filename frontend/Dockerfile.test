@@ -1,0 +1,30 @@
+# Frontend Test Dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install dependencies for testing
+RUN apk add --no-cache curl
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production
+
+# Copy application code
+COPY . .
+
+# Set environment variables for testing
+ENV NODE_ENV=test
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:3000 || exit 1
+
+# Expose port
+EXPOSE 3000
+
+# Start command
+CMD ["npm", "run", "dev"] 

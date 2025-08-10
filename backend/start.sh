@@ -38,11 +38,11 @@ echo "База данных доступна!"
 
 # Применение миграций
 echo "Применение миграций..."
-if ! python -m alembic upgrade heads; then
+if ! python -m alembic -c alembic.ini upgrade head; then
     echo "Ошибка при применении миграций"
     exit 1
 fi
 
 # Запуск приложения
 echo "Запуск приложения с перезапуском..."
-exec python main.py
+exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

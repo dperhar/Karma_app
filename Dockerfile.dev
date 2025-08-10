@@ -1,0 +1,65 @@
+# Ultra-fast development setup - 30 second builds!
+FROM python:3.11-slim
+
+# Install only essential system packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-privileged user
+RUN useradd -m appuser
+
+# Setup working directory
+WORKDIR /app
+
+# Install pip packages from requirements in a specific order for better caching
+# Split requirements into layers for maximum cache efficiency
+COPY requirements.txt /tmp/requirements.txt
+
+# Install core packages first (rarely change)
+RUN pip install --no-cache-dir \
+    fastapi \
+    uvicorn[standard] \
+    pydantic \
+    pydantic-settings \
+    sqlalchemy \
+    alembic \
+    asyncpg \
+    redis \
+    celery
+
+# Install auth and crypto packages
+RUN pip install --no-cache-dir \
+    bcrypt \
+    passlib \
+    PyJWT \
+    python-jose \
+    cryptography
+
+# Install the remaining packages
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Setup Selectel certificate (if needed)
+RUN mkdir -p /usr/local/share/ca-certificates/selectel && \
+    curl -k https://s3.ru-1.storage.selcloud.ru -o /usr/local/share/ca-certificates/selectel/storage.crt 2>/dev/null || true && \
+    update-ca-certificates || true
+
+# Create logs directory and set ownership
+RUN mkdir -p /app/logs && \
+    chown -R appuser:appuser /app
+
+# Switch to non-privileged user
+USER appuser
+
+# Environment variables for development
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+
+# Expose port
+EXPOSE 8000
+
+# Default development command
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"] 

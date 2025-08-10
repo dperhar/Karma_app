@@ -1,6 +1,5 @@
 'use client';
 
-import { initData, useSignal } from '@telegram-apps/sdk-react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from 'next/navigation';
 import { ChangeEvent, useEffect, useMemo, useState } from 'react';
@@ -9,9 +8,17 @@ import { ChatList } from '@/components/ChatList';
 import { Header } from '@/components/Header';
 import { Page } from '@/components/Page';
 import { Preloader } from '@/components/Preloader/Preloader';
+import { TelegramAuthModal } from '@/components/TelegramAuthModal/TelegramAuthModal';
 import { useChatStore } from '@/store/chatStore';
 import { useUserStore } from '@/store/userStore';
 import { TelegramChat, TelegramMessengerChatType } from '@/types/chat';
+import { usePostStore } from '@/store/postStore';
+import { useCommentStore, DraftComment } from '@/store/commentStore';
+import { Button } from '@/components/ui/button';
+import DraftCard from '@/components/DraftCard';
+import Pager from '@/components/Pager';
+import ContextBubble from '@/components/ContextBubble';
+import { Post } from '@/core/api/services/post-service';
 
 // Define filter types
 type FilterType = 'all' | 'private' | 'group' | 'channel';
@@ -24,15 +31,18 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  
-  // Get the Telegram initialization data
-  const initDataRaw = useSignal(initData.raw);
-  const initDataState = useSignal(initData.state);
+  const [showAuthModal, setShowAuthModal] = useState(false);
   
   const { fetchUser, user, isLoading: userLoading, error: userError } = useUserStore();
   const { fetchChats, chats, isLoading: chatsLoading, error: chatsError } = useChatStore();
+  const { posts, fetchPosts, currentPage, totalPages } = usePostStore();
+  const { drafts, fetchDrafts, updateDraft, approveDraft, postDraft, regenerateDraft } = useCommentStore();
 
   const [selectedChat, setSelectedChat] = useState<TelegramChat | null>(null);
+  const [editingDrafts, setEditingDrafts] = useState<Record<string, string>>({});
+  const [regenFeedback, setRegenFeedback] = useState<Record<string, string>>({});
+  const [openBubbleKey, setOpenBubbleKey] = useState<string | null>(null);
+  const [styleMemoryOpen, setStyleMemoryOpen] = useState<string | null>(null);
 
   const router = useRouter();
 
@@ -82,26 +92,16 @@ export default function Home() {
     
     const loadData = async () => {
       try {
-        console.log('[Page] loadData started - initDataRaw value:', initDataRaw?.substring(0, 50) + '...');
-        console.log('[Page] loadData started - initDataState value:', initDataState);
+        console.log('[Page] loadData started');
         
-        // Check if we have valid initialization data
-        if (!initDataRaw) {
-          console.error('[Page] No Telegram init data available');
-          return;
-        }
+        const mockInitDataRaw = "mock_init_data_for_telethon";
         
-        // Fetch fresh user data from server first
-        console.log('[Page] Fetching fresh user data from server');
-        await fetchUser(initDataRaw);
-        
-        // Get the latest user data which includes their chat load limit preference
+        await fetchUser(mockInitDataRaw);
         const userData = useUserStore.getState().user;
         const limit = userData?.telegram_chats_load_limit || DEFAULT_CHAT_LOAD_LIMIT;
-        
-        // Fetch chats with the user's preferred limit
-        console.log(`[Page] Loading chats with user-defined limit: ${limit}`);
-        await fetchChats(initDataRaw, limit);
+        await fetchChats(mockInitDataRaw, limit);
+          await fetchPosts(mockInitDataRaw, 1, 30);
+        await fetchDrafts(mockInitDataRaw);
         
         // Log current state after fetch
         const chatState = useChatStore.getState();
@@ -122,19 +122,20 @@ export default function Home() {
       }
     };
 
-    // Only proceed with data loading if initialization data is available
-    if (initDataState && initDataRaw) {
-      console.log('[Page] Starting data load...');
+    const isSessionAuthenticated = typeof window !== 'undefined' && 
+      sessionStorage.getItem("env-authenticated") === "1";
+    
+    if (isSessionAuthenticated) {
+      console.log('[Page] Starting data load - user authenticated via session...');
       loadData();
     } else {
-      console.log('[Page] Not loading data - missing initData:', { initDataState, hasInitDataRaw: !!initDataRaw });
+      console.log('[Page] Not loading data - user not authenticated');
     }
     
-    // Cleanup function
     return () => {
       isMounted = false;
     };
-  }, [fetchUser, fetchChats, initDataRaw, initDataState]);
+  }, [fetchUser, fetchChats, fetchPosts, fetchDrafts]);
 
   const handleChatClick = (chat: TelegramChat) => {
     setSelectedChat(chat);
@@ -152,88 +153,116 @@ export default function Home() {
     router.push('/settings');
   };
 
-  // Handle comments click navigation
-  const handleCommentsClick = () => {
-    router.push('/comments');
+  // Draft items to render on main page (show drafts even if no matching post found)
+  const draftItems = useMemo(() => {
+    // Keep only the latest draft per original_message_id
+    const latestByMsgId = new Map<string, DraftComment>();
+    for (const d of drafts) {
+      const key = String(d.original_message_id);
+      const prev = latestByMsgId.get(key);
+      const prevTs = prev ? new Date(prev.updated_at || prev.created_at).getTime() : -1;
+      const curTs = new Date(d.updated_at || d.created_at).getTime();
+      if (!prev || curTs >= prevTs) {
+        latestByMsgId.set(key, d);
+      }
+    }
+
+    const items = Array.from(latestByMsgId.values()).map((draft) => {
+      const matchedPost = posts.find((p) => String(p.telegram_id) === String(draft.original_message_id));
+      return { draft, post: matchedPost } as { draft: DraftComment; post: Post | undefined };
+    });
+    // Sort by latest draft timestamp desc
+    return items.sort(
+      (a, b) => new Date(b.draft.updated_at || b.draft.created_at).getTime() - new Date(a.draft.updated_at || a.draft.created_at).getTime()
+    );
+  }, [posts, drafts]);
+
+  const handleEditChange = (draftId: string, text: string) => {
+    // Support nested context edits using keys like `${id}::channel_context`
+    const [baseId, field] = draftId.split('::');
+    if (field) {
+      // Store temporary context/style edits in regenFeedback map to merge on save
+      setRegenFeedback(prev => ({ ...prev, [`ctx:${baseId}:${field}`]: text }));
+    } else {
+      setEditingDrafts(prev => ({ ...prev, [draftId]: text }));
+    }
   };
 
-  // Handle AI comments click navigation
-  const handleAICommentsClick = () => {
-    router.push('/ai-comments');
+  const handleSaveEdit = async (draftId: string) => {
+    const text = editingDrafts[draftId];
+    // Merge any context edits staged in regenFeedback under keys `ctx:${draftId}:<field>`
+    const gp: Record<string, any> = {};
+    for (const [k, v] of Object.entries(regenFeedback)) {
+      if (k.startsWith(`ctx:${draftId}:`)) {
+        const field = k.split(':')[2];
+        // Convert boolean strings for style flag
+        if (field === 'is_style_example') {
+          gp[field] = String(v).toLowerCase() === 'true';
+        } else {
+          gp[field] = v;
+        }
+      }
+    }
+    await updateDraft(draftId, text ?? '', 'mock_init_data_for_telethon', Object.keys(gp).length ? gp : undefined);
   };
 
-  // Get chat counts by type
-  const chatCounts = useMemo(() => {
-    console.log('[Page] Calculating chatCounts - searchedChats:', searchedChats?.length || 0);
-    // Use searchedChats to include only chats that match the search
-    const privateCount = searchedChats.filter(chat => chat.type === TelegramMessengerChatType.PRIVATE).length;
-    const groupCount = searchedChats.filter(chat => 
-      chat.type === TelegramMessengerChatType.GROUP || 
-      chat.type === TelegramMessengerChatType.SUPERGROUP
-    ).length;
-    const channelCount = searchedChats.filter(chat => chat.type === TelegramMessengerChatType.CHANNEL).length;
-    
-    const counts = {
-      all: searchedChats.length,
-      private: privateCount,
-      group: groupCount,
-      channel: channelCount
-    };
-    
-    console.log('[Page] Chat counts:', counts);
-    return counts;
-  }, [searchedChats]);
+  const handleApprove = async (draftId: string) => {
+    await approveDraft(draftId, 'mock_init_data_for_telethon');
+  };
 
-  console.log('[Page] Render - Current state:', {
-    loading,
-    userLoading,
-    chatsLoading,
-    userError,
-    chatsError,
-    chatsCount: chats?.length || 0,
-    filteredChatsCount: filteredChats?.length || 0,
-    activeFilter,
-    searchQuery
-  });
+  const handlePost = async (draftId: string) => {
+    await postDraft(draftId, 'mock_init_data_for_telethon');
+  };
 
-  if (loading || userLoading || chatsLoading) {
-    console.log('[Page] Showing loading state');
-    return (
-      <Page back={false}>
-        <div className="flex justify-center items-center min-h-screen">
-          <Preloader />
-        </div>
-      </Page>
+  // Local inline removed; we use components/ContextBubble.tsx
+
+  const handleRegenerate = async (draft: DraftComment, post?: Post) => {
+    const feedback = regenFeedback[draft.id];
+    const fallbackTelegramId = Number.isFinite(Number(draft.original_message_id))
+      ? Number(draft.original_message_id)
+      : 0;
+    await regenerateDraft(
+      draft.id,
+      { telegram_id: post?.telegram_id ?? fallbackTelegramId, text: post?.text ?? draft.original_post_content },
+      feedback,
+      'mock_init_data_for_telethon'
     );
-  }
+    setRegenFeedback((prev) => ({ ...prev, [draft.id]: '' }));
+  };
 
-  if (userError || chatsError) {
-    console.log('[Page] Showing error state:', { userError, chatsError });
-    return (
-      <Page back={false}>
-        <div className="alert alert-error shadow-lg mx-4 my-6">
-          <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current flex-shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <div>
-            <h3 className="font-bold">Error</h3>
-            <div className="text-sm">{userError || chatsError}</div>
-          </div>
-        </div>
-      </Page>
-    );
-  }
+  const handleSend = async (draftId: string) => {
+    // Persist current edits (text + any staged context) before sending
+    await handleSaveEdit(draftId);
+    await postDraft(draftId, 'mock_init_data_for_telethon');
+  };
 
-  console.log('[Page] Rendering main content with filteredChats:', filteredChats?.length || 0);
+  // Handle Telegram authentication success
+  const handleTelegramAuthSuccess = async () => {
+    console.log('[Page] Telegram authentication successful, reloading data...');
+    setShowAuthModal(false);
+    
+    // Reload chats with real authentication
+    const mockInitDataRaw = "mock_init_data_for_telethon";
+    await fetchChats(mockInitDataRaw, user?.telegram_chats_load_limit || DEFAULT_CHAT_LOAD_LIMIT);
+  };
+
+  // Handle connect to Telegram button
+  const handleConnectTelegram = () => {
+    console.log('[Page] Connect to Telegram button clicked');
+    setShowAuthModal(true);
+  };
 
   // Test function to force reload chats
   const handleForceReloadChats = async () => {
     console.log('[Page] Force reload chats button clicked');
-    if (initDataRaw) {
-      console.log('[Page] initDataRaw available, calling fetchChats');
-      await fetchChats(initDataRaw, 20);
+    const isSessionAuthenticated = typeof window !== 'undefined' && 
+      sessionStorage.getItem("env-authenticated") === "1";
+    
+    if (isSessionAuthenticated) {
+      console.log('[Page] Session authenticated, calling fetchChats with mock initDataRaw');
+      await fetchChats("mock_init_data_for_telethon", 20);
     } else {
-      console.log('[Page] No initDataRaw available');
+      console.log('[Page] No session authentication available');
     }
   };
 
@@ -242,147 +271,38 @@ export default function Home() {
       back={!!selectedChat} 
       onBack={handleBackNavigation}
     >
-      <Header 
-        title="Your Chats"
-        onSettingsClick={handleSettingsClick}
-      />
-      <div className="container mx-auto p-4">
-        {/* Диагностическая информация */}
-        <div className="alert alert-info mb-4">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="stroke-current shrink-0 w-6 h-6">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-          </svg>
-          <div>
-            <h3 className="font-bold">Диагностика:</h3>
-            <div className="text-xs">
-              <p>Всего чатов: {chats?.length || 0}</p>
-              <p>Отфильтрованных чатов: {filteredChats?.length || 0}</p>
-              <p>Поисковый запрос: "{searchQuery}"</p>
-              <p>Активный фильтр: {activeFilter}</p>
-              <p>Загрузка: {loading ? 'да' : 'нет'} | Загрузка чатов: {chatsLoading ? 'да' : 'нет'}</p>
-              <p>Ошибки: {chatsError || 'нет'}</p>
-              <p>initDataRaw доступен: {initDataRaw ? 'да' : 'нет'}</p>
-              <p>initDataState: {initDataState ? 'да' : 'нет'}</p>
-            </div>
-            <button 
-              className="btn btn-sm btn-primary mt-2"
-              onClick={handleForceReloadChats}
-              disabled={chatsLoading}
-            >
-              {chatsLoading ? 'Загружаем...' : 'Принудительно загрузить чаты'}
-            </button>
-          </div>
-        </div>
-        
-        {/* Navigation buttons */}
-        <div className="flex gap-2 mb-6">
-          <button 
-            className="btn btn-primary flex-1"
-            onClick={handleAICommentsClick}
-          >
-            <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
-            </svg>
-            AI Comment Manager
-          </button>
-          <button 
-            className="btn btn-outline flex-1"
-            onClick={handleCommentsClick}
-          >
-            <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-            </svg>
-            Manual Comments
-          </button>
-        </div>
-        
+      <Header title="AI Draft Feed" onSettingsClick={handleSettingsClick} />
+      <div className="container mx-auto p-4 tg-feed">
         <div className="mb-6">
-
-          
-          {/* Search bar */}
-          <div className="form-control mb-4">
-            <div className="relative w-full">
-              <input 
-                type="text" 
-                placeholder="Поиск чатов..." 
-                className="input input-bordered w-full pr-20"
-                value={searchQuery}
-                onChange={handleSearchChange}
+          {/* Drafts list on main page */}
+          <div className="space-y-6">
+            {draftItems.map(({ post, draft }) => (
+              <DraftCard
+                key={draft.id}
+                post={post}
+                draft={draft}
+                editingText={editingDrafts[draft.id]}
+                feedback={regenFeedback[draft.id]}
+                openBubbleKey={openBubbleKey}
+                onChangeText={(text) => handleEditChange(draft.id, text)}
+                onSend={() => handleSend(draft.id)}
+                onRegenerate={() => handleRegenerate(draft, post)}
+                onToggleChannelCtx={() => setOpenBubbleKey((prev) => (prev === `chan:${draft.id}` ? null : `chan:${draft.id}`))}
+                onToggleMsgCtx={() => setOpenBubbleKey((prev) => (prev === `msg:${draft.id}` ? null : `msg:${draft.id}`))}
+                onCtxChange={(fieldKey, value) => handleEditChange(fieldKey, value)}
+                onCtxSave={() => handleSaveEdit(draft.id)}
+                onCtxClose={() => setOpenBubbleKey(null)}
               />
-              <div className="absolute inset-y-0 right-0 flex items-center">
-                {searchQuery && (
-                  <button 
-                    className="btn btn-ghost btn-sm px-2"
-                    onClick={handleClearSearch}
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                )}
-                <button className="btn btn-ghost btn-sm px-3 mr-1">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                  </svg>
-                </button>
-              </div>
-            </div>
+            ))}
           </div>
-          
-          {/* Chat filter tabs */}
-          <div className="tabs tabs-boxed bg-base-200 mb-4">
-            <a 
-              className={`tab ${activeFilter === 'all' ? 'tab-active' : ''}`}
-              onClick={() => setActiveFilter('all')}
-            >
-              Все
-              <span className="badge badge-sm ml-1">{chatCounts.all}</span>
-            </a>
-            <a 
-              className={`tab ${activeFilter === 'private' ? 'tab-active' : ''}`}
-              onClick={() => setActiveFilter('private')}
-            >
-              Чаты
-              <span className="badge badge-sm ml-1">{chatCounts.private}</span>
-            </a>
-            <a 
-              className={`tab ${activeFilter === 'group' ? 'tab-active' : ''}`}
-              onClick={() => setActiveFilter('group')}
-            >
-              Группы
-              <span className="badge badge-sm ml-1">{chatCounts.group}</span>
-            </a>
-            <a 
-              className={`tab ${activeFilter === 'channel' ? 'tab-active' : ''}`}
-              onClick={() => setActiveFilter('channel')}
-            >
-              Каналы
-              <span className="badge badge-sm ml-1">{chatCounts.channel}</span>
-            </a>
-          </div>
-          
-          {/* No results message */}
-          {filteredChats.length === 0 && searchQuery && (
-            <div className="alert alert-info shadow-lg mb-4">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="stroke-current flex-shrink-0 w-6 h-6">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-              </svg>
-              <div>
-                <span>По запросу &ldquo;{searchQuery}&rdquo; ничего не найдено в категории &ldquo;{
-                  activeFilter === 'all' ? 'Все' : 
-                  activeFilter === 'private' ? 'Чаты' : 
-                  activeFilter === 'group' ? 'Группы' : 'Каналы'
-                }&rdquo;</span>
-              </div>
-            </div>
-          )}
-          
-          <ChatList 
-            chats={filteredChats} 
-            onChatClick={handleChatClick}
-            selectedChat={selectedChat}
-          />
         </div>
+
+        {/* Pagination - centered bottom controls */}
+        <Pager
+          currentPage={currentPage}
+          totalPages={totalPages}
+          onPage={(p) => fetchPosts('mock_init_data_for_telethon', p, 30)}
+        />
 
         {selectedChat && (
           <div className="card bg-base-200 shadow-lg">
@@ -408,6 +328,14 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {/* Telegram Authentication Modal */}
+      <TelegramAuthModal
+        isOpen={showAuthModal}
+        onClose={() => setShowAuthModal(false)}
+        initDataRaw="mock_init_data_for_telethon"
+        onSuccess={handleTelegramAuthSuccess}
+      />
     </Page>
   );
 }

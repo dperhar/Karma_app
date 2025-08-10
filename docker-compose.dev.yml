@@ -2,66 +2,137 @@ services:
   # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
-    container_name: karma-postgres-dev
+    container_name: karma-dev-postgres
     environment:
-      POSTGRES_DB: karma_app_dev
+      POSTGRES_DB: karma
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
       - "5432:5432"
     volumes:
       - postgres_dev_data:/var/lib/postgresql/data
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     networks:
       - karma-dev-network
 
-  # Redis for sessions and caching
+  # Redis Cache
   redis:
     image: redis:7-alpine
-    container_name: karma-redis-dev
+    container_name: karma-dev-redis
     ports:
       - "6379:6379"
-    volumes:
-      - redis_dev_data:/data
     networks:
       - karma-dev-network
-    restart: unless-stopped
 
-  # Backend API (Development mode with hot reload)
+  # Backend API (Hot Reload for instant development)
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile
-    container_name: karma-backend-dev
+      dockerfile: ../Dockerfile.dev
+    image: karma-dev-backend:latest
+    container_name: karma-dev-backend
+    working_dir: /app
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/karma_app_dev
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres/karma
       - REDIS_URL=redis://redis:6379
       - IS_DEVELOP=true
       - FRONTEND_URL=http://localhost:3000
+      - TELETHON_API_ID=${TELETHON_API_ID}
+      - TELETHON_API_HASH=${TELETHON_API_HASH}
+      - ENCRYPTION_KEY=g-4imrdzJNd-qHXluWne6OIsy2GqyrRGR7IyYFFQQL0=
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app
-      - backend_logs:/app/logs
+      # Mount source code for instant hot reload - NO REBUILD NEEDED!
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/requirements.txt:/app/requirements.txt
+      - ./backend/start.sh:/app/start.sh
+      - backend_dev_logs:/app/logs
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - karma-dev-network
     restart: unless-stopped
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
-  # Frontend Application (Development mode)
+  # Celery Worker (Hot Reload)
+  celery-worker:
+    image: karma-dev-backend:latest
+    container_name: karma-dev-celery-worker
+    command: watchmedo auto-restart --directory=/app/app --pattern="*.py" --recursive -- celery -A app.tasks.worker.celery_app worker --loglevel=info --queues=celery,analysis,drafts,scheduler
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/karma
+      - REDIS_URL=redis://redis:6379
+      - IS_DEVELOP=true
+      - TELETHON_API_ID=${TELETHON_API_ID}
+      - TELETHON_API_HASH=${TELETHON_API_HASH}
+      - ENCRYPTION_KEY=g-4imrdzJNd-qHXluWne6OIsy2GqyrRGR7IyYFFQQL0=
+    volumes:
+      # Hot reload for Celery tasks
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      - backend_dev_logs:/app/logs
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - karma-dev-network
+    restart: unless-stopped
+
+  # Celery Beat (Hot Reload)
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile.dev
+    image: karma-dev-backend:latest
+    container_name: karma-dev-celery-beat
+    working_dir: /app
+    command: celery -A app.tasks.worker.celery_app beat --loglevel=info
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres/karma
+      - REDIS_URL=redis://redis:6379
+      - IS_DEVELOP=true
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      - backend_dev_logs:/app/logs
+    depends_on:
+      celery-worker:
+        condition: service_started
+    networks:
+      - karma-dev-network
+    restart: unless-stopped
+
+  # Frontend Application (Hot Reload)
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile.dev
-    container_name: karma-frontend-dev
-    env_file:
-      - .env
+    container_name: karma-dev-frontend
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
       - NODE_ENV=development
     ports:
       - "3000:3000"
@@ -70,7 +141,8 @@ services:
       - /app/node_modules
       - /app/.next
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - karma-dev-network
     restart: unless-stopped
@@ -78,9 +150,7 @@ services:
 volumes:
   postgres_dev_data:
     driver: local
-  redis_dev_data:
-    driver: local
-  backend_logs:
+  backend_dev_logs:
     driver: local
 
 networks:

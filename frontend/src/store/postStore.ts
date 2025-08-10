@@ -21,7 +21,7 @@ export const usePostStore = create<PostStore>((set, get) => ({
   currentPage: 1,
   totalPages: 1,
 
-  fetchPosts: async (initDataRaw: string, page = 1, limit = 50) => {
+  fetchPosts: async (initDataRaw: string, page = 1, limit = 20) => {
     set({ isLoading: true, error: null });
     
     try {
@@ -31,7 +31,7 @@ export const usePostStore = create<PostStore>((set, get) => ({
         set({
           posts: response.data.posts,
           currentPage: response.data.page,
-          totalPages: Math.ceil(response.data.total / limit),
+          totalPages: Math.ceil(response.data.total / response.data.limit),
           isLoading: false,
         });
       } else {
