@@ -27,12 +27,30 @@ def upgrade() -> None:
     # First, create a connection to execute raw SQL
     connection = op.get_bind()
     
-    # Get all users with persona data
-    users_with_persona = connection.execute(sa.text("""
-        SELECT id, persona_name, user_system_prompt 
-        FROM users 
-        WHERE persona_name IS NOT NULL OR user_system_prompt IS NOT NULL
-    """)).fetchall()
+    # Get all users with persona data (guard columns may not exist)
+    inspector = sa.inspect(connection)
+    user_cols = {c['name'] for c in inspector.get_columns('users')}
+    has_persona_name = 'persona_name' in user_cols
+    has_user_system_prompt = 'user_system_prompt' in user_cols
+
+    users_with_persona = []
+    if has_persona_name or has_user_system_prompt:
+        select_cols = ["id"]
+        if has_persona_name:
+            select_cols.append("persona_name")
+        else:
+            select_cols.append("NULL AS persona_name")
+        if has_user_system_prompt:
+            select_cols.append("user_system_prompt")
+        else:
+            select_cols.append("NULL AS user_system_prompt")
+        sql = f"""
+            SELECT {', '.join(select_cols)}
+            FROM users
+            WHERE ({'persona_name IS NOT NULL' if has_persona_name else 'FALSE'})
+               OR ({'user_system_prompt IS NOT NULL' if has_user_system_prompt else 'FALSE'})
+        """
+        users_with_persona = connection.execute(sa.text(sql)).fetchall()
     
     # For each user with persona data, update their ai_profile or create one
     for user in users_with_persona:
@@ -70,12 +88,19 @@ def upgrade() -> None:
     
     # Remove persona fields from users table
     with op.batch_alter_table('users') as batch_op:
-        batch_op.drop_column('persona_name')
-        batch_op.drop_column('persona_style_description')
-        batch_op.drop_column('persona_interests_json')
-        batch_op.drop_column('user_system_prompt')
-        batch_op.drop_column('last_context_analysis_at')
-        batch_op.drop_column('context_analysis_status')
+        # Drop columns only if they exist
+        if 'persona_name' in user_cols:
+            batch_op.drop_column('persona_name')
+        if 'persona_style_description' in user_cols:
+            batch_op.drop_column('persona_style_description')
+        if 'persona_interests_json' in user_cols:
+            batch_op.drop_column('persona_interests_json')
+        if 'user_system_prompt' in user_cols:
+            batch_op.drop_column('user_system_prompt')
+        if 'last_context_analysis_at' in user_cols:
+            batch_op.drop_column('last_context_analysis_at')
+        if 'context_analysis_status' in user_cols:
+            batch_op.drop_column('context_analysis_status')
 
 
 def downgrade() -> None:

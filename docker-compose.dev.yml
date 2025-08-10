@@ -42,8 +42,12 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres/karma
       - REDIS_URL=redis://redis:6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - IS_DEVELOP=true
       - FRONTEND_URL=http://localhost:3000
+      - CENTRIFUGO_API_URL=http://centrifugo:8000/api
+      - CENTRIFUGO_API_KEY=65840621-4be3-4a74-a03c-6036545bc244
       - TELETHON_API_ID=${TELETHON_API_ID}
       - TELETHON_API_HASH=${TELETHON_API_HASH}
       - ENCRYPTION_KEY=g-4imrdzJNd-qHXluWne6OIsy2GqyrRGR7IyYFFQQL0=
@@ -71,6 +75,19 @@ services:
       - karma-dev-network
     restart: unless-stopped
 
+  # Centrifugo real-time server
+  centrifugo:
+    image: centrifugo/centrifugo:v5
+    container_name: karma-dev-centrifugo
+    command: centrifugo -c /centrifugo/config.json
+    volumes:
+      - ./backend/centrifugo/config.json:/centrifugo/config.json:ro
+    ports:
+      - "9000:8000"
+    networks:
+      - karma-dev-network
+    restart: unless-stopped
+
   # Celery Worker (Hot Reload)
   celery-worker:
     image: karma-dev-backend:latest
@@ -81,7 +98,11 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/karma
       - REDIS_URL=redis://redis:6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - IS_DEVELOP=true
+      - CENTRIFUGO_API_URL=http://centrifugo:8000/api
+      - CENTRIFUGO_API_KEY=65840621-4be3-4a74-a03c-6036545bc244
       - TELETHON_API_ID=${TELETHON_API_ID}
       - TELETHON_API_HASH=${TELETHON_API_HASH}
       - ENCRYPTION_KEY=g-4imrdzJNd-qHXluWne6OIsy2GqyrRGR7IyYFFQQL0=
@@ -112,7 +133,11 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres/karma
       - REDIS_URL=redis://redis:6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - IS_DEVELOP=true
+      - CENTRIFUGO_API_URL=http://centrifugo:8000/api
+      - CENTRIFUGO_API_KEY=65840621-4be3-4a74-a03c-6036545bc244
     volumes:
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic

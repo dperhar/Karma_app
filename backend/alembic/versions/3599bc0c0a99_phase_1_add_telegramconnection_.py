@@ -51,6 +51,7 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('user_id')
     )
+    # Ensure draft_comments exists before creating FK to it
     op.create_table('negative_feedback',
     sa.Column('id', sa.String(), nullable=False),
     sa.Column('user_id', sa.String(), nullable=False),
@@ -66,9 +67,17 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
-    with op.batch_alter_table('draft_comments', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('original_post_url', sa.String(), nullable=True, comment='URL of the original post'))
-        batch_op.add_column(sa.Column('original_post_content', sa.Text(), nullable=True, comment='Full content of the original post'))
+    # Add columns to draft_comments only if table exists (idempotent safety)
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    tables = inspector.get_table_names()
+    if 'draft_comments' in tables:
+        with op.batch_alter_table('draft_comments', schema=None) as batch_op:
+            existing_cols = {c['name'] for c in inspector.get_columns('draft_comments')}
+            if 'original_post_url' not in existing_cols:
+                batch_op.add_column(sa.Column('original_post_url', sa.String(), nullable=True, comment='URL of the original post'))
+            if 'original_post_content' not in existing_cols:
+                batch_op.add_column(sa.Column('original_post_content', sa.Text(), nullable=True, comment='Full content of the original post'))
 
     with op.batch_alter_table('users', schema=None) as batch_op:
         batch_op.drop_column('telegram_session_string')

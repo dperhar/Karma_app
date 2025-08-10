@@ -10,7 +10,7 @@ import { userService } from '@/core/api/services/user-service';
 import { useUserStore } from '@/store/userStore';
 import { AIModel, UserUpdate } from '@/types/user';
 import { useRouter } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 
 export default function SettingsPage() {
   // The AI controls have moved to the global left sidebar. Keep minimal settings here.
@@ -60,7 +60,7 @@ export default function SettingsPage() {
   }, [userData]);
 
   const handleInputChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
+    e: ChangeEvent<HTMLInputElement | HTMLSelectElement>
   ) => {
     const { name, value, type } = e.target as HTMLInputElement;
     
@@ -78,9 +78,10 @@ export default function SettingsPage() {
     }
   };
 
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const saveSettings = async (): Promise<boolean> => true;
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const saved = await saveSettings();
     if (saved) {
@@ -228,8 +229,6 @@ export default function SettingsPage() {
               </div>
               
               <div className="card-actions justify-end mt-6" />
-            </form>
-          </section>
         </div>
 
         {/* Telegram Auth Modal (disabled placeholder) */}

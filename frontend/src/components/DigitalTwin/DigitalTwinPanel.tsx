@@ -18,6 +18,9 @@ export const DigitalTwinPanel: React.FC<DigitalTwinPanelProps> = ({
   const [analysisResult, setAnalysisResult] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [logs, setLogs] = useState<string[]>([]);
+  const [aiProfile, setAiProfile] = useState<any | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  const [draftEdit, setDraftEdit] = useState<any>({});
 
   const initDataRaw = 'mock_init_data_for_telethon';
   const { lastMessage, isConnected } = useWebSocket({ userId: user.id, initDataRaw });
@@ -27,13 +30,16 @@ export const DigitalTwinPanel: React.FC<DigitalTwinPanelProps> = ({
     (async () => {
       try {
         const aiProfile = await userService.getMyAIProfile(initDataRaw);
-        if (aiProfile.success && aiProfile.data && onUserUpdate) {
-          onUserUpdate({
-            ...user,
-            context_analysis_status: aiProfile.data.analysis_status ?? user.context_analysis_status,
-            last_context_analysis_at: aiProfile.data.last_analyzed_at ?? user.last_context_analysis_at,
-            persona_name: aiProfile.data.persona_name ?? user.persona_name,
-          } as any);
+        if (aiProfile.success && aiProfile.data) {
+          setAiProfile(aiProfile.data);
+          if (onUserUpdate) {
+            onUserUpdate({
+              ...user,
+              context_analysis_status: aiProfile.data.analysis_status ?? user.context_analysis_status,
+              last_context_analysis_at: aiProfile.data.last_analyzed_at ?? user.last_context_analysis_at,
+              persona_name: aiProfile.data.persona_name ?? user.persona_name,
+            } as any);
+          }
         }
       } catch {}
     })();
@@ -74,14 +80,19 @@ export const DigitalTwinPanel: React.FC<DigitalTwinPanelProps> = ({
                   persona_name: aiProfile.data?.persona_name ?? user.persona_name,
                 } as any);
               }
+              setAiProfile(aiProfile.data);
             }
           } catch {}
         } catch {}
       })();
     }
     if (lastMessage.event === 'vibe_profile_failed') {
+      // If a dev-seed completion follows, suppress the error toast noise
+      const likelyDevSeedNext = logs.find((l) => l.includes('dev_seed_done'));
       setIsAnalyzing(false);
-      setError(lastMessage.data?.error || 'Анализ не удался');
+      if (!likelyDevSeedNext) {
+        setError(lastMessage.data?.error || 'Анализ не удался');
+      }
     }
   }, [lastMessage, onUserUpdate]);
 
@@ -140,6 +151,184 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
     }
   };
 
+  const ProfileSummary: React.FC = () => {
+    if (!aiProfile || aiProfile.analysis_status !== 'COMPLETED') return null;
+    const vp = aiProfile.vibe_profile_json || {};
+    const dm = vp.digital_comm || {};
+    const markers = vp.style_markers || {};
+    const arr = (v: any) => (Array.isArray(v) ? v : []);
+    const phrases = arr(vp.signature_phrases).map((p: any) => typeof p === 'string' ? p : p?.text).filter(Boolean);
+
+    return (
+      <div className="card bg-base-200">
+        <div className="card-body gap-4">
+          <div className="flex flex-wrap items-center gap-2">
+            {vp.tone && <span className="badge badge-outline">Тон: {vp.tone}</span>}
+            {vp.verbosity && <span className="badge badge-outline">Детальность: {vp.verbosity}</span>}
+            {vp.emoji_usage && <span className="badge badge-outline">Эмодзи: {vp.emoji_usage}</span>}
+            {typeof markers.avg_sentence_len_words === 'number' && (
+              <span className="badge badge-outline">Ср. длина фразы: {markers.avg_sentence_len_words}</span>
+            )}
+          </div>
+
+          {arr(vp.topics_of_interest).length > 0 && (
+            <div>
+              <div className="label text-sm opacity-70 mb-1">Темы интересов</div>
+              <div className="flex flex-wrap gap-2">
+                {arr(vp.topics_of_interest).slice(0, 12).map((t: string) => (
+                  <span key={t} className="badge badge-ghost">{t}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {phrases.length > 0 && (
+            <div>
+              <div className="label text-sm opacity-70 mb-1">Фирменные фразы</div>
+              <ul className="list-disc ml-6 text-sm">
+                {phrases.slice(0, 8).map((p: string) => (
+                  <li key={p}>{p}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {(arr(dm.greetings).length || arr(dm.typical_endings).length) ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {arr(dm.greetings).length > 0 && (
+                <div>
+                  <div className="label text-sm opacity-70 mb-1">Приветствия</div>
+                  <div className="flex flex-wrap gap-2">
+                    {arr(dm.greetings).map((g: string) => <span key={g} className="badge badge-ghost">{g}</span>)}
+                  </div>
+                </div>
+              )}
+              {arr(dm.typical_endings).length > 0 && (
+                <div>
+                  <div className="label text-sm opacity-70 mb-1">Типичные окончания</div>
+                  <div className="flex flex-wrap gap-2">
+                    {arr(dm.typical_endings).map((e: string) => <span key={e} className="badge badge-ghost">{e}</span>)}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {arr(vp.signature_templates).length > 0 && (
+            <div>
+              <div className="label text-sm opacity-70 mb-1">Шаблоны формулировок</div>
+              <ul className="menu bg-base-100 rounded-box text-sm">
+                {arr(vp.signature_templates).slice(0, 3).map((tpl: string, i: number) => (
+                  <li key={`${i}-${tpl}`}><span>{tpl}</span></li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {(arr(vp.do_list).length || arr(vp.dont_list).length) ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {arr(vp.do_list).length > 0 && (
+                <div>
+                  <div className="label text-sm opacity-70 mb-1">Делать</div>
+                  <ul className="list-disc ml-6 text-sm">
+                    {arr(vp.do_list).slice(0, 6).map((d: string) => <li key={d}>{d}</li>)}
+                  </ul>
+                </div>
+              )}
+              {arr(vp.dont_list).length > 0 && (
+                <div>
+                  <div className="label text-sm opacity-70 mb-1">Не делать</div>
+                  <ul className="list-disc ml-6 text-sm">
+                    {arr(vp.dont_list).slice(0, 6).map((d: string) => <li key={d}>{d}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {vp.style_prompt && (
+            <div>
+              <div className="label text-sm opacity-70 mb-1">Как AI будет писать черновики</div>
+              <div className="textarea textarea-bordered bg-base-100 text-sm whitespace-pre-wrap">
+                {vp.style_prompt}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const onEditToggle = () => {
+    if (!aiProfile) return;
+    const vp = aiProfile.vibe_profile_json || {};
+    setDraftEdit({
+      persona_name: aiProfile.persona_name || '',
+      user_system_prompt: aiProfile.user_system_prompt || '',
+      tone: vp.tone || '',
+      verbosity: vp.verbosity || '',
+      emoji_usage: vp.emoji_usage || '',
+      style_prompt: vp.style_prompt || '',
+      topics_of_interest: Array.isArray(vp.topics_of_interest) ? vp.topics_of_interest : [],
+      signature_templates: Array.isArray(vp.signature_templates) ? vp.signature_templates : [],
+      do_list: Array.isArray(vp.do_list) ? vp.do_list : [],
+      dont_list: Array.isArray(vp.dont_list) ? vp.dont_list : [],
+      greetings: Array.isArray(vp.digital_comm?.greetings) ? vp.digital_comm.greetings : [],
+      typical_endings: Array.isArray(vp.digital_comm?.typical_endings) ? vp.digital_comm.typical_endings : [],
+      signature_phrases: (Array.isArray(vp.signature_phrases) ? vp.signature_phrases : []).map((p: any) => (typeof p === 'string' ? p : p?.text)).filter(Boolean),
+    });
+    setEditMode(true);
+  };
+
+  const saveEdits = async () => {
+    try {
+      const res = await userService.updateMyAIProfile(draftEdit, initDataRaw);
+      if (res.success) {
+        setAiProfile(res.data);
+        setEditMode(false);
+        // reflect in badge/time
+        if (onUserUpdate) {
+          onUserUpdate({
+            ...user,
+            context_analysis_status: res.data.analysis_status ?? user.context_analysis_status,
+            last_context_analysis_at: res.data.last_analyzed_at ?? user.last_context_analysis_at,
+            persona_name: res.data.persona_name ?? user.persona_name,
+          } as any);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to save AI profile edits', e);
+    }
+  };
+
+  const TagInput = ({ label, value, onChange }: { label: string; value: string[]; onChange: (v: string[]) => void }) => {
+    const [text, setText] = useState('');
+    const add = () => {
+      const v = text.trim();
+      if (!v) return;
+      onChange([...(value || []), v]);
+      setText('');
+    };
+    const remove = (idx: number) => onChange(value.filter((_, i) => i !== idx));
+    return (
+      <div>
+        <div className="label text-sm opacity-70 mb-1">{label}</div>
+        <div className="flex flex-wrap gap-2 mb-2">
+          {value?.map((v, i) => (
+            <span key={`${v}-${i}`} className="badge badge-ghost gap-1">
+              {v}
+              <button className="btn btn-xs btn-ghost" onClick={() => remove(i)}>✕</button>
+            </span>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input className="input input-bordered input-sm flex-1" value={text} onChange={(e) => setText(e.target.value)} placeholder="Add item" />
+          <button className="btn btn-sm" onClick={add}>Добавить</button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="card bg-base-100 shadow-xl">
       <div className="card-body">
@@ -186,6 +375,69 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
               </pre>
             </div>
           </details>
+
+          {/* AI Profile Summary */}
+          <div className="flex justify-between items-center">
+            <h3 className="font-semibold">Профиль ИИ</h3>
+            {aiProfile?.analysis_status === 'COMPLETED' && (
+              <button className="btn btn-sm" onClick={onEditToggle}>
+                {editMode ? 'Отмена' : 'Редактировать'}
+              </button>
+            )}
+          </div>
+          {!editMode ? (
+            <ProfileSummary />
+          ) : (
+            <div className="card bg-base-200">
+              <div className="card-body grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <div className="label text-sm opacity-70 mb-1">Имя персоны</div>
+                  <input className="input input-bordered w-full" value={draftEdit.persona_name || ''} onChange={(e)=>setDraftEdit({...draftEdit, persona_name: e.target.value})} />
+                </div>
+                <div>
+                  <div className="label text-sm opacity-70 mb-1">Тон</div>
+                  <input className="input input-bordered w-full" value={draftEdit.tone || ''} onChange={(e)=>setDraftEdit({...draftEdit, tone: e.target.value})} />
+                </div>
+                <div>
+                  <div className="label text-sm opacity-70 mb-1">Детальность</div>
+                  <input className="input input-bordered w-full" value={draftEdit.verbosity || ''} onChange={(e)=>setDraftEdit({...draftEdit, verbosity: e.target.value})} />
+                </div>
+                <div>
+                  <div className="label text-sm opacity-70 mb-1">Эмодзи</div>
+                  <input className="input input-bordered w-full" value={draftEdit.emoji_usage || ''} onChange={(e)=>setDraftEdit({...draftEdit, emoji_usage: e.target.value})} />
+                </div>
+                <div className="md:col-span-2">
+                  <div className="label text-sm opacity-70 mb-1">Как AI будет писать черновики</div>
+                  <textarea className="textarea textarea-bordered w-full min-h-24" value={draftEdit.style_prompt || ''} onChange={(e)=>setDraftEdit({...draftEdit, style_prompt: e.target.value})} />
+                </div>
+                <div className="md:col-span-2">
+                  <TagInput label="Темы интересов" value={draftEdit.topics_of_interest || []} onChange={(v)=>setDraftEdit({...draftEdit, topics_of_interest: v})} />
+                </div>
+                <div className="md:col-span-2">
+                  <TagInput label="Шаблоны формулировок" value={draftEdit.signature_templates || []} onChange={(v)=>setDraftEdit({...draftEdit, signature_templates: v})} />
+                </div>
+                <div>
+                  <TagInput label="Делать" value={draftEdit.do_list || []} onChange={(v)=>setDraftEdit({...draftEdit, do_list: v})} />
+                </div>
+                <div>
+                  <TagInput label="Не делать" value={draftEdit.dont_list || []} onChange={(v)=>setDraftEdit({...draftEdit, dont_list: v})} />
+                </div>
+                <div>
+                  <TagInput label="Приветствия" value={draftEdit.greetings || []} onChange={(v)=>setDraftEdit({...draftEdit, greetings: v})} />
+                </div>
+                <div>
+                  <TagInput label="Типичные окончания" value={draftEdit.typical_endings || []} onChange={(v)=>setDraftEdit({...draftEdit, typical_endings: v})} />
+                </div>
+                <div className="md:col-span-2">
+                  <TagInput label="Фирменные фразы" value={draftEdit.signature_phrases || []} onChange={(v)=>setDraftEdit({...draftEdit, signature_phrases: v})} />
+                </div>
+                <div className="md:col-span-2 flex justify-end gap-2">
+                  <button className="btn" onClick={()=>setEditMode(false)}>Отмена</button>
+                  <button className="btn btn-primary" onClick={saveEdits}>Сохранить</button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Style Description */}
           {user.persona_style_description && (

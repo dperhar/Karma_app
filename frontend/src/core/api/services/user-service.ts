@@ -57,6 +57,18 @@ export class UserService extends ApiClient {
     }
   }
 
+  async updateMyAIProfile(body: any, initDataRaw?: string) {
+    return this.request<APIResponse<any>>(
+      `${this.aiProfileEndpoint}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      },
+      initDataRaw
+    );
+  }
+
   async updateUser(userData: UserUpdate, initDataRaw?: string): Promise<APIResponse<User>> {
     console.log('updateUser called with data:', userData);
     console.log('Using initDataRaw:', initDataRaw ? 'provided' : 'not provided');

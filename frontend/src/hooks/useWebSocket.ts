@@ -34,6 +34,8 @@ export const useWebSocket = ({ userId, initDataRaw }: UseWebSocketProps) => {
   const connect = async () => {
     try {
       if (!userId) return;
+      // Prevent duplicate connections in React Strict Mode
+      if (centrifugeRef.current) return;
       const wsUrl = process.env.NEXT_PUBLIC_CENTRIFUGO_WS_URL || 'ws://localhost:9000/connection/websocket';
       const token = await fetchWsToken();
       console.log('Connecting to Centrifugo', { wsUrl, hasToken: !!token, userId });
@@ -58,7 +60,8 @@ export const useWebSocket = ({ userId, initDataRaw }: UseWebSocketProps) => {
       centrifuge.connect();
 
       const channel = `user:${userId}`;
-      const sub = centrifuge.newSubscription(channel);
+      // Reuse existing subscription if present
+      const sub = subRef.current ?? centrifuge.newSubscription(channel);
       subRef.current = sub;
 
       sub.on('publication', (ctx) => {
@@ -74,7 +77,9 @@ export const useWebSocket = ({ userId, initDataRaw }: UseWebSocketProps) => {
         console.error('Subscription error', e);
       });
 
-      sub.subscribe();
+      if ((sub as any)._state !== 2 /* subscribed */) {
+        sub.subscribe();
+      }
     } catch (e: any) {
       setError(e?.message || 'Failed to connect to Centrifugo');
       console.error('Failed to connect to Centrifugo', e);
