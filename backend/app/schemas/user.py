@@ -20,7 +20,7 @@ class UserBase(BaseModel):
     email: Optional[str] = None
     telegram_chats_load_limit: Optional[int] = 100
     telegram_messages_load_limit: Optional[int] = 100
-    preferred_ai_model: Optional[AIRequestModel] = AIRequestModel.GPT_4_1_MINI
+    preferred_ai_model: Optional[AIRequestModel] = AIRequestModel.GEMINI_2_5_PRO
     preferred_message_context_size: Optional[int] = 50
 
     model_config = ConfigDict(from_attributes=True)

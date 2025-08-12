@@ -67,6 +67,7 @@ services:
       - ./backend/start.sh:/app/start.sh
       - ./.env:/app/.env:ro
       - backend_dev_logs:/app/logs
+      - backend_media:/app/static
     depends_on:
       postgres:
         condition: service_healthy
@@ -124,6 +125,7 @@ services:
       - ./backend/alembic.ini:/app/alembic.ini
       - ./.env:/app/.env:ro
       - backend_dev_logs:/app/logs
+      - backend_media:/app/static
     depends_on:
       backend:
         condition: service_healthy
@@ -188,6 +190,8 @@ volumes:
   postgres_dev_data:
     driver: local
   backend_dev_logs:
+    driver: local
+  backend_media:
     driver: local
 
 networks:

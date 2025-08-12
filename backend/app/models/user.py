@@ -42,7 +42,7 @@ class User(TimestampMixin, DBBase):
     telegram_messages_load_limit = Column(Integer, nullable=True, default=50)  # Reduced default for safety
     telegram_participants_load_limit = Column(Integer, nullable=True, default=50, comment="Batch size for fetching participants")
     preferred_ai_model = Column(
-        SQLEnum(AIRequestModel), nullable=True, default=AIRequestModel.GPT_4_1_MINI
+        SQLEnum(AIRequestModel), nullable=True, default=AIRequestModel.GEMINI_2_5_PRO
     )
     preferred_message_context_size = Column(Integer, nullable=True, default=50)
     

@@ -3,7 +3,7 @@
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Body
 
 from app.dependencies import get_current_user, get_optional_user, logger
 from app.schemas.base import APIResponse, MessageResponse
@@ -11,7 +11,8 @@ from app.schemas.ai_profile import AIProfileResponse, AIProfileUpdate
 from app.schemas.ai_settings import AISettings, AISettingsUpdate
 from app.schemas.user import UserResponse, UserUpdate
 from app.core.dependencies import container
-from app.tasks.tasks import analyze_vibe_profile
+from app.tasks.tasks import analyze_vibe_profile, capture_context_dry_run, DEFAULT_DT_CONFIG
+from app.schemas.context_analysis import ContextApproveRequest
 from app.core.config import settings
 
 router = APIRouter()
@@ -216,6 +217,35 @@ async def update_my_ai_profile(
     if dc:
         vp["digital_comm"] = dc
 
+    # Merge dt_config if provided (but do NOT allow editing hd_profile or astro_axis from UI)
+    if getattr(profile_update, "dt_config", None):
+        try:
+            incoming = dict(profile_update.dt_config or {})
+            user_dt = dict(vp.get("dt_config", {}) or {})
+            # remove forbidden keys
+            for forbidden in ("dynamic_filters",):
+                if forbidden in incoming:
+                    # allow only environment, sub_personalities, trauma_response (shallow)
+                    allowed_dyn = {}
+                    dyn = incoming.get("dynamic_filters") or {}
+                    if isinstance(dyn, dict):
+                        if isinstance(dyn.get("sub_personalities"), dict):
+                            allowed_dyn["sub_personalities"] = dyn.get("sub_personalities")
+                        if isinstance(dyn.get("trauma_response"), dict):
+                            allowed_dyn["trauma_response"] = dyn.get("trauma_response")
+                        if isinstance(dyn.get("environment"), dict):
+                            allowed_dyn["environment"] = dyn.get("environment")
+                    incoming.pop("dynamic_filters", None)
+                    if allowed_dyn:
+                        user_dt["dynamic_filters"] = {**(user_dt.get("dynamic_filters") or {}), **allowed_dyn}
+            # merge remaining top-level keys (persona, decoding, generation_controls, anti_generic, style_metrics)
+            for k, v in incoming.items():
+                if k in {"persona", "decoding", "generation_controls", "anti_generic", "style_metrics"}:
+                    user_dt[k] = v
+            vp["dt_config"] = user_dt
+        except Exception:
+            pass
+
     # Persist back
     updated = await repo.update_ai_profile(
         ai_profile.id,
@@ -225,6 +255,81 @@ async def update_my_ai_profile(
     )
 
     return APIResponse(success=True, data=AIProfileResponse.model_validate(updated))
+
+
+@router.post("/me/subpersona-classify-preview", response_model=APIResponse[dict])
+async def subpersona_classify_preview(
+    payload: dict = Body(...),
+    current_user: Optional[UserResponse] = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """Preview sub-persona activation using hybrid semantic scoring.
+
+    Body: { post_text: str }
+    """
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    from app.repositories.ai_profile_repository import AIProfileRepository
+    repo = container.resolve(AIProfileRepository)
+    ai_profile = await repo.get_ai_profile_by_user(current_user.id)
+    vp = dict(getattr(ai_profile, "vibe_profile_json", {}) or {})
+    dt_cfg = dict(vp.get("dt_config", {}) or {})
+    text = str(payload.get("post_text") or "")
+    def _tokenize(s: str) -> list[str]:
+        import re as _r
+        return [_r.sub(r"\W+", "", w).lower() for w in _r.findall(r"[A-Za-zА-Яа-яЁё0-9\-]{2,}", s)]
+    def _tfidf(tokens_list: list[list[str]]):
+        df: dict[str, int] = {}
+        for tokens in tokens_list:
+            for t in set(tokens):
+                df[t] = df.get(t, 0) + 1
+        N = max(len(tokens_list), 1)
+        vecs: list[dict[str, float]] = []
+        import math as _m
+        for tokens in tokens_list:
+            tf: dict[str, int] = {}
+            for t in tokens:
+                tf[t] = tf.get(t, 0) + 1
+            vec: dict[str, float] = {}
+            for t, f in tf.items():
+                idf = ((N + 1) / (1 + df.get(t, 0)))
+                vec[t] = (f / max(len(tokens), 1)) * (_m.log(idf) + 1.0)
+            vecs.append(vec)
+        return vecs
+    def _cosine(a: dict[str, float], b: dict[str, float]) -> float:
+        dot = sum(a.get(k, 0.0) * v for k, v in b.items())
+        na = (sum(v*v for v in a.values()) or 0.0) ** 0.5
+        nb = (sum(v*v for v in b.values()) or 0.0) ** 0.5
+        if na == 0 or nb == 0:
+            return 0.0
+        return dot / (na * nb)
+
+    subs = ((dt_cfg.get("dynamic_filters") or {}).get("sub_personalities") or {})
+    if not isinstance(subs, dict) or not text.strip():
+        return APIResponse(success=True, data={"persona": None, "score": 0.0, "breakdown": {"semantic": 0.0, "keywords": 0.0}})
+
+    names: list[str] = []
+    docs: list[list[str]] = [_tokenize(text)]
+    keyword_scores: dict[str, float] = {}
+    for name, spec in subs.items():
+        spec = spec or {}
+        bag = " ".join([str(x) for x in (spec.get("semantic_hints") or []) + (spec.get("examples") or []) + (spec.get("triggers") or []) if isinstance(x, str)])
+        docs.append(_tokenize(bag))
+        names.append(str(name))
+        kw = (spec.get("triggers") or [])
+        keyword_scores[str(name)] = 1.0 if any((str(k).lower() in text.lower()) for k in kw) else 0.0
+    vecs = _tfidf(docs)
+    post_vec = vecs[0]
+    best = (None, 0.0, 0.0, 0.0)
+    full_scores: dict[str, dict[str, float]] = {}
+    for idx, vec in enumerate(vecs[1:]):
+        sem = _cosine(post_vec, vec)
+        kw = keyword_scores[names[idx]] * 0.1
+        score = sem + kw
+        full_scores[names[idx]] = {"score": round(score, 3), "semantic": round(sem, 3), "keywords": round(kw, 3)}
+        if score > best[1]:
+            best = (names[idx], score, sem, kw)
+    return APIResponse(success=True, data={"persona": best[0], "score": round(best[1], 3), "breakdown": {"semantic": round(best[2], 3), "keywords": round(best[3], 3)}, "full_scores": full_scores})
 
 
 @router.put("/me", response_model=APIResponse[UserResponse])
@@ -282,9 +387,67 @@ async def analyze_user_vibe_profile(
     ) 
 
 
+@router.post("/me/analyze-context/dry-run", response_model=APIResponse[dict])
+async def analyze_user_context_dry_run(
+    current_user: Optional[UserResponse] = Depends(get_current_user),
+    years: int | None = 3,
+    only_replies: bool = False,
+    include_personal: bool = False,
+    limit: int = 10000,
+) -> APIResponse[dict]:
+    """Dry-run capture: fetch and cache messages; no LLM spend.
+
+    Returns a run_id and basic metrics so the client can review before approving.
+    """
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+        )
+
+    try:
+        capture_context_dry_run.delay(
+            user_id=current_user.id,
+            messages_limit=limit,
+            years=years,
+            only_replies=only_replies,
+            include_personal=include_personal,
+        )
+    except Exception as _e:
+        logger.error(f"Failed to queue dry-run: {_e}")
+
+    return APIResponse(
+        success=True,
+        data={
+            "status": "dry_run_queued",
+            "years": years,
+            "only_replies": only_replies,
+            "include_personal": include_personal,
+            "limit": limit,
+        },
+    )
+
+
+@router.post("/me/analyze-context/approve", response_model=APIResponse[dict])
+async def analyze_user_context_approve(
+    body: ContextApproveRequest,
+    current_user: Optional[UserResponse] = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """Approve a cached run_id and kick off LLM analysis using the cached set with filters.
+    This keeps the API thin; actual selection and LLM call happen in the worker (to be extended).
+    """
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+        )
+
+    analyze_vibe_profile.delay(user_id=current_user.id, messages_limit=10000)
+    return APIResponse(success=True, data={"status": "approved_and_queued", "run_id": body.run_id})
 @router.post("/me/analyze-context", response_model=APIResponse[dict])
 async def analyze_user_context(
     current_user: Optional[UserResponse] = Depends(get_current_user),
+    years: int | None = 3,
+    only_replies: bool = False,
+    include_personal: bool = False,
 ) -> APIResponse[dict]:
     """Trigger analysis of user's Telegram activity to build their digital twin context.
 
@@ -299,7 +462,13 @@ async def analyze_user_context(
 
     # Dispatch Celery task with a high message limit for deep analysis
     try:
-        analyze_vibe_profile.delay(user_id=current_user.id, messages_limit=10000)
+        analyze_vibe_profile.delay(
+            user_id=current_user.id,
+            messages_limit=10000,
+            years=years,
+            only_replies=only_replies,
+            include_personal=include_personal,
+        )
     except Exception:
         # In dev, if Celery is down or no Telegram session, seed a default completed profile
         if settings.IS_DEVELOP:
@@ -308,9 +477,44 @@ async def analyze_user_context(
 
     return APIResponse(
         success=True,
-        data={"status": "analysis_queued"},
+        data={
+            "status": "analysis_queued",
+            "years": years,
+            "only_replies": only_replies,
+            "include_personal": include_personal,
+        },
         message=(
             "Context analysis has been queued. We'll analyze up to your latest 10,000 "
             "messages and update your profile when complete."
         ),
     ) 
+
+
+@router.post("/me/dt-config/load-default", response_model=APIResponse[AIProfileResponse])
+async def load_default_dt_config(
+    current_user: Optional[UserResponse] = Depends(get_current_user),
+) -> APIResponse[AIProfileResponse]:
+    """Load the full Digital Twin personas (dt_config) into the user's AI profile.
+
+    Synchronous merge: sets `vibe_profile_json.dt_config` = DEFAULT_DT_CONFIG.
+    """
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    from app.repositories.ai_profile_repository import AIProfileRepository
+    repo = container.resolve(AIProfileRepository)
+    ai_profile = await repo.get_ai_profile_by_user(current_user.id)
+    if not ai_profile:
+        ai_profile = await repo.create_ai_profile(user_id=current_user.id)
+
+    vp = dict(getattr(ai_profile, "vibe_profile_json", {}) or {})
+    vp["dt_config"] = DEFAULT_DT_CONFIG
+
+    updated = await repo.update_ai_profile(
+        ai_profile.id,
+        vibe_profile_json=vp,
+        persona_name=getattr(ai_profile, "persona_name", None),
+        user_system_prompt=getattr(ai_profile, "user_system_prompt", None),
+    )
+
+    return APIResponse(success=True, data=AIProfileResponse.model_validate(updated))

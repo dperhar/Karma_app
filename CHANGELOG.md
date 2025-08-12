@@ -1,100 +1,73 @@
-# 📋 Karma App Changelog
+# Changelog
 
 All notable changes to this project will be documented in this file.
 
-## [v1.0.0] - 10.08.2025 🥂 First Stable Release
+## v1.4 – Digital Twin upgrade, Gemini hardening, and DT UI overhaul (2025-08-12)
 
-### 🚀 New
-- Telegram Feed with source filters (Channels / Groups / Both) and pagination
-- Async draft generation pipeline (Celery) with real-time WS updates (Centrifugo)
-- One-click “Generate draft” for posts without drafts
-- Negative feedback capture and regeneration flow
-- Digital Twin (Vibe Profile) analysis tasks (quick and deep modes)
-- Posted comments prioritized as style exemplars for future drafts
+### Highlights
+- Full Digital Twin (DT) persona schema encoded and applied via `dt_config`.
+- Robust Gemini 2.5 Pro integration for analysis with low-temp retry and safer fallbacks.
+- Telegram ingestion: 3-year scan, supergroups support, reply filtering, and in-code `min_date`.
+- Draft generation quality boosts: semantic sub‑persona activation, anchors enforcement, retrieval hints, anti‑generic controls.
+- Settings UI: modern DT editor with autosave, advanced sliders/toggles, sub‑persona tester, split logs.
 
-### 🔧 Improved
-- Correct group/channel filtering and type normalization
-- Robust message upsert, resolving/creating `original_message_id` automatically
-- Default generation temperature set to 0.95
-- Frontend real-time draft upsert; no page refresh required
-- Deduped feed rendering to prevent duplicate keys and collisions
+### Backend
+- DT config & persona directives
+  - Added and expanded `DEFAULT_DT_CONFIG` (archetype, values, talents, voice lexicon; dynamic filters for sub‑personas, trauma response, environment; HD/astro).
+  - Implemented `_compute_persona_directives` with hybrid semantic activation (TF‑IDF over cues/examples/triggers), FARMER/SHAMAN/SYNTHESIS archetype selection, HD filter and authority, environment quadrant, trauma overrides.
+  - Draft prompts now include `DT_CONFIG` and computed `PERSONA_DIRECTIVES`.
+  - Post‑processing strips banned generic openers and enforces anchors.
 
-### 🛡️ Architecture
-- API remains thin; heavy work runs in Celery tasks (Telegram, LLM, backfill)
-- Repositories isolate DB access; services orchestrate logic
-- Strict separation per Hyper-Lean Task-Oriented Architecture
+- Telegram service
+  - `get_user_sent_messages(user_id, limit, *, min_date, only_replies, include_personal)` API added.
+  - Includes supergroups; in‑code `min_date` filter; returns chat metadata (id/title/type) and reply info.
+  - Gentle pacing and FloodWait handling.
 
-### 🧪 Developer
-- New backfill endpoint to deepen feed history
-- Clearer logs and safer defaults for dev sessions
+- Vibe profile analysis (`app/tasks/tasks.py`)
+  - Collects and cleans corpus; computes style markers, punctuation, endings, RU/EN mix.
+  - Topics extraction improved: trigram/bigram priority; strict stopword/verb filters; brand/noise removal.
+  - Gemini 2.5 Pro analysis pipeline via REST with `responseMimeType: application/json`.
+  - Hardened JSON handling: code‑fence stripping, brace balancing, and now a second pass at lower temperature.
+  - On final LLM failure: synthesize from precomputed stats but DO NOT overwrite good fields; mark profile OUTDATED.
+  - WebSocket stages enriched (`llm_response_received`, `llm_response_received_alt`, `llm_parsed_ok`, `persist_start`).
 
-— We’re shipping. v1.0 is live. 🥂
+- Retrieval and generation
+  - Local TF‑IDF retrieval of user’s posted comments with recency/curation weights; inject top‑2 as style hints.
+  - Negative feedback context (last rejections) is injected to avoid repeated mistakes.
+  - Channel context fetched from recent messages in the same chat.
 
-## [v0.3.0] - 16.12.2025 🎉 **MAJOR AUTHENTICATION OVERHAUL**
+- New/updated endpoints
+  - `POST /api/v1/users/me/dt-config/load-default` – loads encoded DT personas into user profile.
+  - `POST /api/v1/users/me/subpersona-classify-preview` – semantic sub‑persona activation preview for pasted posts.
+  - `POST /api/v1/users/me/analyze-context/dry-run` and `/approve` – dry‑run capture and approval (no LLM spend).
 
-### 🚀 **NEW FEATURES**
-- ✅ **QR Authentication System**: Complete Telethon-based QR login flow
-- ✅ **Chat List Loading**: Home screen now displays user's Telegram chats and channels
-- ✅ **Encrypted Session Storage**: Secure session management with proper encryption
-- ✅ **Real-time Authentication**: Seamless QR polling with status updates
-- ✅ **2FA Support**: Complete two-factor authentication integration
+### Frontend
+- Settings → Digital Twin
+  - Always‑on edit mode with debounced autosave.
+  - `SubPersonaPanel`: two‑pane UI, add/remove personas, textareas with auto‑resize and soft wrapping, tester that calls preview endpoint and overlays scores on chips.
+  - Tag inputs for lexicon/stop‑phrases/anchors types; helpers for nested updates (`ensurePath`).
+  - Advanced controls with sliders/toggles/fields for decoding (temperature/top‑p), generation (candidates, length window, question ratio), style metrics (emoji/exclamation limits), anti‑generic toggles.
+  - Inline tooltips explaining each control.
+  - Logs split into two collapsible sections: “AI Drafts Generation Logs” and “Digital Twin Analysis Logs”.
 
-### 🔧 **MAJOR FIXES**
-- 🎯 **Session Management Crisis SOLVED**: Fixed fake session string causing "No valid Telegram session" errors
-- 🛡️ **Authentication Architecture**: Overhauled from broken SDK to proven Telethon approach
-- ⚡ **Performance**: Optimized chat loading with proper pagination support
-- 🔒 **Security**: Implemented proper encrypted session storage in `telegram_connections` table
-- 🐛 **Dependency Injection**: Fixed service resolution issues preventing proper singleton behavior
+- UX fixes
+  - Import path fix for `SubPersonaPanel`.
+  - Textarea wrapping, smarter spacing, compact typography.
 
-### 🏗️ **ARCHITECTURE IMPROVEMENTS**
-- **Backend**: Clean separation between web sessions (user auth) and Telegram sessions (API access)
-- **Frontend**: Robust authentication state management with persistent storage
-- **Database**: New `telegram_connections` table for encrypted session management
-- **API**: Proper `/api/v1` structure with authenticated endpoints
+### Quality and Safety
+- Default ban list for openers enforced; greetings/farewells removed from profile and prompts.
+- Outdated/insufficient data guards; fallback no longer overwrites good fields.
+- Respectful Telegram timing and error handling.
 
-### 🛠️ **TECHNICAL CHANGES**
-- **Removed**: Problematic `@telegram-apps/sdk-react` causing initialization errors
-- **Added**: Complete Telethon authentication system from proven v0.27 architecture
-- **Updated**: Docker environment variables for proper API routing
-- **Fixed**: Session singleton registration preventing memory leaks
-- **Corrected**: QR login logic using `ImportLoginTokenRequest` instead of `ExportLoginTokenRequest`
-
-### 🎯 **WHAT WORKS NOW**
-- ✅ QR code generation and scanning
-- ✅ Real-time login status checking
-- ✅ 2FA password verification
-- ✅ Home page chat list display
-- ✅ Settings page user management
-- ✅ Persistent authentication across browser sessions
-- ✅ Proper error handling and user feedback
-
-### 🔍 **KNOWN ISSUES**
-- ⚠️ Individual chat detail loading needs implementation
-- ⚠️ Message fetching for specific chats pending
-- ⚠️ Chat pagination could be optimized further
-
-### 🧰 **DEVELOPER NOTES**
-- All Telegram session strings now properly encrypted before database storage
-- Session validation happens automatically on each API request
-- Development environment includes comprehensive logging for debugging
-- Container architecture ready for production scaling
+### Known gaps targeted for next iteration
+- Persist enriched per‑message features (anchors/rhetorical_type/env_quadrant/style snapshot) into DB.
+- Signatures and phrase weights with recency decay.
+- Auto‑reweight persona values and auto‑expand lexicon from mined tokens.
+- K‑candidate generation + lightweight reranker + SKIP policy for toxic contexts.
+- Edit‑diff learning and nightly rebuild/decay job with drift detection.
+- Per‑chat environment overrides UI and mini metrics dashboard.
 
 ---
 
-## [v0.2.x] - Previous Iterations
-- Initial project setup and architecture exploration
-- Multiple authentication approach attempts
-- Foundation building and dependency management
-
----
-
-## [v0.1.x] - Project Genesis  
-- Project initialization
-- Basic FastAPI + Next.js setup
-- Docker containerization
-- Database schema design
-
----
-
-**🎉 CELEBRATION**: v0.3.0 represents a complete breakthrough in authentication architecture! 
-The karma-app now has a bulletproof foundation for Telegram integration. 🚀 
+## v1.3 and earlier
+- Historical changes omitted here; see previous commits.

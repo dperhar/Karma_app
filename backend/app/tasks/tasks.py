@@ -21,10 +21,370 @@ from app.schemas.draft_comment import DraftCommentCreate, DraftCommentResponse
 from app.services.domain.websocket_service import WebSocketService
 from app.services.gemini_service import GeminiService
 from app.services.telegram_service import TelegramService
+from app.services.redis_service import RedisService
+from app.services.langchain_service import LangChainService
 from app.tasks.worker import celery_app
 import requests
+import time
+import os
 
 logger = logging.getLogger(__name__)
+
+
+# Digital Twin default behavior config (can be overridden via ai_profile.vibe_profile_json['dt_config'])
+DEFAULT_DT_CONFIG: Dict[str, Any] = {
+    "persona": {
+        "core_archetype": "SYSTEM_HEALER",
+        "values": {
+            "systemic_honesty": 1.0,
+            "depth": 1.0,
+            "sovereignty": 1.0,
+            "vitality": 0.8
+        },
+        "talents": ["XRAY_VISION", "ALCHEMY", "SURGICAL_FORMULATION"],
+        "voice": {
+            "tone": "ruthless_empathetic",
+            "provocation_level": 0.6,
+            "vulnerability_level": 0.5,
+            "lexicon": {
+                "system": ["паттерн", "динамика", "структура", "конфликт"],
+                "psychology": ["проекция", "тень", "изгнанник", "саботаж"],
+                "direct": ["хуйня", "пиздец", "разъеб"],
+                "banned_starters": []
+            }
+        }
+    },
+    "dynamic_filters": {
+        "sub_personalities": {
+            "INQUISITOR": {
+                "triggers": ["булшит", "поверхност", "хайп", "манипуляц", "логическ", "данн", "метрик", "факт"],
+                "semantic_hints": [
+                    "логическая ошибка", "путаете причину и следствие", "эзотерика как избегание ответственности",
+                    "ответственность за результат", "юнит-экономика", "покажите данные/доказательства"
+                ],
+                "examples": [
+                    "'Доверять потоку' часто маскирует страх смотреть в цифры. Где данные?",
+                    "Интересная метрика, но без X и Y это красивая фантазия"
+                ],
+                "style_mod": {"temperature": 0.35, "verbosity": "low"}
+            },
+            "HEALER": {
+                "triggers": ["боль", "уязвим", "страх", "стыд", "вина", "отверж", "привязанн"],
+                "semantic_hints": [
+                    "внутренний ребенок", "IFS", "саморегуляция", "любящий взгляд", "ресурс", "самоподдержка",
+                    "эмоциональная волна", "сострадание без инфантильности"
+                ],
+                "examples": [
+                    "Похоже, первая реакция — гнев. Если подождать волну, там часто страх быть ненужным",
+                    "Пока не спишете 'эмоциональный долг', любая новая система будет мертвому припарки"
+                ],
+                "style_mod": {"temperature": 0.45, "vulnerability": 0.7}
+            },
+            "ARCHITECT": {
+                "triggers": ["хаос", "структур", "процесс", "метрик", "okr", "kpi", "найм", "операционк", "модель"],
+                "semantic_hints": [
+                    "структура", "процесс", "операционка", "OKR", "KPI", "юнит-экономика", "фундамент",
+                    "связка целей и рутины"
+                ],
+                "examples": [
+                    "Как вы убедились, что цели не противоречат ежедневной рутине?",
+                    "Где связь между стратегией и операционкой?"
+                ],
+                "style_mod": {"temperature": 0.4, "structure": "clear_steps"}
+            },
+            "SHAMAN": {
+                "triggers": ["энерг", "смысл", "кризис", "выгор", "смерт", "сексуал", "тень", "проекция", "магия"],
+                "semantic_hints": [
+                    "тень", "проекция", "смерть/возрождение", "ритуал", "алхимия", "символ", "втянуть энергию", "сжечь"
+                ],
+                "examples": [
+                    "Твой бизнес не убивает тебя. Он показывает, где ты убиваешь себя",
+                    "Мы уже прожили с ним пересадку и лечение — это про твой цикл смерти/возрождения"
+                ],
+                "style_mod": {"temperature": 0.5, "mystic": 0.5}
+            }
+        },
+        "trauma_response": {
+            "triggers": ["отверж", "предател", "обесцен", "потеря контроля", "зависим"],
+            "modes": {
+                "THE_JUDGE": {"lexicon": ["логическая ошибка", "путаете причину и следствие"], "behavior": "sarcastic_diagnosis"},
+                "THE_MARTYR": {"lexicon": ["знакомая история", "печально"], "behavior": "passive_aggressive_vulnerability"},
+                "THE_SAVIOR": {"lexicon": ["тебе нужно", "попробуй так"], "behavior": "unsolicited_advice"}
+            }
+        },
+        "environment": {
+            "quadrants": {
+                "HIGH_SAFE_HIGH_DEPTH": {"name": "THERAPEUTIC_CIRCLE", "modifiers": {"authenticity": 1.0, "directness": 0.9}},
+                "HIGH_SAFE_LOW_DEPTH": {"name": "FRIENDLY_SMOKING_ROOM", "modifiers": {"humor": 0.8, "lightness": 0.9}},
+                "LOW_SAFE_HIGH_DEPTH": {"name": "INTELLECTUAL_RING", "modifiers": {"precision": 1.0, "coldness": 0.4, "no_vulnerability": True}},
+                "LOW_SAFE_LOW_DEPTH": {"name": "TOXIC_SWAMP", "modifiers": {"default_action": "silence", "trolling_intensity": 0.6}}
+            }
+        },
+        "hd_profile": {"lines": "1/3", "filters": ["INVESTIGATOR", "MARTYR"], "authority": "EMOTIONAL_WAVE"},
+        "astro_axis": {"axis": "SECURITY_VS_CRISIS", "farmer_keywords": ["стабиль", "комфорт", "процесс"], "shaman_keywords": ["кризис", "трансформац", "тень"]}
+    },
+    "decoding": {"temperature": 0.4, "top_p": 0.9, "max_regenerations": 1},
+    "generation_controls": {
+        "num_candidates": 1,
+        "length": {"char_target": [80, 180], "max_sentences": 1},
+        "rhetoric": {"structure": ["pattern_callout", "implication", "sharp_question"], "question_ratio_target": 0.6},
+        "anchors": {"require_min": 1, "types": ["claim", "number", "named_entity", "quote_fragment"]}
+    },
+    "anti_generic": {
+        "ban_openers": True,
+        "stop_phrases": ["погнали", "давай сделаем", "интересно,", "круто", "жиза", "+1", "подписываюсь", "согласен"],
+        "ngram_dedup": {"n": 3, "window_drafts": 50},
+        "min_specific_tokens": 3,
+        "reroll_if_banned": True
+    },
+    "style_metrics": {
+        "emoji_cap_ratio": 0.02,
+        "caps_cap_ratio": 0.02,
+        "punctuation": {"allow_exclaim": 0, "allow_ellipsis": 0},
+        "language_mix": {"ru": 0.95, "en": 0.05},
+        "addressing_style_lock": "ты"
+    },
+    "classifier": {"threshold": 0.35}
+}
+
+def _compute_persona_directives(post_text: str, channel_title: Optional[str], dt_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Infer archetype mode, environment quadrant, HD filter, authority and trauma sub-personality.
+
+    Args:
+        post_text: The original post content.
+        channel_title: Optional channel title to help infer environment.
+        dt_cfg: Digital Twin config.
+
+    Returns:
+        Dict with keys: archetype_mode, environment_quadrant, hd_filter, authority, trauma_mode (optional), lexicon_hints.
+    """
+    text = (post_text or "").lower()
+    dyn = (dt_cfg.get("dynamic_filters") or {}) if isinstance(dt_cfg, dict) else {}
+    persona = (dt_cfg.get("persona") or {}) if isinstance(dt_cfg, dict) else {}
+
+    # Trauma response detection
+    trauma = (dyn.get("trauma_response") or {})
+    trauma_triggers = trauma.get("triggers") or []
+    trauma_mode: Optional[str] = None
+    if any(trig in text for trig in trauma_triggers):
+        # Heuristic: choose THE_JUDGE for bullshit/logic claims, else THE_MARTYR for rejection/obесцен, else SAVIOR
+        if any(k in text for k in ["логик", "данн", "цифр", "факт", "метрик", "окр", "kpi", "модель"]):
+            trauma_mode = "THE_JUDGE"
+        elif any(k in text for k in ["отверж", "обесцен", "предател", "брошен"]):
+            trauma_mode = "THE_MARTYR"
+        else:
+            trauma_mode = "THE_SAVIOR"
+
+    # Sub-persona selection (hybrid semantic + triggers)
+    sub_persona_key: Optional[str] = None
+    sub_persona_style_mod: Dict[str, Any] = {}
+    def _cosine(a: dict[str, float], b: dict[str, float]) -> float:
+        dot = sum(a.get(k, 0.0) * v for k, v in b.items())
+        na = (sum(v*v for v in a.values()) or 0.0) ** 0.5
+        nb = (sum(v*v for v in b.values()) or 0.0) ** 0.5
+        if na == 0 or nb == 0:
+            return 0.0
+        return dot / (na * nb)
+    def _tokenize(s: str) -> list[str]:
+        import re as _r
+        return [_r.sub(r"\W+", "", w).lower() for w in _r.findall(r"[A-Za-zА-Яа-яЁё0-9\-]{2,}", s)]
+    def _tfidf(tokens_list: list[list[str]]) -> tuple[list[dict[str, float]], dict[str, int]]:
+        # simple TF-IDF per doc
+        df: dict[str, int] = {}
+        for tokens in tokens_list:
+            for t in set(tokens):
+                df[t] = df.get(t, 0) + 1
+        N = max(len(tokens_list), 1)
+        vecs: list[dict[str, float]] = []
+        for tokens in tokens_list:
+            tf: dict[str, int] = {}
+            for t in tokens:
+                tf[t] = tf.get(t, 0) + 1
+            vec: dict[str, float] = {}
+            for t, f in tf.items():
+                # +1 smoothing
+                idf = ( (N + 1) / (1 + df.get(t, 0)) )
+                # use log idf
+                import math as _m
+                vec[t] = (f / max(len(tokens), 1)) * (_m.log(idf) + 1.0)
+            vecs.append(vec)
+        return vecs, df
+    try:
+        subs = (dyn.get("sub_personalities") or {})
+        classifier = (dt_cfg.get("classifier") or {}) if isinstance(dt_cfg, dict) else {}
+        threshold = float(classifier.get("threshold", 0.35))
+        best_name = None
+        best_score = 0.0
+        if isinstance(subs, dict) and subs:
+            # Build corpus: first doc = post, next docs = each sub persona merged hints
+            post_tokens = _tokenize(text)
+            docs: list[list[str]] = [post_tokens]
+            names: list[str] = []
+            persona_style_mods: list[dict[str, Any]] = []
+            for name, spec in subs.items():
+                spec = spec or {}
+                hints = spec.get("semantic_hints") or []
+                examples = spec.get("examples") or []
+                triggers = spec.get("triggers") or []
+                bag = " ".join([str(x) for x in (hints + examples + triggers) if isinstance(x, str)])
+                tokens = _tokenize(bag)
+                if not tokens and not triggers:
+                    continue
+                docs.append(tokens)
+                names.append(str(name))
+                persona_style_mods.append(spec.get("style_mod") or {})
+            if len(docs) > 1:
+                vecs, _ = _tfidf(docs)
+                post_vec = vecs[0]
+                for idx, vec in enumerate(vecs[1:]):
+                    score = _cosine(post_vec, vec)
+                    if score > best_score:
+                        best_score = score
+                        best_name = names[idx]
+                        sub_persona_style_mod = persona_style_mods[idx]
+            # Fallback to triggers contains if semantic score too low
+            if (best_name is None or best_score < threshold):
+                for name, spec in subs.items():
+                    triggers = (spec or {}).get("triggers") or []
+                    if any((str(t).lower() in text) for t in triggers):
+                        best_name = str(name)
+                        sub_persona_style_mod = (spec or {}).get("style_mod") or {}
+                        best_score = max(best_score, 0.34)
+                        break
+            if best_name is not None and best_score >= threshold:
+                sub_persona_key = best_name
+    except Exception:
+        pass
+
+    # Archetype selection: FARMER vs SHAMAN, else SYNTHESIS
+    arch = dyn.get("astro_axis") or {}
+    farmer_kw = arch.get("farmer_keywords") or ["процесс", "стабиль", "структур", "метрик", "денег", "найм"]
+    shaman_kw = arch.get("shaman_keywords") or ["кризис", "выгор", "боль", "тень", "смысл", "энерг"]
+    farmer_score = sum(1 for k in farmer_kw if k in text)
+    shaman_score = sum(1 for k in shaman_kw if k in text)
+    if farmer_score > shaman_score and farmer_score > 0:
+        archetype_mode = "FARMER"
+    elif shaman_score > farmer_score and shaman_score > 0:
+        archetype_mode = "SHAMAN"
+    else:
+        archetype_mode = "SYNTHESIS"
+
+    # HD filter: start with INVESTIGATOR; switch to MARTYR if post is a failure confession
+    hd = dyn.get("hd_profile") or {}
+    hd_filter = "INVESTIGATOR"
+    if any(k in text for k in ["провал", "ошибк", "факап", "вина", "стыд", "я заебался", "выгор"]):
+        hd_filter = "MARTYR"
+    authority = (hd.get("authority") or "EMOTIONAL_WAVE")
+
+    # Environment quadrant inference (very naive)
+    env = dyn.get("environment") or {}
+    title = (channel_title or "").lower()
+    if any(x in title for x in ["club", "vas3k", "фаундер", "аналит", "эконом", "инвест"]):
+        environment_quadrant = "LOW_SAFE_HIGH_DEPTH"
+    elif any(x in title for x in ["друз", "бернер", "чат", "кружок", "friends", "sativa"]):
+        environment_quadrant = "HIGH_SAFE_LOW_DEPTH"
+    elif any(x in title for x in ["психол", "терап", "цирк", "circle", "mastermind"]):
+        environment_quadrant = "HIGH_SAFE_HIGH_DEPTH"
+    else:
+        # Default to ring if post is analytical; else swamp on hype; else friendly
+        if farmer_score + shaman_score > 1:
+            environment_quadrant = "LOW_SAFE_HIGH_DEPTH"
+        elif any(x in text for x in ["хайп", "скандал", "обосрал", "срач", "кликбейт"]):
+            environment_quadrant = "LOW_SAFE_LOW_DEPTH"
+        else:
+            environment_quadrant = "HIGH_SAFE_LOW_DEPTH"
+
+    # Lexicon hints combined
+    lex = (persona.get("voice") or {}).get("lexicon") or {}
+    lexicon_hints = {
+        "system": lex.get("system", []),
+        "psychology": lex.get("psychology", []),
+        "direct": lex.get("direct", []),
+    }
+
+    return {
+        "archetype_mode": archetype_mode,
+        "environment_quadrant": environment_quadrant,
+        "hd_filter": hd_filter,
+        "authority": authority,
+        "trauma_mode": trauma_mode,
+        "sub_persona": sub_persona_key,
+        "sub_persona_style_mod": sub_persona_style_mod,
+        "lexicon_hints": lexicon_hints,
+    }
+
+
+def _strip_generic_openers(
+    text: str,
+    original_post: str | None = None,
+    lang: str = "ru",
+    banned_starters: Optional[list[str]] = None,
+) -> str:
+    """Remove boring/generic openers like "Погнали" and return cleaned text.
+
+    If removal empties the text, synthesize a short, specific question using
+    a couple of keywords from the post to keep it relevant without LLM.
+    """
+    if not isinstance(text, str):
+        return ""
+    s = text.strip()
+    if not s:
+        return s
+    import re as _re_gen
+    # Only strip meaningless emoji-only or symbol-only starts; do not treat greetings or starters specially
+    parts_all = _re_gen.split(r"(?<=[\.!?])\s+", s)
+    cleaned_parts: list[str] = []
+    i = 0
+    while i < len(parts_all):
+        seg = parts_all[i].strip()
+        if not seg:
+            i += 1
+            continue
+        # Remove pure emoji/symbol-only fragments
+        if _re_gen.fullmatch(r"[\W_]{1,4}", seg):
+            i += 1
+            continue
+        # Remove banned generic starters at the very beginning
+        if banned_starters:
+            seg_l = seg.lower()
+            stripped = seg_l.strip(" .,!?:;—-\u2014\u2026")
+            if any(stripped.startswith(bs.lower()) for bs in banned_starters):
+                i += 1
+                continue
+        cleaned_parts = parts_all[i:]
+        break
+    s = " ".join(p.strip() for p in cleaned_parts if p.strip())
+    if not s or len(_re_gen.sub(r"\W+","", s)) < 3:
+        # Build a tiny, concrete question from post keywords
+        post = (original_post or "").strip()
+        toks = _re_gen.findall(r"[A-Za-zА-Яа-яЁё]{4,}", post)[:20]
+        uniq: list[str] = []
+        for t in toks:
+            tl = t.lower()
+            if tl not in uniq:
+                uniq.append(tl)
+        kw = uniq[:2]
+        if (lang or "ru").lower().startswith("ru"):
+            if len(kw) >= 2:
+                s = f"Про {kw[0]}/{kw[1]}: какой ключевой инсайт?"
+            elif kw:
+                s = f"Что главное здесь — {kw[0]}?"
+            else:
+                s = "Что главное здесь?"
+        else:
+            if len(kw) >= 2:
+                s = f"On {kw[0]}/{kw[1]} — what's the key insight?"
+            elif kw:
+                s = f"What's the key point about {kw[0]}?"
+            else:
+                s = "What's the key point?"
+    return s
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+def _mk_run_id(user_id: str) -> str:
+    return f"ctxrun-{user_id}-{_now_ms()}-{random.randint(1000,9999)}"
+
 
 
 def _build_default_vibe_profile(lang: str = "en") -> Dict[str, Any]:
@@ -41,11 +401,11 @@ def _build_default_vibe_profile(lang: str = "en") -> Dict[str, Any]:
             "tone": "неформальный, по делу, немного остроумный",
             "verbosity": "средняя",
             "emoji_usage": "немного",
-            "signature_phrases": [{"text": "погнали", "count": 3}],
+            "signature_phrases": [],
             "ngrams": {"bigrams": ["давай сделаем", "выглядит круто"], "trigrams": ["это выглядит круто"]},
             "topics_of_interest": ["стартапы", "ИИ", "фаундерство", "рост"],
             "topic_weights": {"ИИ": 0.9, "стартапы": 0.85},
-            "phrase_weights": {"погнали": 0.7},
+            "phrase_weights": {},
             "style_markers": {
                 "emoji_ratio": 0.01,
                 "caps_ratio": 0.02,
@@ -66,8 +426,6 @@ def _build_default_vibe_profile(lang: str = "en") -> Dict[str, Any]:
                 "abbreviations": {"имхо": 1},
             },
             "digital_comm": {
-                "greetings": ["йо", "привет"],
-                "farewells": ["cheers"],
                 "addressing_style": "ты",
                 "typical_endings": ["."]
             },
@@ -85,11 +443,11 @@ def _build_default_vibe_profile(lang: str = "en") -> Dict[str, Any]:
         "tone": "casual, concise, a bit witty",
         "verbosity": "medium",
         "emoji_usage": "light",
-        "signature_phrases": [{"text": "let's go", "count": 3}],
+        "signature_phrases": [],
         "ngrams": {"bigrams": ["let's go", "looks great"], "trigrams": ["this looks great"]},
         "topics_of_interest": ["startups", "ai", "founders", "growth"],
         "topic_weights": {"ai": 0.9, "startups": 0.85},
-        "phrase_weights": {"let's go": 0.7},
+        "phrase_weights": {},
         "style_markers": {
             "emoji_ratio": 0.01,
             "caps_ratio": 0.02,
@@ -110,8 +468,6 @@ def _build_default_vibe_profile(lang: str = "en") -> Dict[str, Any]:
             "abbreviations": {"imo": 1},
         },
         "digital_comm": {
-            "greetings": ["yo", "hey"],
-            "farewells": ["cheers"],
             "addressing_style": "you",
             "typical_endings": ["."]
         },
@@ -219,7 +575,13 @@ async def async_fetch_telegram_chats(user_id: str, limit: int, offset: int):
 
 
 @celery_app.task(name="tasks.analyze_vibe_profile", queue="analysis")
-def analyze_vibe_profile(user_id: str, messages_limit: int = 200):
+def analyze_vibe_profile(
+    user_id: str,
+    messages_limit: int = 200,
+    years: int | None = None,
+    only_replies: bool = False,
+    include_personal: bool = True,
+):
     """Celery task to analyze a user's vibe profile asynchronously.
 
     Args:
@@ -227,16 +589,150 @@ def analyze_vibe_profile(user_id: str, messages_limit: int = 200):
         messages_limit: Maximum number of latest sent messages to analyze
     """
     logger.info(f"Starting vibe profile analysis task for user_id: {user_id} with limit {messages_limit}")
-    asyncio.run(async_analyze_vibe_profile(user_id, messages_limit))
+    asyncio.run(
+        async_analyze_vibe_profile(
+            user_id=user_id,
+            messages_limit=messages_limit,
+            years=years,
+            only_replies=only_replies,
+            include_personal=include_personal,
+        )
+    )
 
 
-async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
+@celery_app.task(name="tasks.capture_context_dry_run", queue="analysis")
+def capture_context_dry_run(
+    user_id: str,
+    messages_limit: int = 10000,
+    years: int | None = 3,
+    only_replies: bool = False,
+    include_personal: bool = False,
+):
+    """Fetch and cache candidate messages for Digital Twin without LLM spend."""
+    logger.info("Starting dry-run context capture for user_id=%s", user_id)
+    asyncio.run(
+        async_capture_context_dry_run(
+            user_id=user_id,
+            messages_limit=messages_limit,
+            years=years,
+            only_replies=only_replies,
+            include_personal=include_personal,
+        )
+    )
+
+
+async def async_capture_context_dry_run(
+    user_id: str,
+    messages_limit: int = 10000,
+    years: int | None = 3,
+    only_replies: bool = False,
+    include_personal: bool = False,
+):
+    telegram_service = container.resolve(TelegramService)
+    websocket_service = container.resolve(WebSocketService)
+    redis_service = container.resolve(RedisService)
+
+    run_id = _mk_run_id(user_id)
+    await websocket_service.send_user_notification(user_id, "vibe_profile_status", {"stage": "dry_run_start", "run_id": run_id})
+    logger.info(f"[dry-run] run_id={run_id} user_id={user_id} starting capture")
+
+    min_date = None
+    if years and years > 0:
+        try:
+            from datetime import datetime, timedelta
+            min_date = datetime.utcnow() - timedelta(days=365 * years)
+        except Exception:
+            min_date = None
+
+    msgs = await telegram_service.get_user_sent_messages(
+        user_id,
+        limit=messages_limit,
+        min_date=min_date,
+        only_replies=only_replies,
+        include_personal=include_personal,
+    )
+    total = len(msgs)
+
+    # Basic filtering and metrics (lightweight)
+    def is_link_only(t: str) -> bool:
+        t = (t or "").strip()
+        return bool(re.fullmatch(r"https?://\S+", t))
+
+    cleaned = []
+    per_chat: dict[str, int] = {}
+    dates: dict[str, int] = {}
+    for m in msgs:
+        text = (m.get("text") or "").strip()
+        if len(text) < 8:
+            continue
+        if is_link_only(text):
+            continue
+        chat_title = (m.get("chat_title") or "").strip()
+        chat_key = chat_title or str(m.get("chat_id") or "")
+        per_chat[chat_key] = per_chat.get(chat_key, 0) + 1
+        dt = m.get("date")
+        if dt:
+            day = str(dt)[:10]
+            dates[day] = dates.get(day, 0) + 1
+        cleaned.append({"text": text, "chat": chat_title, "date": str(dt) if dt else None})
+
+    # De-dup by normalized text
+    norm_seen: set[str] = set()
+    unique: list[dict] = []
+    for m in cleaned:
+        norm = re.sub(r"\s+", " ", m["text"]).strip().lower()
+        if norm in norm_seen:
+            continue
+        norm_seen.add(norm)
+        unique.append(m)
+
+    # Sample preview
+    preview = [m["text"][:240] for m in unique[:200]]
+
+    # Persist to Redis and file for audit
+    key = f"ctx:{run_id}"
+    payload = {
+        "user_id": user_id,
+        "run_id": run_id,
+        "params": {"years": years, "only_replies": only_replies, "include_personal": include_personal, "limit": messages_limit},
+        "total_raw": total,
+        "total_after_filters": len(unique),
+        "per_chat_counts": per_chat,
+        "date_histogram": dates,
+        "language_hint": "ru" if any("а" <= c <= "я" or "А" <= c <= "Я" for c in "".join(preview)) else "en",
+        "preview": preview,
+    }
+    redis_service.set(key, payload, expire=3600)
+    os.makedirs("logs/analysis", exist_ok=True)
+    with open(f"logs/analysis/{run_id}.json", "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    await websocket_service.send_user_notification(user_id, "vibe_profile_status", {"stage": "dry_run_ready", "run_id": run_id, "totals": {"raw": total, "after": len(unique)}})
+    logger.info(f"[dry-run] run_id={run_id} raw={total} after={len(unique)} cached_key={key}")
+    return True
+
+async def async_analyze_vibe_profile(
+    user_id: str,
+    messages_limit: int = 200,
+    years: int | None = None,
+    only_replies: bool = False,
+    include_personal: bool = True,
+):
     """The async implementation of the vibe profile analysis."""
     # Resolve dependencies from the container
     telegram_service = container.resolve(TelegramService)
     gemini_service = container.resolve(GeminiService)
     ai_profile_repo = container.resolve(AIProfileRepository)
     websocket_service = container.resolve(WebSocketService)
+    draft_repo = container.resolve(DraftCommentRepository)
+    user_repo = container.resolve(UserRepository)
+    # Optional: pause schedulers that might generate drafts concurrently for this user
+    try:
+        from app.services.redis_service import RedisService  # local import to avoid circulars at import time
+        redis_service = container.resolve(RedisService)
+        redis_service.set(f"analysis:lock:{user_id}", {"ts": int(__import__('time').time()*1000)}, expire=1800)
+    except Exception:
+        redis_service = None
 
     # Helper to send stage updates
     async def notify(stage: str, **extra: Any) -> None:
@@ -259,17 +755,89 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
 
         # Fetch user's sent messages
         await notify("fetch_start", per_dialog_limit_hint=100, dialogs_hint=50)
+        min_date = None
+        if years and years > 0:
+            try:
+                from datetime import datetime, timedelta
+                min_date = datetime.utcnow() - timedelta(days=365 * years)
+            except Exception:
+                min_date = None
         user_sent_messages = await telegram_service.get_user_sent_messages(
-            user_id, limit=messages_limit
+            user_id,
+            limit=messages_limit,
+            min_date=min_date,
+            only_replies=only_replies,
+            include_personal=include_personal,
         )
         fetched = len(user_sent_messages or [])
-        await notify("fetch_done", messages_count=fetched)
-        if not user_sent_messages or fetched < 20:
+        await notify(
+            "fetch_done",
+            messages_count=fetched,
+            years=years,
+            only_replies=only_replies,
+        )
+        # Provide transparent source breakdown and a small sample for the UI
+        try:
+            src_counts: Dict[str, int] = {"user": 0, "group": 0, "channel": 0, "unknown": 0}
+            top_chats: Dict[str, int] = {}
+            sample: list[Dict[str, Any]] = []
+            for m in (user_sent_messages or [])[:50]:
+                ct = (m.get("chat_type") or "unknown").lower()
+                if ct not in src_counts:
+                    src_counts[ct] = 0
+                src_counts[ct] += 1
+                key = m.get("chat_title") or str(m.get("chat_id") or "")
+                if key:
+                    top_chats[key] = top_chats.get(key, 0) + 1
+            # pick 3 samples
+            for m in (user_sent_messages or [])[:3]:
+                sample.append(
+                    {
+                        "chat": m.get("chat_title") or m.get("chat_id"),
+                        "date": str(m.get("date")),
+                        "is_reply": bool(m.get("is_reply")),
+                        "text_preview": (m.get("text") or "")[:160],
+                    }
+                )
+            # top 5 chats by count
+            top5 = sorted(top_chats.items(), key=lambda x: x[1], reverse=True)[:5]
+            # Include how many total raw messages we fetched to reconcile with UI
+            await notify(
+                "fetch_sample",
+                sources=src_counts,
+                top_chats=top5,
+                sample=sample,
+                total=fetched,
+            )
+        except Exception:
+            pass
+        if (not user_sent_messages or fetched < 5) and include_personal is False:
+            # Fallback pass: allow personal DMs just to seed the model if nothing found
+            await notify("fallback_include_personal")
+            user_sent_messages = await telegram_service.get_user_sent_messages(
+                user_id,
+                limit=messages_limit,
+                min_date=min_date,
+                only_replies=only_replies,
+                include_personal=True,
+            )
+            fetched = len(user_sent_messages or [])
+            await notify("fetch_done", messages_count=fetched, years=years, only_replies=only_replies)
+        if not user_sent_messages or fetched < 5:
             await notify("insufficient_data", messages_count=fetched)
             raise Exception("Insufficient data for analysis.")
 
         # Use LLM to generate the vibe profile – with deterministic pre-computed stats
         message_texts = [msg.get("text", "") for msg in user_sent_messages if msg.get("text")]
+        # Enrich with user's actually posted comments (final_text_to_post or edited_text)
+        try:
+            recent_posted = await draft_repo.get_recent_posted_by_user(user_id=user_id, limit=100)
+            for p in recent_posted:
+                t = (getattr(p, 'final_text_to_post', None) or getattr(p, 'edited_text', None) or getattr(p, 'draft_text', None) or '').strip()
+                if t:
+                    message_texts.append(t)
+        except Exception:
+            pass
 
         # Pre-compute stylistic stats to bias the model toward true copycat output
         from collections import Counter
@@ -283,8 +851,13 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
 
         def normalize_text(text: str) -> str:
             return re.sub(r"\s+", " ", text.strip())
+        def _is_link_only(t: str) -> bool:
+            t = (t or "").strip()
+            return bool(re.fullmatch(r"https?://\S+", t))
 
-        cleaned = [normalize_text(t) for t in message_texts if isinstance(t, str) and t.strip()]
+        cleaned_raw = [normalize_text(t) for t in message_texts if isinstance(t, str) and t.strip()]
+        # Heavier filter for topic mining: drop very short and link-only messages
+        cleaned = [t for t in cleaned_raw if len(t) >= 15 and not _is_link_only(t)]
         tokens_lists = [t.lower().split() for t in cleaned]
         unigram_counter: Counter[str] = Counter(itertools.chain.from_iterable(tokens_lists))
         bigram_counter: Counter[tuple[str, str]] = Counter(
@@ -297,10 +870,14 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
         # Emoji ratio and punctuation habits
         total_chars = sum(len(t) for t in cleaned) or 1
         emoji_count = 0
+        top_emojis: Dict[str, int] = {}
         try:
-            emoji_count = sum(len(emoji_regex.findall(t)) for t in cleaned)
+            for t in cleaned:
+                for e in emoji_regex.findall(t):
+                    top_emojis[e] = top_emojis.get(e, 0) + 1
+            emoji_count = sum(top_emojis.values())
         except Exception:
-            pass
+            emoji_count = 0
         emoji_ratio = round(emoji_count / total_chars, 4)
         exclam = sum(t.count("!") for t in cleaned)
         quest = sum(t.count("?") for t in cleaned)
@@ -311,6 +888,21 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
         quotes_straight = sum(t.count('"') for t in cleaned)
         parens = sum(t.count("(") + t.count(")") for t in cleaned)
         endings = Counter((t.strip()[-1] if t.strip() else " ") for t in cleaned)
+        # Basic greetings/farewells heuristics
+        greetings_counter: Counter[str] = Counter()
+        farewells_counter: Counter[str] = Counter()
+        for t in cleaned:
+            words = t.split()
+            if not words:
+                continue
+            first = words[0].strip('.,!?:;').lower()
+            last = words[-1].strip('.,!?:;').lower()
+            for g in ("йо", "привет", "хей", "йоу", "yo", "hey", "hi"):
+                if first == g:
+                    greetings_counter[g] += 1
+            for f in ("cheers", "спасибо", "пока", "салют"):
+                if last == f:
+                    farewells_counter[f] += 1
 
         # Sentence-level stats
         import re as _re
@@ -351,6 +943,20 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
             "en_latin": round(lat_total / total_alpha, 3),
         }
 
+        # Channel subscription topic hints (titles only, cheap)
+        channel_topic_tokens: Counter[str] = Counter()
+        try:
+            if client:
+                async for d in client.iter_dialogs(limit=100):
+                    if getattr(d, 'is_channel', False):
+                        title = (getattr(getattr(d, 'entity', None), 'title', None) or '').lower()
+                        for tok in re.findall(r"[a-zA-Zа-яА-ЯёЁ]{3,}", title):
+                            if tok in {"the", "and", "club", "chat", "official", "channel", "news", "ponchik", "пончик"}:
+                                continue
+                            channel_topic_tokens[tok] += 1
+        except Exception:
+            pass
+
         # Filler words and common abbreviations (RU/EN mix) – counts
         filler_words = [
             "типа", "как бы", "короче", "собственно", "вроде", "ну", "ээ", "мда",
@@ -369,6 +975,7 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
             "top_bigrams": [" ".join(b) for b, _ in bigram_counter.most_common(30)],
             "top_trigrams": [" ".join(t) for t, _ in trigram_counter.most_common(20)],
             "emoji_ratio": emoji_ratio,
+            "top_emojis": [e for e, _ in sorted(top_emojis.items(), key=lambda x: x[1], reverse=True)[:10]],
             "punctuation": {
                 "exclamation_total": exclam,
                 "question_total": quest,
@@ -388,18 +995,38 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
             "fillers": fillers_count,
             "abbreviations": abbr_count,
             "hapax_sample": hapax,
+            "channel_topic_hints": [w for w, _ in channel_topic_tokens.most_common(20)],
+            "greetings": [w for w, _ in greetings_counter.most_common(5)],
+            "farewells": [w for w, _ in farewells_counter.most_common(5)],
         }
 
         # Sample representative messages for style (cap for prompt size)
-        sample_count = min(400, len(cleaned))
+        sample_count = min(800, len(cleaned))
         sample_stride = max(1, len(cleaned) // max(sample_count, 1))
         sample_messages = cleaned[::sample_stride][:sample_count]
         sample_blob = "\n".join(sample_messages)
-        max_chars = 25000
+        max_chars = 60000
         if len(sample_blob) > max_chars:
             sample_blob = sample_blob[:max_chars]
 
-        await notify("llm_prepare", prompt_chars=len(sample_blob))
+        await notify("llm_prepare", prompt_chars=len(sample_blob), messages_used=len(sample_messages))
+
+        # Merge Digital Twin config into prompt as control hints (lightweight)
+        try:
+            ai_profile = await ai_profile_repo.get_ai_profile_by_user(user_id)
+        except Exception:
+            ai_profile = None
+        dt_cfg = {}
+        try:
+            vp = getattr(ai_profile, 'vibe_profile_json', {}) or {}
+            dt_cfg = dict(DEFAULT_DT_CONFIG)
+            user_dt = vp.get('dt_config') or {}
+            if isinstance(user_dt, dict):
+                # shallow merge
+                for k, v in user_dt.items():
+                    dt_cfg[k] = v
+        except Exception:
+            dt_cfg = DEFAULT_DT_CONFIG
 
         prompt = f"""
         You are an uncompromising style mimic. Build a copycat persona strictly from the user's own messages.
@@ -449,9 +1076,13 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
         - LANGUAGE: If PRECOMPUTED_STATS.language_distribution.ru_cyrillic > 0.5, write ALL FIELDS IN RUSSIAN; else in ENGLISH.
         - signature_phrases should come from recurring tokens/phrases; include counts.
         - Keep arrays ≤ 12 items. Prefer exact phrases from messages when possible.
+        - DO NOT include generic fillers as signature phrases or phrase_weights. Ban list: ["Погнали","Давай сделаем","Круто","Интересно","Поехали","Let's go","Cool","Nice"]. If they occur in data, exclude them.
 
         PRECOMPUTED_STATS:
         {json.dumps(precomputed_stats, ensure_ascii=False)}
+
+        DT_CONFIG (controls for generation in downstream tasks):
+        {json.dumps(dt_cfg, ensure_ascii=False)}
 
         SAMPLE_MESSAGES_START
         {sample_blob}
@@ -474,7 +1105,8 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
         except Exception:
             ai_overrides = {}
 
-        response = await gemini_service.generate_content(prompt, overrides=ai_overrides)
+        # First attempt: normal call
+        response = await gemini_service.generate_content(prompt, overrides={**ai_overrides, "max_output_tokens": 1024})
         if not response or not response.get("success"):
             from app.core.config import settings
             err_msg = (response or {}).get("error", "LLM analysis failed.")
@@ -501,19 +1133,163 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
                 await notify("dev_seed_done")
             return
 
-        content = response.get("content", "").strip()
+        content = (response.get("content") or "").strip()
         await notify("llm_response_received", content_preview=content[:120])
+        # Strip markdown code fences if present (```json ... ``` or ``` ... ```)
+        if content.startswith("```"):
+            try:
+                fence_end = content.rfind("```")
+                inner = content[3:fence_end] if fence_end != -1 else content[3:]
+                if inner.lower().startswith("json"):
+                    inner = inner[4:]  # drop 'json' hint
+                content = inner.strip()
+            except Exception:
+                pass
+        # Extract JSON block
         json_match = re.search(r"\{[\s\S]*\}", content)
-        if not json_match:
-            msg = "LLM did not return a valid JSON object."
+        json_str = json_match.group(0) if json_match else ""
+        if not json_str:
+            # Retry with slightly lower temperature to coax stricter JSON
+            try:
+                response2 = await gemini_service.generate_content(
+                    prompt,
+                    overrides={**ai_overrides, "temperature": 0.4, "max_output_tokens": 1024},
+                )
+                c2 = (response2.get("content") or "").strip() if response2 and response2.get("success") else ""
+                if c2:
+                    await notify("llm_response_received_alt", content_preview=c2[:120])
+                    content = c2
+                    json_match = re.search(r"\{[\s\S]*\}", content)
+                    json_str = json_match.group(0) if json_match else ""
+            except Exception:
+                pass
+        if not json_str:
+            # Attempt to salvage by brace balancing from first '{'
+            first_idx = content.find('{')
+            if first_idx != -1:
+                candidate = content[first_idx:]
+                open_curly = candidate.count('{')
+                close_curly = candidate.count('}')
+                open_square = candidate.count('[')
+                close_square = candidate.count(']')
+                candidate += '}' * max(0, open_curly - close_curly)
+                candidate += ']' * max(0, open_square - close_square)
+                try:
+                    json.loads(candidate)
+                    json_str = candidate
+                except Exception:
+                    json_str = ""
+        if not json_str:
+            # As a last resort, synthesize a profile from precomputed_stats instead of failing hard
+            msg = "LLM did not return a JSON block"
             logger.error(f"{msg} for user {user_id}: {content[:200]}")
-            await websocket_service.send_user_notification(
-                user_id, "vibe_profile_failed", {"error": msg}
-            )
+            await notify("llm_parse_failed")
+            # Build minimal profile from stats
+            try:
+                dom_lang = "ru" if precomputed_stats.get("language_distribution", {}).get("ru_cyrillic", 0) > 0.5 else "en"
+            except Exception:
+                dom_lang = "en"
+            vibe_profile = _build_default_vibe_profile(dom_lang)
+            # Merge topics with filtering and n-gram preference before persisting
+            try:
+                manual_topics = []
+                urepo = container.resolve(UserRepository)
+                u = await urepo.get_user(user_id)
+                if getattr(u, 'persona_interests_json', None) and isinstance(u.persona_interests_json, list):
+                    manual_topics = [str(x) for x in u.persona_interests_json if x]
+                mined_uni = precomputed_stats.get("top_unigrams", [])[:100]
+                mined_bi = precomputed_stats.get("top_bigrams", [])[:60]
+                mined_tri = precomputed_stats.get("top_trigrams", [])[:40]
+                channel_hints = precomputed_stats.get("channel_topic_hints", [])
+                from collections import Counter as _CtrTopics
+                counter = _CtrTopics()
+                import re as _re_topic
+                stop_ru = {"и","в","на","не","что","это","с","как","я","а","то","у","но","же","к","за","если","по","или","из","для","о","от","до","бы","да","ну","про","так","там","тут","чтобы","при","без","быть","есть","тот","эта","этот","только","уже","ещё","еще","где","когда","всё","все","мы","вы","они","он","она","оно","чем","ли","лишь","вот","такой","такая","такие","мой","моя","мои","твой","твоя","твои","их","наш","ваш","его","ее","её","ничего","чего","кто","что","года","лет","день","раз","сам","сама","само","самые","самый","либо","ни","—","-","мне","меня","мной","нам","нами","вам","вами","тебе","тобой","тебя","ему","ей","ими","всем","себя","очень","просто","тоже","через","если","будет","будут","буду","можно","может","нужно","надо","хочу","хотел","хотела","хотели"}
+                stop_en = {"the","and","or","of","to","a","an","in","on","for","with","is","are","be","as","at","by","it","this","that","these","those","we","you","they","i"}
+                def is_topic_token(tok: str) -> bool:
+                    t = (tok or "").strip().lower()
+                    if not t:
+                        return False
+                    if t in stop_ru or t in stop_en:
+                        return False
+                    if t == "-":
+                        return False
+                    # heuristic verb-ish endings (ru)
+                    if _re_topic.search(r"(юсь|ешь|ешься|ет|ете|ем|ют|ят|ал|ала|али|ишь|ит|им|ите|аю|аешь|ают|ется)$", t):
+                        return False
+                    if len(t) < 3 and t not in {"ии","ai"}:
+                        return False
+                    return bool(_re_topic.match(r"^[a-zа-яё-]+$", t))
+                def is_good_phrase(phrase: str) -> bool:
+                    parts = [p for p in phrase.split() if p]
+                    if not parts:
+                        return False
+                    valid_parts = [pp for pp in parts if is_topic_token(pp)]
+                    if len(valid_parts) != len(parts):
+                        return False
+                    return any(len(pp) >= 4 for pp in parts)
+
+                for t in manual_topics or []:
+                    if is_topic_token(str(t)):
+                        counter[str(t).lower()] += 3
+                for t in mined_tri or []:
+                    if is_good_phrase(str(t)):
+                        counter[str(t).lower()] += 4
+                for t in mined_bi or []:
+                    if is_good_phrase(str(t)):
+                        counter[str(t).lower()] += 3
+                for t in mined_uni or []:
+                    if is_topic_token(str(t)):
+                        counter[str(t).lower()] += 1
+                for t in channel_hints or []:
+                    if is_topic_token(str(t)):
+                        counter[str(t).lower()] += 1
+                top_pairs_all = counter.most_common(40)
+                # Prefer multi-word phrases first, then allow up to 5 unigrams
+                # remove brand/noisy tokens from unigrams
+                noise_uni = {"ponchik","чат","channel","club","official","news","тг","чатик"}
+                phrases = [(k, w) for k, w in top_pairs_all if " " in k]
+                unigrams = [(k, w) for k, w in top_pairs_all if " " not in k and k not in noise_uni]
+                selected = phrases[:12] + unigrams[:5]
+                if selected:
+                    total_w = max(sum(w for _, w in selected), 1)
+                    vibe_profile["topics_of_interest"] = [k for k, _ in selected]
+                    vibe_profile["topic_weights"] = {k: round(w/total_w, 2) for k, w in selected}
+                vibe_profile.pop("signature_templates", None)
+            except Exception:
+                pass
+            ai_profile = await ai_profile_repo.get_ai_profile_by_user(user_id)
+            if not ai_profile:
+                ai_profile = await ai_profile_repo.create_ai_profile(user_id=user_id)
+            # Do not overwrite existing good profile fields; mark OUTDATED for re-run
+            try:
+                existing = getattr(ai_profile, "vibe_profile_json", {}) or {}
+            except Exception:
+                existing = {}
+            merged = existing if isinstance(existing, dict) else {}
+            # Merge only missing keys
+            for k, v in vibe_profile.items():
+                merged.setdefault(k, v)
+            await ai_profile_repo.update_ai_profile(ai_profile.id, vibe_profile_json=merged)
+            try:
+                from app.models.ai_profile import AnalysisStatus
+                await ai_profile_repo.update_ai_profile(ai_profile.id, analysis_status=AnalysisStatus.OUTDATED)
+            except Exception:
+                pass
+            await websocket_service.send_user_notification(user_id, "vibe_profile_completed", {"profile": vibe_profile})
+            await notify("done")
+            return
+        # Sanitize common issues: trailing commas, smart quotes
+        try:
+            import re as _re_fix
+            json_str = _re_fix.sub(r",\s*([}\]])", r"\1", json_str)
+            json_str = json_str.replace("“", '"').replace("”", '"').replace("’", "'")
+            vibe_profile = json.loads(json_str)
+        except Exception as e:
+            logger.error(f"JSON parse failed for user {user_id}: {e}")
+            await websocket_service.send_user_notification(user_id, "vibe_profile_failed", {"error": str(e)})
             await notify("llm_parse_failed")
             return
-
-        vibe_profile = json.loads(json_match.group(0))
         try:
             dom_lang = "ru" if precomputed_stats.get("language_distribution", {}).get("ru_cyrillic", 0) > 0.5 else "en"
             vibe_profile["dominant_language"] = dom_lang
@@ -527,11 +1303,121 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
         if not ai_profile:
             ai_profile = await ai_profile_repo.create_ai_profile(user_id=user_id)
 
+        # Merge computed signals into final profile before saving
+        def _merge_style_markers(dst: Dict[str, Any]) -> None:
+            sm = dst.setdefault("style_markers", {})
+            sm.setdefault("emoji_ratio", emoji_ratio)
+            sm.setdefault("caps_ratio", caps_ratio)
+            sm.setdefault("avg_sentence_len_words", avg_sentence_len_words)
+            sm.setdefault("sentence_types", sentence_types)
+            sm.setdefault("punctuation", precomputed_stats["punctuation"]) \
+                if "punctuation" not in sm else None
+            sm.setdefault("language_distribution", lang_dist)
+        def _merge_digital_comm(dst: Dict[str, Any]) -> None:
+            dc = dst.setdefault("digital_comm", {})
+            # Intentionally omit greetings/farewells per user preference
+            ends_sorted = sorted(endings.items(), key=lambda x: x[1], reverse=True)
+            dc.setdefault("typical_endings", [k for k, _ in ends_sorted[:2]])
+
+        _merge_style_markers(vibe_profile)
+        _merge_digital_comm(vibe_profile)
+        # Explicitly remove greetings/farewells if present
+        try:
+            if "digital_comm" in vibe_profile:
+                vibe_profile["digital_comm"].pop("greetings", None)
+                vibe_profile["digital_comm"].pop("farewells", None)
+        except Exception:
+            pass
+        if precomputed_stats.get("channel_topic_hints"):
+            # Extend topics_of_interest with channel hints if missing
+            toi = vibe_profile.setdefault("topics_of_interest", [])
+            for w in precomputed_stats["channel_topic_hints"]:
+                if w not in toi and len(toi) < 20:
+                    toi.append(w)
+
+        # Merge topics into the in-memory profile dict BEFORE persisting
+        try:
+            manual_topics = []
+            try:
+                urepo = container.resolve(UserRepository)
+                u = await urepo.get_user(user_id)
+                if getattr(u, 'persona_interests_json', None) and isinstance(u.persona_interests_json, list):
+                    manual_topics = [str(x) for x in u.persona_interests_json if x]
+            except Exception:
+                manual_topics = []
+            # Build mined topics preferring bi/tri-grams over single tokens
+            mined_uni = precomputed_stats.get("top_unigrams", [])[:100]
+            mined_bi = precomputed_stats.get("top_bigrams", [])[:60]
+            mined_tri = precomputed_stats.get("top_trigrams", [])[:40]
+            channel_hints = precomputed_stats.get("channel_topic_hints", [])
+            from collections import Counter as _CtrTopics
+            counter = _CtrTopics()
+            import re as _re_topic
+            stop_ru = {
+                "и","в","на","не","что","это","с","как","я","а","то","у","но","же","к","за","если","по","или","из","для","о","от","до","бы","да","ну","про","так","там","тут","чтобы","при","без","быть","есть","тот","эта","этот","только","уже","ещё","еще","где","когда","всё","все","мы","вы","они","он","она","оно","чем","ли","же","ну","вот","такой","такая","такие","мой","моя","мои","твой","твоя","твои","их","наш","ваш","его","ее","её","ничего","чего","кто","что","года","лет","день","раз","ещё","сам","сама","само","самые","самый","либо","ни","лишь","же","же","то","—","-"
+            }
+            stop_en = {"the","and","or","of","to","a","an","in","on","for","with","is","are","be","as","at","by","it","this","that","these","those","we","you","they","i"}
+            def is_topic_token(tok: str) -> bool:
+                t = (tok or "").strip().lower()
+                if not t:
+                    return False
+                if t in stop_ru or t in stop_en:
+                    return False
+                if t == "-":
+                    return False
+                if len(t) < 3 and t not in {"ии","ai"}:
+                    return False
+                return bool(_re_topic.match(r"^[a-zа-яё-]+$", t))
+            def is_good_phrase(phrase: str) -> bool:
+                parts = [p for p in phrase.split() if p]
+                if not parts:
+                    return False
+                valid_parts = [pp for pp in parts if is_topic_token(pp)]
+                if len(valid_parts) != len(parts):
+                    return False
+                return any(len(pp) >= 4 for pp in parts)
+
+            for t in manual_topics or []:
+                if is_topic_token(str(t)):
+                    counter[str(t).lower()] += 3
+            for t in mined_tri or []:
+                if is_good_phrase(str(t)):
+                    counter[str(t).lower()] += 4
+            for t in mined_bi or []:
+                if is_good_phrase(str(t)):
+                    counter[str(t).lower()] += 3
+            for t in mined_uni or []:
+                if is_topic_token(str(t)):
+                    counter[str(t).lower()] += 1
+            for t in channel_hints or []:
+                if is_topic_token(str(t)):
+                    counter[str(t).lower()] += 1
+            top_pairs = counter.most_common(20)
+            if top_pairs:
+                total_w = max(sum(w for _, w in top_pairs), 1)
+                vibe_profile["topics_of_interest"] = [k for k, _ in top_pairs]
+                vibe_profile["topic_weights"] = {k: round(w/total_w, 2) for k, w in top_pairs}
+        except Exception:
+            pass
+
+        # Remove template scaffolding if present to avoid templated feel
+        try:
+            if isinstance(vibe_profile, dict) and "signature_templates" in vibe_profile:
+                vibe_profile.pop("signature_templates", None)
+        except Exception:
+            pass
+
         await ai_profile_repo.mark_analysis_completed(
             profile_id=ai_profile.id,
             vibe_profile=vibe_profile,
             messages_count=len(user_sent_messages),
         )
+        # Ensure user preferred model is synced to gemini-2.5-pro
+        try:
+            from app.models.ai_request import AIRequestModel
+            await user_repo.update_user(user_id, preferred_ai_model=AIRequestModel.GEMINI_2_5_PRO)
+        except Exception:
+            pass
         await notify("persist_done")
 
         await websocket_service.send_user_notification(
@@ -560,6 +1446,12 @@ async def async_analyze_vibe_profile(user_id: str, messages_limit: int = 200):
         if client:
             await notify("tg_disconnect")
             await telegram_service.disconnect_client(user_id)
+        # Clear analysis lock
+        try:
+            if 'redis_service' in locals() and redis_service:
+                redis_service.delete(f"analysis:lock:{user_id}")
+        except Exception:
+            pass
 
 
 @celery_app.task(name="tasks.seed_ai_profile_dev", queue="analysis")
@@ -736,8 +1628,10 @@ async def async_generate_draft_for_post(
     draft_repo = container.resolve(DraftCommentRepository)
     feedback_repo = container.resolve(NegativeFeedbackRepository)
     gemini_service = container.resolve(GeminiService)
+    langchain_service = container.resolve(LangChainService)
     chat_repo = container.resolve(ChatRepository)
     message_repo = container.resolve(TelegramMessageRepository)
+    telegram_service = container.resolve(TelegramService)
     websocket_service = container.resolve(WebSocketService)
 
     try:
@@ -754,6 +1648,19 @@ async def async_generate_draft_for_post(
                 pass
             # Reload after seed (best effort)
             ai_profile = await ai_profile_repo.get_ai_profile_by_user(user_id)
+
+        # Resolve Digital Twin config (merge user overrides over defaults)
+        dt_cfg: Dict[str, Any] = DEFAULT_DT_CONFIG
+        try:
+            vp_local = getattr(ai_profile, "vibe_profile_json", None) or {}
+            merged = dict(DEFAULT_DT_CONFIG)
+            user_dt = vp_local.get("dt_config") or {}
+            if isinstance(user_dt, dict):
+                for k, v in user_dt.items():
+                    merged[k] = v
+            dt_cfg = merged
+        except Exception:
+            dt_cfg = DEFAULT_DT_CONFIG
 
         # Handle regeneration case
         if rejected_draft_id:
@@ -775,10 +1682,24 @@ async def async_generate_draft_for_post(
         # Check post relevance (allow forced generation for regeneration & initial seeding)
         force_generate: bool = bool(post_data.get("force_generate", False))
         vibe_profile = ai_profile.vibe_profile_json
-        topics_of_interest = vibe_profile.get("topics_of_interest", [])
-        post_text = post_data.get("original_post_content", "").lower()
-        is_relevant = any(topic.lower() in post_text for topic in topics_of_interest)
-        if not topics_of_interest:
+        raw_topics = vibe_profile.get("topics_of_interest") or []
+        # Defensive normalize to avoid NoneType errors
+        norm_topics: list[str] = []
+        for t in raw_topics:
+            try:
+                if t is None:
+                    continue
+                if isinstance(t, str):
+                    tt = t.strip()
+                    if tt:
+                        norm_topics.append(tt.lower())
+                else:
+                    norm_topics.append(str(t).lower())
+            except Exception:
+                continue
+        post_text = (post_data.get("original_post_content") or "").lower()
+        is_relevant = any(topic in post_text for topic in norm_topics)
+        if not norm_topics:
             is_relevant = True
 
         if not (is_relevant or force_generate):
@@ -787,7 +1708,65 @@ async def async_generate_draft_for_post(
             )
             return
 
-        # Construct prompt
+        # Construct prompt with local retrieval: fetch up to two short prior posted comments (local tf-idf cosine)
+        nearest_snippets: list[str] = []
+        try:
+            # Build minimal corpus from user's posted comments (DB), cached in Redis
+            corpus_key = f"style:corpus:{user_id}"
+            corpus: list[str] = []
+            cached = container.resolve(RedisService).get(corpus_key)
+            if cached and isinstance(cached, list):
+                corpus = [c for c in cached if isinstance(c, str)]
+            if not corpus:
+                posted = await draft_repo.get_recent_posted_by_user(user_id=user_id, limit=200)
+                for p in posted:
+                    t = (getattr(p, 'final_text_to_post', None) or getattr(p, 'edited_text', None) or getattr(p, 'draft_text', None) or '').strip()
+                    if t:
+                        corpus.append(t[:160])
+                if corpus:
+                    container.resolve(RedisService).set(corpus_key, corpus, expire=3600)
+            # Local TF-IDF cosine similarity
+            import re as _r, math as _m
+            pt = (post_data.get('original_post_content') or post_data.get('original_post_text_preview') or '')
+            def tokenize(text: str) -> list[str]:
+                return [w.lower() for w in _r.findall(r"[A-Za-zА-Яа-яЁё]{3,}", text)]
+            docs = [pt] + corpus[:200]
+            tokenized = [tokenize(d) for d in docs]
+            # Build df
+            df: dict[str, int] = {}
+            for tokens in tokenized:
+                seen = set(tokens)
+                for t in seen:
+                    df[t] = df.get(t, 0) + 1
+            N = len(tokenized)
+            def tfidf_vec(tokens: list[str]) -> dict[str, float]:
+                tf: dict[str, int] = {}
+                for t in tokens:
+                    tf[t] = tf.get(t, 0) + 1
+                vec: dict[str, float] = {}
+                for t, f in tf.items():
+                    idf = _m.log((N + 1) / (1 + df.get(t, 1))) + 1.0
+                    vec[t] = (f / max(len(tokens), 1)) * idf
+                return vec
+            vecs = [tfidf_vec(tok) for tok in tokenized]
+            def cosine(a: dict[str, float], b: dict[str, float]) -> float:
+                dot = sum(a.get(k, 0.0) * v for k, v in b.items())
+                na = _m.sqrt(sum(v*v for v in a.values()))
+                nb = _m.sqrt(sum(v*v for v in b.values()))
+                if na == 0 or nb == 0:
+                    return 0.0
+                return dot / (na * nb)
+            post_vec = vecs[0]
+            scored = []
+            for idx, c in enumerate(corpus[:200], start=1):
+                sim = cosine(post_vec, vecs[idx])
+                scored.append((sim, c))
+            scored.sort(reverse=True, key=lambda x: x[0])
+            for sim, c in scored[:2]:
+                if sim > 0:
+                    nearest_snippets.append(c)
+        except Exception:
+            nearest_snippets = []
         negative_feedback = await feedback_repo.get_negative_feedback_by_user(
             user_id, limit=10
         )
@@ -845,10 +1824,29 @@ async def async_generate_draft_for_post(
         except Exception:
             positive_examples = ""
 
+        # Compute persona directives once here for downstream usage
+        # Avoid referencing local variables before assignment; derive channel title from post_data
+        channel_title_hint = None
+        try:
+            if isinstance(post_data.get('channel'), dict):
+                channel_title_hint = post_data.get('channel', {}).get('title')
+            if not channel_title_hint:
+                channel_title_hint = post_data.get('channel_title')
+        except Exception:
+            channel_title_hint = None
+        persona_directives = _compute_persona_directives(
+            post_text=post_data.get('original_post_content') or post_data.get('original_post_text_preview') or '',
+            channel_title=channel_title_hint,
+            dt_cfg=dt_cfg,
+        )
+
         prompt = f"""
         You are an AI assistant generating a Telegram comment for a user.
         USER VIBE PROFILE: {json.dumps(ai_profile.vibe_profile_json, indent=2)}
+        DT_CONFIG: {json.dumps(dt_cfg, indent=2, ensure_ascii=False)}
+        PERSONA_DIRECTIVES: {json.dumps(persona_directives, indent=2, ensure_ascii=False)}
         POST TO COMMENT ON: {post_data.get('original_post_content')}
+        PRIOR_USER_COMMENTS (style hints, <=160 chars each): {nearest_snippets or 'None'}
         CHANNEL CONTEXT (recent messages):
         {channel_context}
         
@@ -859,11 +1857,17 @@ async def async_generate_draft_for_post(
         {positive_examples if positive_examples else "None"}
 
         INSTRUCTIONS:
-        1. Generate a comment that perfectly matches the user's vibe (tone, verbosity, emoji usage).
-        2. The comment must be relevant to the post.
-        3. Avoid making comments similar to the rejected ones.
-        4. Generate ONLY the comment text.
-        5. If the post seems borderline off-topic, still produce a short, witty, on-topic reply or ask a clarifying question to stay relevant.
+        - Adhere to PERSONA_DIRECTIVES:
+          - Archetype mode ← {persona_directives.get('archetype_mode')}
+          - Environment quadrant ← {persona_directives.get('environment_quadrant')}
+          - HD filter ← {persona_directives.get('hd_filter')} with authority {persona_directives.get('authority')}
+          - Trauma mode (if set) ← {persona_directives.get('trauma_mode')}
+          - Sub-persona (if set) ← {persona_directives.get('sub_persona')} (apply style_mod if provided)
+        - If trauma_mode is set, prioritize its lexicon/behavior and keep the comment concise.
+        - Enforce anchors: cite at least one concrete claim/number/named entity from the post.
+        - Match the user's vibe PERFECTLY (tone, brevity, emoji level). Use their typical endings if natural.
+        - Avoid generic starters or filler phrases. Be specific and situated in the post.
+        - Output ONLY the comment text. No quotes, no markdown.
         """
 
         # Generate comment
@@ -912,6 +1916,31 @@ async def async_generate_draft_for_post(
         else:
             draft_text = content_text
 
+        # Enforce anti-generic controls: strip emoji/symbol-only starters
+        try:
+            lang_hint = "ru"
+            try:
+                vp = ai_profile.vibe_profile_json or {}
+                lang_hint = (vp.get("dominant_language") or "ru")
+            except Exception:
+                pass
+            banned_starters = []
+            try:
+                dt_cfg_local = dt_cfg if isinstance(dt_cfg, dict) else {}
+                lex = (dt_cfg_local.get("persona", {}).get("voice", {}).get("lexicon", {}) if dt_cfg_local else {})
+                # Explicitly do NOT include greetings like "йо", "привет", "yo" (they are not desired greetings to be auto-added)
+                banned_starters = list(set((dt_cfg_local.get("anti_generic", {}).get("stop_phrases", []) or []) + (lex.get("banned_starters", []) or [])))
+            except Exception:
+                banned_starters = []
+            draft_text = _strip_generic_openers(
+                draft_text,
+                original_post=post_data.get("original_post_content"),
+                lang=lang_hint,
+                banned_starters=banned_starters,
+            )
+        except Exception:
+            pass
+
         # Ensure we have a DB message id; resolve or create using channel_telegram_id + post_telegram_id
         gen_params: Dict[str, Any] = {}
         try:
@@ -953,13 +1982,24 @@ async def async_generate_draft_for_post(
         except Exception:
             pass
 
+        # Resolve and align model tag to Gemini if user pref is missing or non-Gemini
+        model_used = str(getattr(getattr(user, "preferred_ai_model", None), "value", "") or "")
+        if "gemini" not in model_used:
+            try:
+                from app.models.ai_request import AIRequestModel
+                updated_user = await user_repo.update_user(user_id, preferred_ai_model=AIRequestModel.GEMINI_2_5_PRO)
+                if updated_user and getattr(updated_user, "preferred_ai_model", None):
+                    model_used = str(updated_user.preferred_ai_model.value)
+                else:
+                    model_used = "gemini-2.5-pro"
+            except Exception:
+                model_used = "gemini-2.5-pro"
+
         draft_create_data = DraftCommentCreate(
             original_message_id=post_data.get("original_message_id", "unknown"),
             user_id=user_id,
             persona_name=ai_profile.persona_name,
-            ai_model_used=user.preferred_ai_model.value
-            if user.preferred_ai_model
-            else "gemini-pro",
+            ai_model_used=(model_used or "gemini-2.5-pro"),
             original_post_text_preview=post_data.get("original_post_content", "")[:500],
             original_post_content=post_data.get("original_post_content"),
             original_post_url=post_data.get("original_post_url"),
@@ -1027,6 +2067,17 @@ async def async_check_for_new_posts():
                     async for message in client.iter_messages(dialog, limit=10):
                         # This is a simplified check. A real implementation would
                         # track last seen message IDs per channel.
+                        media_type = None
+                        media_url = None
+                        try:
+                            if getattr(message, 'photo', None) is not None:
+                                media_type = 'photo'
+                                media_path = await telegram_service.download_message_photo(user.id, int(dialog.id), int(message.id))
+                                if media_path:
+                                    media_url = media_path
+                        except Exception:
+                            pass
+
                         db_messages = await message_repo.create_or_update_messages(
                             [
                                 TelegramMessengerMessage(
@@ -1034,6 +2085,8 @@ async def async_check_for_new_posts():
                                     chat_id=db_chat.id,
                                     text=message.text,
                                     date=telegram_service._convert_to_naive_utc(message.date),
+                                    media_type=media_type,
+                                    file_id=media_url,
                                 )
                             ]
                         )
@@ -1114,8 +2167,20 @@ async def async_generate_drafts_for_user_recent_posts(user_id: str, dialogs_limi
                     continue
 
             async for message in client.iter_messages(dialog, limit=per_dialog_messages):
-                if not getattr(message, "text", None):
+                if not (getattr(message, "text", None) or getattr(message, "photo", None)):
                     continue
+
+                media_type = None
+                media_url = None
+                try:
+                    if getattr(message, 'photo', None) is not None:
+                        media_type = 'photo'
+                        media_path = await telegram_service.download_message_photo(user.id, int(dialog.id), int(message.id))
+                        if media_path:
+                            media_url = media_path
+                except Exception:
+                    pass
+
                 saved = await message_repo.create_or_update_messages(
                     [
                         TelegramMessengerMessage(
@@ -1123,6 +2188,8 @@ async def async_generate_drafts_for_user_recent_posts(user_id: str, dialogs_limi
                             chat_id=db_chat.id,
                             text=message.text,
                             date=telegram_service._convert_to_naive_utc(message.date),
+                            media_type=media_type,
+                            file_id=media_url,
                         )
                     ]
                 )

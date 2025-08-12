@@ -15,6 +15,8 @@ class PostForFeed(BaseModel):
     channel_telegram_id: int = Field(..., description="Telegram's channel ID")
     url: Optional[str] = None
     text: Optional[str] = Field(None, description="Post content")
+    media_type: Optional[str] = Field(None, description="Message media type (e.g., photo)")
+    media_url: Optional[str] = Field(None, description="Public URL to downloaded media, if any")
     reactions: Optional[Dict[str, Any]] = None
     channel: Dict[str, Any] = Field(..., description="Channel information")
     date: str = Field(..., description="Post date as ISO string")

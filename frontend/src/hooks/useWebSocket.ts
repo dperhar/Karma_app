@@ -40,7 +40,25 @@ export const useWebSocket = ({ userId, initDataRaw }: UseWebSocketProps) => {
       const token = await fetchWsToken();
       console.log('Connecting to Centrifugo', { wsUrl, hasToken: !!token, userId });
 
-      const centrifuge = new Centrifuge(wsUrl, token ? { token } : {});
+      const centrifuge = new Centrifuge(
+        wsUrl,
+        token
+          ? {
+              token,
+              // Auto-refresh token when expired (code 12)
+              getToken: async () => {
+                try {
+                  const t = await fetchWsToken();
+                  if (!t) throw new Error('no token');
+                  return t;
+                } catch (e) {
+                  console.error('Failed to refresh WS token', e);
+                  return '' as unknown as string;
+                }
+              },
+            }
+          : {}
+      );
       centrifugeRef.current = centrifuge;
 
       centrifuge.on('connected', () => {
