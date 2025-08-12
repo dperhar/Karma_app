@@ -131,6 +131,18 @@ export class UserService extends ApiClient {
     );
   }
 
+  async subPersonaClassifyPreview(postText: string, initDataRaw?: string) {
+    return this.request<APIResponse<{ persona: string | null; score: number; breakdown: { semantic: number; keywords: number } }>>(
+      `/users/me/subpersona-classify-preview`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ post_text: postText }),
+      },
+      initDataRaw
+    );
+  }
+
 }
 
 export const userService = new UserService(); 

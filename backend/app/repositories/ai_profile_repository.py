@@ -139,3 +139,39 @@ class AIProfileRepository(BaseRepository):
             analysis_status=AnalysisStatus.FAILED,
             last_error_message=error_message
         ) 
+
+    async def merge_topics(
+        self,
+        profile_id: str,
+        manual_topics: list[str] | None,
+        mined_topics: list[str] | None,
+        channel_hints: list[str] | None,
+    ) -> None:
+        """Merge manual + mined + channel hints into weighted topics with simple weights.
+
+        Weights: manual x3, mined x2, channel x1; top 20 kept; normalized to 0..1.
+        """
+        from collections import Counter
+        async with self.get_session() as session:
+            prof = await session.get(AIProfile, profile_id)
+            if not prof:
+                return
+            vp = prof.vibe_profile_json or {}
+            counter: Counter[str] = Counter()
+            for src in (manual_topics or []):
+                if src:
+                    counter[str(src).lower()] += 3
+            for src in (mined_topics or []):
+                if src:
+                    counter[str(src).lower()] += 2
+            for src in (channel_hints or []):
+                if src:
+                    counter[str(src).lower()] += 1
+            top = counter.most_common(20)
+            total = max(sum(w for _, w in top), 1)
+            topics = [k for k, _ in top]
+            weights = {k: round(v / total, 2) for k, v in top}
+            vp["topics_of_interest"] = topics
+            vp["topic_weights"] = weights
+            prof.vibe_profile_json = vp
+            await session.commit()

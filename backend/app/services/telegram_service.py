@@ -479,26 +479,71 @@ class TelegramService(BaseService):
         return await self.get_or_create_client(user_id)
 
     async def get_user_sent_messages(
-        self, user_id: str, limit: int = 200
+        self,
+        user_id: str,
+        limit: int = 200,
+        *,
+        min_date: Optional[datetime] = None,
+        only_replies: bool = False,
+        include_personal: bool = True,
     ) -> list[dict]:
-        """
-        Fetch user's own sent messages from DMs and group chats for style analysis.
-        Applies safety limits and rate limiting to avoid FloodWait.
+        """Fetch user's own sent messages across dialogs.
+
+        Args:
+            user_id: App user id.
+            limit: Hard cap on total messages to return (<= 10000).
+            min_date: If provided, include only messages on/after this UTC datetime.
+            only_replies: If True, include only messages that are replies.
+            include_personal: If False, exclude private DMs entirely.
+
+        Returns:
+            A list of dictionaries with at least: text, date, chat_id, chat_title, chat_type, is_reply, reply_to_msg_id
         """
         client = await self.get_or_create_client(user_id)
         if not client:
             return []
 
         # Safety caps
-        max_dialogs = 200  # scan more dialogs to reach high limits
-        per_dialog_limit = 200  # fetch more from each dialog
-        hard_cap = min(limit, 10000)  # absolute cap
+        max_dialogs = 300
+        per_dialog_limit = 200
+        hard_cap = min(int(limit or 0) or 200, 10000)
 
         messages = []
         try:
             scanned_dialogs = 0
             async for dialog in client.iter_dialogs(limit=max_dialogs):
-                if not (dialog.is_user or dialog.is_group):
+                # Determine chat type and inclusion
+                entity = dialog.entity
+                chat_type = "unknown"
+                is_private = False
+                is_group = False
+                is_supergroup = False
+                is_channel = False
+
+                try:
+                    if isinstance(entity, TelethonUser):
+                        chat_type = "user"
+                        is_private = True
+                    elif isinstance(entity, TelethonChat):
+                        chat_type = "group"
+                        is_group = True
+                    elif isinstance(entity, TelethonChannel):
+                        # Channels can be broadcast or megagroups
+                        if getattr(entity, "broadcast", False):
+                            chat_type = "channel"
+                            is_channel = True
+                        else:
+                            chat_type = "supergroup"
+                            is_supergroup = True
+                    else:
+                        chat_type = getattr(dialog, "is_group", False) and "group" or "unknown"
+                except Exception:
+                    pass
+
+                if is_private and not include_personal:
+                    continue
+                # We do not analyze pure broadcast channels for user's messages (cannot post there)
+                if is_channel:
                     continue
 
                 # Respect cooldown if needed
@@ -508,13 +553,45 @@ class TelegramService(BaseService):
                         await asyncio.sleep(remaining + 1)
 
                 async for message in client.iter_messages(
-                    dialog, from_user="me", limit=per_dialog_limit
+                    dialog,
+                    from_user="me",
+                    limit=per_dialog_limit,
                 ):
                     if message and message.text:
+                        # In-code date filter to avoid Telethon param incompatibilities
+                        try:
+                            if min_date and message.date and message.date.replace(tzinfo=None) < min_date:
+                                continue
+                        except Exception:
+                            pass
+                        # Only replies if requested
+                        reply_id = (
+                            getattr(message, "reply_to_msg_id", None)
+                            or getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None)
+                        )
+                        is_reply = bool(reply_id)
+                        if only_replies and not is_reply:
+                            continue
+                        # Build chat metadata
+                        chat_title = None
+                        try:
+                            if isinstance(entity, TelethonUser):
+                                full_name = f"{getattr(entity, 'first_name', '')} {getattr(entity, 'last_name', '')}".strip()
+                                chat_title = full_name or "Unknown User"
+                            else:
+                                chat_title = getattr(entity, "title", None)
+                        except Exception:
+                            chat_title = None
+
                         messages.append(
                             {
                                 "text": message.text,
                                 "date": self._convert_to_naive_utc(message.date),
+                                "chat_id": int(getattr(entity, "id", 0)) if hasattr(entity, "id") else None,
+                                "chat_title": chat_title,
+                                "chat_type": chat_type,
+                                "is_reply": is_reply,
+                                "reply_to_msg_id": int(reply_id) if reply_id else None,
                             }
                         )
                     if len(messages) >= hard_cap:
@@ -563,4 +640,30 @@ class TelegramService(BaseService):
             return filepath
         except Exception as e:
             self.logger.debug(f"Avatar download skipped for {chat_telegram_id}: {e}")
+            return None
+
+    async def download_message_photo(self, user_id: str, chat_telegram_id: int, message_id: int) -> Optional[str]:
+        """Download a message photo under logs/media and return a public URL path (/media/...).
+
+        Using logs/media ensures write permissions inside the container.
+        """
+        client = await self.get_or_create_client(user_id)
+        if not client:
+            return None
+        from telethon.tl import types
+        try:
+            import os
+            base_dir = os.path.join("logs", "media")
+            os.makedirs(base_dir, exist_ok=True)
+            local_file = f"{user_id}_{chat_telegram_id}_{message_id}.jpg"
+            filename = os.path.join(base_dir, local_file)
+            entity = types.PeerChannel(int(chat_telegram_id))
+            msg = await client.get_messages(entity, ids=message_id)
+            if not msg or not getattr(msg, 'photo', None):
+                return None
+            await client.download_media(msg.photo, file=filename)
+            # Return a public URL path to be served via FastAPI StaticFiles mounted at /media
+            return f"/media/{local_file}"
+        except Exception as e:
+            self.logger.debug(f"Photo download skipped for {chat_telegram_id}/{message_id}: {e}")
             return None

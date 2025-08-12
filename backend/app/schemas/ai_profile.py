@@ -58,3 +58,6 @@ class AIProfileUpdate(BaseModel):
     greetings: Optional[List[str]] = None
     typical_endings: Optional[List[str]] = None
 
+    # Digital Twin config partial update (frontend edits everything except HD and Astro)
+    dt_config: Optional[Dict[str, Any]] = None
+

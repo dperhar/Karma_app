@@ -16,6 +16,7 @@ class AIRequestModel(str, Enum):
     GPT_4_1 = "gpt-4.1"
     GPT_4_1_MINI = "gpt-4.1-mini"
     GPT_4_1_NANO = "gpt-4.1-nano"
+    GEMINI_2_5_PRO = "gemini-2.5-pro"
     CLAUDE_3_7_SONNET = "claude-3-7-sonnet-20250219"
     CLAUDE_3_5_HAIKU = "claude-3-5-haiku-20241022"
 

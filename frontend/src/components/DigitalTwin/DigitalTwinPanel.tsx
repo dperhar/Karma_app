@@ -2,6 +2,7 @@
 
 import React, { useMemo, useState, useEffect } from 'react';
 import { userService } from '@/core/api/services/user-service';
+import { SubPersonaPanel } from '@/components/DigitalTwin/SubPersonaPanel';
 import { User } from '@/types/user';
 import { useWebSocket } from '@/hooks/useWebSocket';
 
@@ -18,9 +19,33 @@ export const DigitalTwinPanel: React.FC<DigitalTwinPanelProps> = ({
   const [analysisResult, setAnalysisResult] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [logs, setLogs] = useState<string[]>([]);
+  const [draftLogs, setDraftLogs] = useState<string[]>([]);
   const [aiProfile, setAiProfile] = useState<any | null>(null);
-  const [editMode, setEditMode] = useState(false);
+  const [editMode, setEditMode] = useState(true);
   const [draftEdit, setDraftEdit] = useState<any>({});
+  const [isSaving, setIsSaving] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const hydratedRef = React.useRef(false);
+  const [newSubPersona, setNewSubPersona] = useState('');
+  const [previewText, setPreviewText] = useState('');
+  const [previewResult, setPreviewResult] = useState<{persona:string|null; score:number; semantic:number; keywords:number} | null>(null);
+
+  // Safe deep path initializer
+  const ensurePath = (root: any, path: (string|number)[], defaultLeaf: any) => {
+    let cur = root;
+    for (let i = 0; i < path.length - 1; i++) {
+      const key = path[i] as any;
+      if (cur[key] === undefined || typeof cur[key] !== 'object') {
+        cur[key] = {};
+      }
+      cur = cur[key];
+    }
+    const lastKey = path[path.length - 1] as any;
+    if (cur[lastKey] === undefined) {
+      cur[lastKey] = defaultLeaf;
+    }
+    return root;
+  };
 
   const initDataRaw = 'mock_init_data_for_telethon';
   const { lastMessage, isConnected } = useWebSocket({ userId: user.id, initDataRaw });
@@ -32,6 +57,38 @@ export const DigitalTwinPanel: React.FC<DigitalTwinPanelProps> = ({
         const aiProfile = await userService.getMyAIProfile(initDataRaw);
         if (aiProfile.success && aiProfile.data) {
           setAiProfile(aiProfile.data);
+          // hydrate editor by default so user can edit immediately
+          try {
+            const vp = aiProfile.data.vibe_profile_json || {};
+            setDraftEdit({
+              persona_name: aiProfile.data.persona_name || '',
+              user_system_prompt: aiProfile.data.user_system_prompt || '',
+              tone: vp.tone || '',
+              verbosity: vp.verbosity || '',
+              emoji_usage: vp.emoji_usage || '',
+              style_prompt: vp.style_prompt || '',
+              topics_of_interest: Array.isArray(vp.topics_of_interest) ? vp.topics_of_interest : [],
+              signature_templates: Array.isArray(vp.signature_templates) ? vp.signature_templates : [],
+              do_list: Array.isArray(vp.do_list) ? vp.do_list : [],
+              dont_list: Array.isArray(vp.dont_list) ? vp.dont_list : [],
+              greetings: Array.isArray(vp.digital_comm?.greetings) ? vp.digital_comm.greetings : [],
+              typical_endings: Array.isArray(vp.digital_comm?.typical_endings) ? vp.digital_comm.typical_endings : [],
+              signature_phrases: (Array.isArray(vp.signature_phrases) ? vp.signature_phrases : []).map((p: any) => (typeof p === 'string' ? p : p?.text)).filter(Boolean),
+              dt_config: {
+                persona: vp.dt_config?.persona || {},
+                dynamic_filters: {
+                  sub_personalities: vp.dt_config?.dynamic_filters?.sub_personalities || {},
+                  trauma_response: vp.dt_config?.dynamic_filters?.trauma_response || {},
+                  environment: vp.dt_config?.dynamic_filters?.environment || {},
+                },
+                decoding: vp.dt_config?.decoding || {},
+                generation_controls: vp.dt_config?.generation_controls || {},
+                anti_generic: vp.dt_config?.anti_generic || {},
+                style_metrics: vp.dt_config?.style_metrics || {},
+              },
+            });
+            hydratedRef.current = true;
+          } catch {}
           if (onUserUpdate) {
             onUserUpdate({
               ...user,
@@ -49,10 +106,12 @@ export const DigitalTwinPanel: React.FC<DigitalTwinPanelProps> = ({
   useEffect(() => {
     if (!lastMessage) return;
     const ts = new Date().toLocaleTimeString();
-    setLogs((prev) => [
-      `[${ts}] ${lastMessage.event}: ${JSON.stringify(lastMessage.data)}`,
-      ...prev
-    ].slice(0, 50));
+    const line = (label:string, data:any) => `[${ts}] ${label}: ${JSON.stringify(data)}`;
+    if (lastMessage.event === 'new_ai_draft') {
+      setDraftLogs((prev)=>[line('new_ai_draft', lastMessage.data), ...prev].slice(0,150));
+    } else {
+      setLogs((prev) => [line(lastMessage.event, lastMessage.data), ...prev].slice(0, 100));
+    }
 
     if (lastMessage.event === 'vibe_profile_analyzing') {
       setIsAnalyzing(true);
@@ -276,16 +335,37 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
       greetings: Array.isArray(vp.digital_comm?.greetings) ? vp.digital_comm.greetings : [],
       typical_endings: Array.isArray(vp.digital_comm?.typical_endings) ? vp.digital_comm.typical_endings : [],
       signature_phrases: (Array.isArray(vp.signature_phrases) ? vp.signature_phrases : []).map((p: any) => (typeof p === 'string' ? p : p?.text)).filter(Boolean),
+      dt_config: {
+        persona: vp.dt_config?.persona || {},
+        dynamic_filters: {
+          sub_personalities: vp.dt_config?.dynamic_filters?.sub_personalities || {},
+          trauma_response: vp.dt_config?.dynamic_filters?.trauma_response || {},
+          environment: vp.dt_config?.dynamic_filters?.environment || {},
+        },
+        decoding: vp.dt_config?.decoding || {},
+        generation_controls: vp.dt_config?.generation_controls || {},
+        anti_generic: vp.dt_config?.anti_generic || {},
+        style_metrics: vp.dt_config?.style_metrics || {},
+      },
     });
     setEditMode(true);
   };
 
   const saveEdits = async () => {
     try {
-      const res = await userService.updateMyAIProfile(draftEdit, initDataRaw);
+      setIsSaving(true);
+      const payload: any = { ...draftEdit };
+      if (payload.dt_config && payload.dt_config.dynamic_filters) {
+        const df = payload.dt_config.dynamic_filters as any;
+        delete (df as any).hd_profile;
+      }
+      if (payload.dt_config) {
+        delete (payload.dt_config as any).astro_axis;
+      }
+      const res = await userService.updateMyAIProfile(payload, initDataRaw);
       if (res.success) {
         setAiProfile(res.data);
-        setEditMode(false);
+        setLastSavedAt(Date.now());
         // reflect in badge/time
         if (onUserUpdate) {
           onUserUpdate({
@@ -298,10 +378,10 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
       }
     } catch (e) {
       console.error('Failed to save AI profile edits', e);
-    }
+    } finally { setIsSaving(false); }
   };
 
-  const TagInput = ({ label, value, onChange }: { label: string; value: string[]; onChange: (v: string[]) => void }) => {
+  const TagInput = ({ label, value, onChange, placeholder }: { label: string; value: string[]; onChange: (v: string[]) => void; placeholder?: string }) => {
     const [text, setText] = useState('');
     const add = () => {
       const v = text.trim();
@@ -322,12 +402,26 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
           ))}
         </div>
         <div className="flex gap-2">
-          <input className="input input-bordered input-sm flex-1" value={text} onChange={(e) => setText(e.target.value)} placeholder="Add item" />
+          <input className="input input-bordered input-sm flex-1" value={text} onChange={(e) => setText(e.target.value)} placeholder={placeholder || "Add item"} />
           <button className="btn btn-sm" onClick={add}>Добавить</button>
         </div>
       </div>
     );
   };
+
+  const InfoTip: React.FC<{ text: string; side?: 'left'|'right'|'top'|'bottom' }> = ({ text, side = 'right' }) => (
+    <span className={`tooltip tooltip-${side}`} data-tip={text} aria-label={text}>
+      <span className="badge badge-ghost badge-xs cursor-help select-none">i</span>
+    </span>
+  );
+
+  // Global debounced autosave when any draftEdit field changes (after initial hydrate)
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    const h = setTimeout(() => { saveEdits(); }, 1000);
+    return () => clearTimeout(h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftEdit]);
 
   return (
     <div className="card bg-base-100 shadow-xl">
@@ -366,9 +460,17 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
             )}
           </div>
 
-          {/* Debug Logs */}
+          {/* AI Drafts Logs */}
           <details className="collapse collapse-arrow bg-base-200">
-            <summary className="collapse-title text-sm">Debug Logs</summary>
+            <summary className="collapse-title text-sm">AI Drafts Generation Logs</summary>
+            <div className="collapse-content">
+              <pre className="text-xs whitespace-pre-wrap max-h-64 overflow-auto">{draftLogs.join('\n') || 'No drafts yet'}</pre>
+            </div>
+          </details>
+
+          {/* DT Debug Logs */}
+          <details className="collapse collapse-arrow bg-base-200">
+            <summary className="collapse-title text-sm">Digital Twin Analysis Logs</summary>
             <div className="collapse-content">
               <pre className="text-xs whitespace-pre-wrap max-h-64 overflow-auto">
                 {logs.join('\n') || 'No events yet'}
@@ -379,65 +481,287 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
           {/* AI Profile Summary */}
           <div className="flex justify-between items-center">
             <h3 className="font-semibold">Профиль ИИ</h3>
-            {aiProfile?.analysis_status === 'COMPLETED' && (
-              <button className="btn btn-sm" onClick={onEditToggle}>
-                {editMode ? 'Отмена' : 'Редактировать'}
-              </button>
-            )}
+            <div className="text-xs opacity-60">
+              {isSaving ? 'Сохранение…' : lastSavedAt ? `Сохранено: ${new Date(lastSavedAt).toLocaleTimeString()}` : ''}
+            </div>
           </div>
-          {!editMode ? (
-            <ProfileSummary />
-          ) : (
+          {
             <div className="card bg-base-200">
               <div className="card-body grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Suggestions header */}
+                <div className="md:col-span-2">
+                  <div className="alert alert-info text-sm">
+                    <div>
+                      <strong>Подсказки:</strong> добавьте в лексикон системные слова (паттерн, динамика), психологию (тень, проекция), прямой язык (разъеб). В Anti-Generic держите stop_phrases: ["погнали","давай сделаем","интересно,"] и включите anchors.require_min=1.
+                  </div>
+                  </div>
+                </div>
                 <div>
                   <div className="label text-sm opacity-70 mb-1">Имя персоны</div>
                   <input className="input input-bordered w-full" value={draftEdit.persona_name || ''} onChange={(e)=>setDraftEdit({...draftEdit, persona_name: e.target.value})} />
                 </div>
                 <div>
                   <div className="label text-sm opacity-70 mb-1">Тон</div>
-                  <input className="input input-bordered w-full" value={draftEdit.tone || ''} onChange={(e)=>setDraftEdit({...draftEdit, tone: e.target.value})} />
+                  <input className="input input-bordered w-full" value={draftEdit.tone || ''} onChange={(e)=>{ setDraftEdit({...draftEdit, tone: e.target.value}); if (hydratedRef.current) { const h = setTimeout(() => saveEdits(), 1200); (saveEdits as any)._t && clearTimeout((saveEdits as any)._t); (saveEdits as any)._t = h; } }} />
                 </div>
                 <div>
                   <div className="label text-sm opacity-70 mb-1">Детальность</div>
-                  <input className="input input-bordered w-full" value={draftEdit.verbosity || ''} onChange={(e)=>setDraftEdit({...draftEdit, verbosity: e.target.value})} />
+                  <input className="input input-bordered w-full" value={draftEdit.verbosity || ''} onChange={(e)=>{ setDraftEdit({...draftEdit, verbosity: e.target.value}); if (hydratedRef.current) { const h = setTimeout(() => saveEdits(), 1200); (saveEdits as any)._t && clearTimeout((saveEdits as any)._t); (saveEdits as any)._t = h; } }} />
                 </div>
                 <div>
                   <div className="label text-sm opacity-70 mb-1">Эмодзи</div>
-                  <input className="input input-bordered w-full" value={draftEdit.emoji_usage || ''} onChange={(e)=>setDraftEdit({...draftEdit, emoji_usage: e.target.value})} />
+                  <input className="input input-bordered w-full" value={draftEdit.emoji_usage || ''} onChange={(e)=>{ setDraftEdit({...draftEdit, emoji_usage: e.target.value}); if (hydratedRef.current) { const h = setTimeout(() => saveEdits(), 1200); (saveEdits as any)._t && clearTimeout((saveEdits as any)._t); (saveEdits as any)._t = h; } }} />
                 </div>
                 <div className="md:col-span-2">
                   <div className="label text-sm opacity-70 mb-1">Как AI будет писать черновики</div>
-                  <textarea className="textarea textarea-bordered w-full min-h-24" value={draftEdit.style_prompt || ''} onChange={(e)=>setDraftEdit({...draftEdit, style_prompt: e.target.value})} />
+                  <textarea className="textarea textarea-bordered w-full min-h-24" value={draftEdit.style_prompt || ''} onChange={(e)=>{ setDraftEdit({...draftEdit, style_prompt: e.target.value}); if (hydratedRef.current) { const h = setTimeout(() => saveEdits(), 1200); (saveEdits as any)._t && clearTimeout((saveEdits as any)._t); (saveEdits as any)._t = h; } }} />
                 </div>
                 <div className="md:col-span-2">
-                  <TagInput label="Темы интересов" value={draftEdit.topics_of_interest || []} onChange={(v)=>setDraftEdit({...draftEdit, topics_of_interest: v})} />
+                  <TagInput label="Темы интересов" value={draftEdit.topics_of_interest || []} onChange={(v)=>{ setDraftEdit((prev:any)=> ({...prev, topics_of_interest: v})); }} />
                 </div>
                 <div className="md:col-span-2">
-                  <TagInput label="Шаблоны формулировок" value={draftEdit.signature_templates || []} onChange={(v)=>setDraftEdit({...draftEdit, signature_templates: v})} />
+                  <TagInput label="Шаблоны формулировок" value={draftEdit.signature_templates || []} onChange={(v)=>{ setDraftEdit((prev:any)=> ({...prev, signature_templates: v})); }} />
                 </div>
                 <div>
-                  <TagInput label="Делать" value={draftEdit.do_list || []} onChange={(v)=>setDraftEdit({...draftEdit, do_list: v})} />
+                  <TagInput label="Делать" value={draftEdit.do_list || []} onChange={(v)=>{ setDraftEdit((prev:any)=> ({...prev, do_list: v})); }} />
                 </div>
                 <div>
-                  <TagInput label="Не делать" value={draftEdit.dont_list || []} onChange={(v)=>setDraftEdit({...draftEdit, dont_list: v})} />
+                  <TagInput label="Не делать" value={draftEdit.dont_list || []} onChange={(v)=>{ setDraftEdit((prev:any)=> ({...prev, dont_list: v})); }} />
                 </div>
                 <div>
-                  <TagInput label="Приветствия" value={draftEdit.greetings || []} onChange={(v)=>setDraftEdit({...draftEdit, greetings: v})} />
+                  <TagInput label="Приветствия" value={draftEdit.greetings || []} onChange={(v)=>{ setDraftEdit((prev:any)=> ({...prev, greetings: v})); }} />
                 </div>
                 <div>
-                  <TagInput label="Типичные окончания" value={draftEdit.typical_endings || []} onChange={(v)=>setDraftEdit({...draftEdit, typical_endings: v})} />
+                  <TagInput label="Типичные окончания" value={draftEdit.typical_endings || []} onChange={(v)=>{ setDraftEdit((prev:any)=> ({...prev, typical_endings: v})); }} />
                 </div>
                 <div className="md:col-span-2">
-                  <TagInput label="Фирменные фразы" value={draftEdit.signature_phrases || []} onChange={(v)=>setDraftEdit({...draftEdit, signature_phrases: v})} />
+                  <TagInput label="Фирменные фразы" value={draftEdit.signature_phrases || []} onChange={(v)=>{ setDraftEdit((prev:any)=> ({...prev, signature_phrases: v})); }} />
+                </div>
+                {/* DT Config editable subset – tag-based */}
+                <div className="md:col-span-2">
+                  <h4 className="font-semibold mt-2">Digital Twin – Персона</h4>
+                  <div className="label text-sm opacity-70 mb-1">Core Archetype</div>
+                  <input className="input input-bordered w-full mb-2" value={draftEdit.dt_config?.persona?.core_archetype || ''} onChange={(e)=>{ setDraftEdit({...draftEdit, dt_config:{...draftEdit.dt_config, persona:{...(draftEdit.dt_config?.persona||{}), core_archetype:e.target.value}}}); if (hydratedRef.current) { const h = setTimeout(() => saveEdits(), 1200); (saveEdits as any)._t && clearTimeout((saveEdits as any)._t); (saveEdits as any)._t = h; } }} />
+                  <div className="label text-sm opacity-70 mb-1">Talents</div>
+                  <TagInput label="" value={(draftEdit.dt_config?.persona?.talents||[])} onChange={(v)=>{ setDraftEdit((prev:any)=> ({...prev, dt_config:{...prev.dt_config, persona:{...(prev.dt_config?.persona||{}), talents:v}}})); }} />
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
+                    <div>
+                      <div className="label text-sm opacity-70 mb-1">Lexicon: system</div>
+                      <TagInput label="" value={((draftEdit.dt_config?.persona?.voice?.lexicon?.system)||[])} onChange={(v)=>{
+                        setDraftEdit((prev:any)=>{
+                          const next = JSON.parse(JSON.stringify(prev));
+                          ensurePath(next,["dt_config","persona","voice","lexicon"],{});
+                          next.dt_config.persona.voice.lexicon.system = v;
+                          return next;
+                        });
+                      }} />
+                    </div>
+                    <div>
+                      <div className="label text-sm opacity-70 mb-1">Lexicon: psychology</div>
+                      <TagInput label="" value={((draftEdit.dt_config?.persona?.voice?.lexicon?.psychology)||[])} onChange={(v)=>{
+                        setDraftEdit((prev:any)=>{
+                          const next = JSON.parse(JSON.stringify(prev));
+                          ensurePath(next,["dt_config","persona","voice","lexicon"],{});
+                          next.dt_config.persona.voice.lexicon.psychology = v;
+                          return next;
+                        });
+                      }} />
+                    </div>
+                    <div>
+                      <div className="label text-sm opacity-70 mb-1">Lexicon: direct</div>
+                      <TagInput label="" value={((draftEdit.dt_config?.persona?.voice?.lexicon?.direct)||[])} onChange={(v)=>{
+                        setDraftEdit((prev:any)=>{
+                          const next = JSON.parse(JSON.stringify(prev));
+                          ensurePath(next,["dt_config","persona","voice","lexicon"],{});
+                          next.dt_config.persona.voice.lexicon.direct = v;
+                          return next;
+                        });
+                      }} />
+                    </div>
+                    <div>
+                      <div className="label text-sm opacity-70 mb-1">Banned starters</div>
+                      <TagInput label="" value={((draftEdit.dt_config?.persona?.voice?.lexicon?.banned_starters)||[])} onChange={(v)=>{
+                        setDraftEdit((prev:any)=>{
+                          const next = JSON.parse(JSON.stringify(prev));
+                          ensurePath(next,["dt_config","persona","voice","lexicon"],{});
+                          next.dt_config.persona.voice.lexicon.banned_starters = v;
+                          return next;
+                        });
+                      }} />
+                    </div>
+                  </div>
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-sm opacity-70">Advanced (values JSON)</summary>
+                    <textarea className="textarea textarea-bordered w-full min-h-20 mt-2" value={JSON.stringify(draftEdit.dt_config?.persona?.values || {}, null, 2)} onChange={(e)=>{ try { const v = JSON.parse(e.target.value||'{}'); setDraftEdit({...draftEdit, dt_config:{...draftEdit.dt_config, persona:{...(draftEdit.dt_config?.persona||{}), values:v}}}); if (hydratedRef.current) { const h = setTimeout(() => saveEdits(), 1200); (saveEdits as any)._t && clearTimeout((saveEdits as any)._t); (saveEdits as any)._t = h; } } catch {} }} />
+                  </details>
+                </div>
+
+                <div className="md:col-span-2">
+                  <h4 className="font-semibold mt-2">Sub‑personas (who speaks in which context)</h4>
+                  <SubPersonaPanel
+                    personas={draftEdit?.dt_config?.dynamic_filters?.sub_personalities || {}}
+                    onChange={(next)=>{
+                      setDraftEdit((prev:any)=>{
+                        const copy = JSON.parse(JSON.stringify(prev||{}));
+                        ensurePath(copy,["dt_config","dynamic_filters"],{});
+                        copy.dt_config.dynamic_filters.sub_personalities = next;
+                        return copy;
+                      })
+                    }}
+                    onPreview={async (text:string)=>{
+                      try { const res = await userService.subPersonaClassifyPreview(text, initDataRaw); return res.success ? (res.data as any) : null; } catch { return null; }
+                    }}
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <h4 className="font-semibold mt-2">Digital Twin – Генерация</h4>
+                  <div className="label text-sm opacity-70 mb-1 flex items-center gap-2">Anti-Generic: Stop phrases <InfoTip text="Если черновик начинается с любого из этих выражений — мы вырежем или перегенерим. Борется с шаблонностью (например, ‘погнали’, ‘давай сделаем’)." /></div>
+                  <TagInput label="" value={((draftEdit.dt_config?.anti_generic?.stop_phrases)||[])} onChange={(v)=>{
+                    setDraftEdit((prev:any)=>{
+                      const next = JSON.parse(JSON.stringify(prev));
+                      ensurePath(next,["dt_config","anti_generic"],{});
+                      next.dt_config.anti_generic.stop_phrases = v;
+                      return next;
+                    });
+                  }} />
+                  <div className="label text-sm opacity-70 mb-1 mt-2 flex items-center gap-2">Anchors: types <InfoTip text="Что конкретно нужно процитировать из поста минимум один раз (claim/number/named entity/quote fragment). Заземляет комментарий в исходном тексте." /></div>
+                  <TagInput label="" value={((draftEdit.dt_config?.generation_controls?.anchors?.types)||[])} onChange={(v)=>{
+                    setDraftEdit((prev:any)=>{
+                      const next = JSON.parse(JSON.stringify(prev));
+                      ensurePath(next,["dt_config","generation_controls","anchors"],{});
+                      next.dt_config.generation_controls.anchors.types = v;
+                      return next;
+                    });
+                  }} />
+                  <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="card bg-base-100">
+                      <div className="card-body gap-3">
+                        <div className="flex items-center gap-2"><h5 className="font-semibold text-sm">Decoding</h5><InfoTip text="Контролирует разнообразие и риск: чем выше Temperature и Top‑P, тем дерзче формулировки и шире выбор слов." /></div>
+                        <label className="label-text text-xs flex items-center gap-2">Temperature <InfoTip text="0.0 — максимально предсказуемо, 1.0 — свободно и рискованно." /></label>
+                        <input type="range" min={0} max={1} step={0.01} className="range range-xs"
+                          value={Number(draftEdit.dt_config?.decoding?.temperature ?? 0.4)}
+                          onChange={(e)=>{
+                            const val = Number(e.target.value);
+                            const next = JSON.parse(JSON.stringify(draftEdit||{}));
+                            ensurePath(next,["dt_config","decoding"],{});
+                            next.dt_config.decoding.temperature = val;
+                            setDraftEdit(next);
+                          }} />
+                        <label className="label-text text-xs flex items-center gap-2">Top P <InfoTip text="Сэмплинг по вероятностной массе. Меньше — сдержаннее, больше — разнообразнее." /></label>
+                        <input type="range" min={0} max={1} step={0.01} className="range range-xs"
+                          value={Number(draftEdit.dt_config?.decoding?.top_p ?? 0.9)}
+                          onChange={(e)=>{
+                            const val = Number(e.target.value);
+                            const next = JSON.parse(JSON.stringify(draftEdit||{}));
+                            ensurePath(next,["dt_config","decoding"],{});
+                            next.dt_config.decoding.top_p = val;
+                            setDraftEdit(next);
+                          }} />
+                        <label className="label cursor-pointer justify-start gap-2 text-xs">
+                          <input type="checkbox" className="toggle toggle-xs"
+                            checked={Boolean(draftEdit.dt_config?.anti_generic?.ban_openers ?? true)}
+                            onChange={(e)=>{
+                              const next = JSON.parse(JSON.stringify(draftEdit||{}));
+                              ensurePath(next,["dt_config","anti_generic"],{});
+                              next.dt_config.anti_generic.ban_openers = e.target.checked;
+                              setDraftEdit(next);
+                            }} />
+                          <span className="flex items-center gap-2">Ban generic openers <InfoTip text="Режет типовые вступления типа ‘погнали/давай сделаем’." /></span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="card bg-base-100">
+                      <div className="card-body gap-3">
+                        <div className="flex items-center gap-2"><h5 className="font-semibold text-sm">Generation</h5><InfoTip text="Сколько вариантов генерировать и как звучать: длина, доля вопросов, структура." /></div>
+                        <label className="label-text text-xs flex items-center gap-2">Candidates <InfoTip text="Количество альтернатив на один пост. Больше — дороже и дольше." /></label>
+                        <input type="number" min={1} max={3} className="input input-bordered input-xs w-24"
+                          value={Number(draftEdit.dt_config?.generation_controls?.num_candidates ?? 1)}
+                          onChange={(e)=>{
+                            const val = Math.max(1, Math.min(3, Number(e.target.value||1)));
+                            const next = JSON.parse(JSON.stringify(draftEdit||{}));
+                            ensurePath(next,["dt_config","generation_controls"],{});
+                            next.dt_config.generation_controls.num_candidates = val;
+                            setDraftEdit(next);
+                          }} />
+                        <label className="label-text text-xs flex items-center gap-2">Length (min–max chars) <InfoTip text="Целевой коридор длины комментария. Слишком длинные будут подрезаны." /></label>
+                        <div className="flex items-center gap-2">
+                          <input type="number" className="input input-bordered input-xs w-20" placeholder="80"
+                            value={Number((draftEdit.dt_config?.generation_controls?.length?.char_target||[80,180])[0])}
+                            onChange={(e)=>{
+                              const val = Number(e.target.value||80);
+                              const next = JSON.parse(JSON.stringify(draftEdit||{}));
+                              ensurePath(next,["dt_config","generation_controls","length"],{});
+                              const cur = next.dt_config.generation_controls.length.char_target || [80,180];
+                              cur[0] = val; next.dt_config.generation_controls.length.char_target = cur; setDraftEdit(next);
+                            }} />
+                          <span className="text-xs">—</span>
+                          <input type="number" className="input input-bordered input-xs w-20" placeholder="180"
+                            value={Number((draftEdit.dt_config?.generation_controls?.length?.char_target||[80,180])[1])}
+                            onChange={(e)=>{
+                              const val = Number(e.target.value||180);
+                              const next = JSON.parse(JSON.stringify(draftEdit||{}));
+                              ensurePath(next,["dt_config","generation_controls","length"],{});
+                              const cur = next.dt_config.generation_controls.length.char_target || [80,180];
+                              cur[1] = val; next.dt_config.generation_controls.length.char_target = cur; setDraftEdit(next);
+                            }} />
+                        </div>
+                        <label className="label-text text-xs flex items-center gap-2">Question ratio target <InfoTip text="Как часто заканчивать вопросом. Полезно для провокации диалога." /></label>
+                        <input type="range" min={0} max={1} step={0.05} className="range range-xs"
+                          value={Number(draftEdit.dt_config?.generation_controls?.rhetoric?.question_ratio_target ?? 0.6)}
+                          onChange={(e)=>{
+                            const val = Number(e.target.value);
+                            const next = JSON.parse(JSON.stringify(draftEdit||{}));
+                            ensurePath(next,["dt_config","generation_controls","rhetoric"],{});
+                            next.dt_config.generation_controls.rhetoric.question_ratio_target = val;
+                            setDraftEdit(next);
+                          }} />
+                      </div>
+                    </div>
+
+                    <div className="card bg-base-100">
+                      <div className="card-body gap-3">
+                        <div className="flex items-center gap-2"><h5 className="font-semibold text-sm">Style metrics</h5><InfoTip text="Ограничители стиля: эмодзи, восклицания, формальность. Держим ровный, точный тон." /></div>
+                        <label className="label-text text-xs flex items-center gap-2">Max emoji ratio <InfoTip text="Максимальная доля эмодзи в тексте. Держим минимально, чтобы не казаться пластиком." /></label>
+                        <input type="range" min={0} max={0.2} step={0.005} className="range range-xs"
+                          value={Number(draftEdit.dt_config?.style_metrics?.emoji_cap_ratio ?? 0.02)}
+                          onChange={(e)=>{
+                            const next = JSON.parse(JSON.stringify(draftEdit||{}));
+                            ensurePath(next,["dt_config","style_metrics"],{});
+                            next.dt_config.style_metrics.emoji_cap_ratio = Number(e.target.value);
+                            setDraftEdit(next);
+                          }} />
+                        <label className="label-text text-xs flex items-center gap-2">Allow exclamation <InfoTip text="Сколько восклицаний допустимо. 0 — без истерик, 1–3 — точечные акценты." /></label>
+                        <input type="range" min={0} max={3} step={1} className="range range-xs"
+                          value={Number(draftEdit.dt_config?.style_metrics?.punctuation?.allow_exclaim ?? 0)}
+                          onChange={(e)=>{
+                            const next = JSON.parse(JSON.stringify(draftEdit||{}));
+                            ensurePath(next,["dt_config","style_metrics","punctuation"],{});
+                            next.dt_config.style_metrics.punctuation.allow_exclaim = Number(e.target.value);
+                            setDraftEdit(next);
+                          }} />
+                        <label className="label cursor-pointer justify-start gap-2 text-xs">
+                          <input type="checkbox" className="toggle toggle-xs"
+                            checked={Boolean(draftEdit.dt_config?.anti_generic?.reroll_if_banned ?? true)}
+                            onChange={(e)=>{
+                              const next = JSON.parse(JSON.stringify(draftEdit||{}));
+                              ensurePath(next,["dt_config","anti_generic"],{});
+                              next.dt_config.anti_generic.reroll_if_banned = e.target.checked;
+                              setDraftEdit(next);
+                            }} />
+                          <span className="flex items-center gap-2">Re‑roll if banned <InfoTip text="Если старт попадает в стоп‑фразу — автоматически перегенерируем." /></span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 <div className="md:col-span-2 flex justify-end gap-2">
-                  <button className="btn" onClick={()=>setEditMode(false)}>Отмена</button>
-                  <button className="btn btn-primary" onClick={saveEdits}>Сохранить</button>
+                  <button className={`btn btn-primary ${isSaving ? 'loading' : ''}`} onClick={saveEdits} disabled={isSaving}>Сохранить</button>
                 </div>
               </div>
             </div>
-          )}
+          }
 
           {/* Style Description */}
           {user.persona_style_description && (
@@ -475,6 +799,30 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
             >
               {isAnalyzing ? 'Анализирую...' : '🔍 Анализировать Контекст'}
             </button>
+          </div>
+
+          {/* Sub-persona Test */}
+          <div className="card bg-base-200">
+            <div className="card-body gap-2">
+              <div className="flex items-center justify-between">
+                <h4 className="font-semibold">Test activation</h4>
+                {previewResult && (
+                  <div className="text-xs opacity-70">{`Persona: ${previewResult.persona || '—'} | Score: ${previewResult.score} (sem ${previewResult.semantic}, kw ${previewResult.keywords})`}</div>
+                )}
+              </div>
+              <textarea className="textarea textarea-bordered w-full min-h-24" placeholder="Вставьте пост сюда" value={previewText} onChange={(e)=>setPreviewText(e.target.value)} />
+              <div className="flex gap-2 justify-end">
+                <button className="btn btn-sm" onClick={async ()=>{
+                  try {
+                    const res = await userService.subPersonaClassifyPreview(previewText, initDataRaw);
+                    if (res.success) {
+                      const d:any = res.data;
+                      setPreviewResult({ persona: d.persona, score: d.score, semantic: d.breakdown?.semantic || 0, keywords: d.breakdown?.keywords || 0 });
+                    }
+                  } catch {}
+                }}>Проверить</button>
+              </div>
+            </div>
           </div>
 
           {/* Results */}

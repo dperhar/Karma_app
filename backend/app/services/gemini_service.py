@@ -147,6 +147,8 @@ class GeminiService:
                     "generationConfig": {
                         "temperature": temperature,
                         "maxOutputTokens": max_output_tokens,
+                        # Hint Gemini REST to return strict JSON
+                        "responseMimeType": "application/json",
                     },
                 }
                 # Route selection: Google uses models/*:generateContent, some proxies expose OpenAI-like /chat/completions

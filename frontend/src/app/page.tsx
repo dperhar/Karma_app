@@ -380,7 +380,11 @@ export default function Home() {
               <div key={`postonly-${post.id}`} className="card tg-post border border-white/10">
                 <div className="card-body">
                   <div className="mb-2 text-sm text-muted-foreground">{post.channel?.title || 'Channel'} · {new Date(post.date).toLocaleString()}</div>
-                  <div className="mb-3 whitespace-pre-wrap text-sm">{post.text || 'Media post'}</div>
+                  {post.media_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={post.media_url} alt="post media" className="mb-3 max-h-96 w-auto rounded" />
+                  ) : null}
+                  <div className="mb-3 whitespace-pre-wrap text-sm">{post.text || (post.media_url ? 'Media post' : 'Media post')}</div>
                   <div className="flex justify-end">
                     <button
                       className="btn btn-sm btn-outline"

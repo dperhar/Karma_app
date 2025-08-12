@@ -1,7 +1,7 @@
 """API routes for the user feed."""
 
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.dependencies import get_current_user
 from app.schemas.base import APIResponse
@@ -18,6 +18,7 @@ def get_feed_service() -> FeedService:
 
 @router.get("", response_model=APIResponse[FeedResponse])
 async def get_feed(
+    request: Request,
     current_user=Depends(get_current_user),
     feed_service: FeedService = Depends(get_feed_service),
     page: int = Query(1, ge=1, description="Page number starting from 1"),
@@ -46,4 +47,15 @@ async def get_feed(
         offset=offset,
         source=source_norm,
     )
+    # Prefix media_url with backend origin so frontend can load from port 8000
+    try:
+        base_origin = f"{request.url.scheme}://{request.headers.get('host')}"
+        for p in getattr(feed, 'posts', []) or []:
+            if getattr(p, 'media_url', None) and not str(p.media_url).startswith(('http://', 'https://')):
+                url = str(p.media_url)
+                if not url.startswith('/'):
+                    url = '/' + url
+                p.media_url = base_origin + url
+    except Exception:
+        pass
     return APIResponse(success=True, data=feed, message="Feed retrieved successfully") 

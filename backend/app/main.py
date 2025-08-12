@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
@@ -174,6 +175,35 @@ if not IS_DEVELOP:
     app.add_middleware(HTTPSRedirectMiddleware)
 app.add_middleware(AuthenticationMiddleware)
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+
+# Serve static files (avatars) and media (downloaded photos)
+try:
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+except Exception as _e_static:
+    logger.debug("Static mount skipped: %s", _e_static)
+
+try:
+    import os
+    os.makedirs("logs/media", exist_ok=True)
+    app.mount("/media", StaticFiles(directory="logs/media"), name="media")
+except Exception as _e_media:
+    logger.debug("Media mount skipped: %s", _e_media)
+
+# Ensure media responses include appropriate CORS headers for the frontend origin
+@app.middleware("http")
+async def add_media_cors_headers(request, call_next):
+    response = await call_next(request)
+    try:
+        path = str(request.url.path)
+        if path.startswith("/media/"):
+            origin = request.headers.get("origin")
+            # Be permissive for media in development to avoid blocked images
+            response.headers["Access-Control-Allow-Origin"] = origin or "*"
+            if origin:
+                response.headers["Vary"] = "Origin"
+    except Exception:
+        pass
+    return response
 
 # Health check endpoint
 @app.get("/")

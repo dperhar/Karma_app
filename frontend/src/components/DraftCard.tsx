@@ -67,6 +67,10 @@ export function DraftCard(props: DraftCardProps) {
               <span>{new Date(post.date).toLocaleString()}</span>
               {typeof post.replies === 'number' && <span className="ml-auto">Replies: {post.replies}</span>}
             </div>
+            {post.media_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={post.media_url as any} alt="post media" className="mb-3 max-h-96 w-auto rounded" />
+            ) : null}
             <p className="text-sm whitespace-pre-wrap">{post.text}</p>
             {Array.isArray(post.reactions) && post.reactions.length > 0 && (
               <div className="mt-2 tg-reactions flex flex-wrap gap-2 opacity-80">

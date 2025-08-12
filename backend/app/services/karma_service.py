@@ -13,6 +13,7 @@ from app.services.base_service import BaseService
 from app.services.gemini_service import GeminiService
 from app.services.langchain_service import LangChainService
 from app.services.telegram_service import TelegramService
+from app.services.redis_service import RedisService
 from app.repositories.draft_comment_repository import DraftCommentRepository
 from app.repositories.user_repository import UserRepository
 from app.services.domain.websocket_service import WebSocketService
@@ -37,6 +38,7 @@ class KarmaService(BaseService):
         self.langchain_service = langchain_service
         self.telegram_service = telegram_service
         self.websocket_service = websocket_service
+        self.redis_service = RedisService()
 
     async def generate_draft_comment(
         self,
@@ -63,6 +65,19 @@ class KarmaService(BaseService):
                 self.logger.error(f"User not found: {user_id}")
                 return None
 
+            # Ensure we default to Gemini 2.5 Pro unless explicitly set otherwise
+            try:
+                preferred_value = str(getattr(getattr(user, "preferred_ai_model", None), "value", "") or "")
+                if not preferred_value or "gemini" not in preferred_value.lower():
+                    from app.models.ai_request import AIRequestModel
+                    updated = await self.user_repository.update_user(
+                        user.id, preferred_ai_model=AIRequestModel.GEMINI_2_5_PRO
+                    )
+                    if updated:
+                        user = updated
+            except Exception:
+                pass
+
             # Check if post is relevant to persona interests
             if not self._is_post_relevant(post_data, user):
                 self.logger.info(f"Post not relevant to persona interests: {post_data.get('text', '')[:100]}")
@@ -73,18 +88,47 @@ class KarmaService(BaseService):
             if not draft_text:
                 self.logger.error("Failed to generate AI comment")
                 return None
+            # Final guard to remove generic openers (defensive)
+            try:
+                from app.tasks.tasks import _strip_generic_openers
+                dom_lang = "ru"
+                try:
+                    dom_lang = (getattr(user, "ai_profile", None).vibe_profile_json or {}).get("dominant_language", "ru")
+                except Exception:
+                    pass
+                draft_text = _strip_generic_openers(
+                    draft_text,
+                    original_post=post_data.get("text") or post_data.get("original_post_content"),
+                    lang=dom_lang,
+                )
+            except Exception:
+                pass
 
             # Create draft comment
+            # Resolve model used string for record; force-align to Gemini 2.5 Pro if user pref missing
+            model_used = (
+                str(getattr(getattr(user, "preferred_ai_model", None), "value", "") or "")
+            )
+            if "gemini" not in model_used:
+                try:
+                    from app.models.ai_request import AIRequestModel
+                    updated = await self.user_repository.update_user(
+                        user.id, preferred_ai_model=AIRequestModel.GEMINI_2_5_PRO
+                    )
+                    model_used = str(getattr(getattr(updated, "preferred_ai_model", None), "value", "gemini-2.5-pro") or "gemini-2.5-pro")
+                except Exception:
+                    model_used = "gemini-2.5-pro"
+
             draft_data = DraftCommentCreate(
                 original_message_id=original_message_id,
                 user_id=user.id,
                 status="draft",
-                ai_model_used=str(user.preferred_ai_model.value) if user.preferred_ai_model else "gemini-pro",
+                ai_model_used=model_used,
                 original_post_text_preview=post_data.get('text', '')[:500],
                 draft_text=draft_text,
                 ai_context_summary=context_summary,
                 generation_params={
-                    "model": str(user.preferred_ai_model.value) if user.preferred_ai_model else "gemini-pro",
+                    "model": model_used,
                     "persona_name": user.persona_name,
                     "post_channel": post_data.get('channel', {}).get('title', 'Unknown'),
                     "generated_at": datetime.now().isoformat()
@@ -399,7 +443,7 @@ class KarmaService(BaseService):
             )
 
             # Use preferred AI model
-            if user.preferred_ai_model == AIRequestModel.GEMINI_PRO:
+            if user.preferred_ai_model == AIRequestModel.GEMINI_2_5_PRO:
                 result = await self.gemini_service.generate_text(prompt)
                 return result.get('text') if result.get('success') else None
             else:
@@ -526,8 +570,55 @@ class KarmaService(BaseService):
                         context_summary = content_json.get('context_summary')
                         return draft_text, context_summary
                     except (json.JSONDecodeError, TypeError):
-                        # Fallback for plain text response
-                        return response.get('content', ''), "Could not generate summary."
+                        # Strip code fences then retry
+                        content = (response.get('content') or '').strip()
+                        if content.startswith('```'):
+                            fence_end = content.rfind('```')
+                            if fence_end != -1:
+                                content = content.split('\n', 1)[-1][:fence_end].strip()
+                        try:
+                            content_json = json.loads(content)
+                            return content_json.get('comment_text'), content_json.get('context_summary')
+                        except Exception:
+                            # Fall through to rescue generation
+                            pass
+
+                # Rescue path: request plain text comment using style markers; avoid generic fillers
+                try:
+                    vp = (getattr(user, 'ai_profile', None).vibe_profile_json
+                          if getattr(user, 'ai_profile', None) else {})
+                    tone = vp.get('tone', 'по делу, лаконично')
+                    endings = (vp.get('digital_comm', {}) or {}).get('typical_endings', [])
+                    sig_phrases = [p.get('text') for p in (vp.get('signature_phrases') or []) if isinstance(p, dict) and p.get('text')]
+                    top_bigrams = (vp.get('ngrams', {}) or {}).get('bigrams', [])
+                    ban_starters = [
+                        'Погнали', 'Давай сделаем', 'Подписываюсь на апдейт',
+                        'Интересно,', 'Прикольно,', 'Ммм,'
+                    ]
+                    style_hint = f"Тон: {tone}. Избегай шаблонных фраз: {', '.join(ban_starters[:5])}. "
+                    if endings:
+                        style_hint += f"Предпочтительное окончание: {' / '.join(endings[:2])}. "
+                    if sig_phrases:
+                        style_hint += f"Можно использовать максимум 1 фирменную фразу, если органично: {', '.join(sig_phrases[:3])}. "
+                    if top_bigrams:
+                        style_hint += f"Характерные биграммы: {', '.join(top_bigrams[:3])}. "
+
+                    rescue_prompt = (
+                        "Сгенерируй короткий комментарий по-русски в моём стиле, конкретно к этому посту. "
+                        "Без воды, без общих слов. Одна строка, без кавычек и без markdown.\n\n"
+                        f"{style_hint}\n\nТЕКСТ ПОСТА:\n{post_data.get('text') or post_data.get('original_post_content') or ''}"
+                    )
+                    rescue_resp = await self.gemini_service.generate_text(rescue_prompt)
+                    if rescue_resp and rescue_resp.get('success'):
+                        text = (rescue_resp.get('text') or '').strip()
+                        # Basic anti-duplication on starters
+                        if any(text.startswith(s) for s in ban_starters):
+                            rescue_prompt += "\n\nНе используй эти начала: " + ", ".join(ban_starters)
+                            rescue_resp2 = await self.gemini_service.generate_text(rescue_prompt)
+                            text = (rescue_resp2.get('text') or text).strip()
+                        return text, None
+                except Exception:
+                    pass
                     
             # For testing/demo purposes, generate a mock response based on persona
             persona_name = user.persona_name or "Default User"
@@ -540,8 +631,8 @@ class KarmaService(BaseService):
                 import random
                 return random.choice(mock_comments), "This post is about the future of technology and the metaverse."
             else:
-                # Generic tech-savvy comment for other personas
-                return f"Interesting development! The technology landscape is evolving rapidly.", "A post about technology."
+                # Generic minimal fallback
+                return "Коротко и по делу.", ""
 
         except Exception as e:
             self.logger.error(f"Error generating AI comment: {e}", exc_info=True)
@@ -588,9 +679,14 @@ class KarmaService(BaseService):
             if user.persona_style_description:
                 prompt += f"Style: {user.persona_style_description}\n"
 
-        # Add post context
+        # Add post context (prefer full original content if provided)
         prompt += f"\n## Post to Comment On\n"
-        post_text = post_data.get('text', '')
+        post_text = (
+            post_data.get('original_post_content')
+            or post_data.get('text')
+            or post_data.get('original_post_text_preview')
+            or ''
+        )
         prompt += f"Post: {post_text}\n"
         
         if post_data.get('channel'):
@@ -601,18 +697,87 @@ class KarmaService(BaseService):
         if context_data:
             prompt += f"\n## Additional Context\n"
             if context_data.get('recent_messages'):
-                prompt += "Recent channel activity:\n"
-                for msg in context_data['recent_messages'][-3:]:  # Last 3 messages
-                    prompt += f"- {msg.get('text', '')[:100]}...\n"
+                # Expand to richer channel context but cap total size
+                prompt += "Recent channel activity (most recent first):\n"
+                lines = []
+                for msg in list(context_data['recent_messages'])[-12:][::-1]:
+                    t = (msg.get('text', '') or '')
+                    if not t:
+                        continue
+                    lines.append(f"- {t[:180]}")
+                # Cap to ~1500 tokens ≈ ~6000 chars
+                channel_blob = "\n".join(lines)
+                if len(channel_blob) > 6000:
+                    channel_blob = channel_blob[-6000:]
+                prompt += channel_blob + "\n"
+
+        # Post-specific anchors (force non-generic linkage)
+        import re as _re_local
+        anchors: list[str] = []
+        try:
+            numbers = list(set(_re_local.findall(r"\b\d+[\d\s.,]*\b", post_text)))[:3]
+            urls = list(set(_re_local.findall(r"https?://\S+", post_text)))[:2]
+            mentions = list(set(_re_local.findall(r"@[A-Za-z0-9_]+", post_text)))[:3]
+            # Key tokens (3-20 chars, letters only), frequency-based sample
+            toks = [t.lower() for t in _re_local.findall(r"[A-Za-zА-Яа-яЁё]{3,20}", post_text)]
+            from collections import Counter as _Ctr
+            common = [w for w, _ in _Ctr(toks).most_common(10) if w not in {"это","такой","также","очень","просто","снова","себя","если"}]
+            anchors = numbers + urls + mentions + common[:5]
+        except Exception:
+            anchors = []
+        if anchors:
+            prompt += f"\nAnchors from post (use at least one naturally): {', '.join(anchors[:6])}\n"
 
         # Instructions
         prompt += "\n## Instructions\n"
-        prompt += "Analyze the post and the user's vibe. Then, respond ONLY with a single JSON object with two keys:\n"
-        prompt += '1. "comment_text": A string containing a comment that matches the user\'s vibe, is relevant, and feels authentic.\n'
-        prompt += '2. "context_summary": A brief, neutral, one-sentence summary of what the post is about from the AI\'s perspective.\n\n'
-        prompt += "Your entire response must be a valid JSON object and nothing else.\n\n"
+        # Style guardrails from vibe profile
+        sig_phrases = []
+        endings = []
+        if user.ai_profile and user.ai_profile.vibe_profile_json:
+            vp = user.ai_profile.vibe_profile_json
+            try:
+                sig_phrases = [p.get('text') for p in (vp.get('signature_phrases') or []) if isinstance(p, dict) and p.get('text')]
+            except Exception:
+                sig_phrases = []
+            try:
+                # Respect user preference: no greetings/farewells used anywhere
+                dc = (vp.get('digital_comm') or {})
+                endings = dc.get('typical_endings') or []
+                if 'greetings' in dc:
+                    dc.pop('greetings', None)
+                if 'farewells' in dc:
+                    dc.pop('farewells', None)
+            except Exception:
+                endings = []
+
+        lang_pref = 'ru' if (user.ai_profile and (user.ai_profile.vibe_profile_json or {}).get('language_distribution', {}).get('ru_cyrillic', 0) > 0.5) else 'en'
+
+        prompt += (
+            "Write a single short comment that matches the user's vibe and is specific to THIS post. "
+            "Avoid generic fillers. Use the user's signature phrasing sparingly (only if natural). "
+            "Prefer the user's typical ending if provided. Keep it concise.\n"
+        )
+        if sig_phrases:
+            prompt += f"Potential signature phrases (use at most 1 and only if natural): {', '.join(sig_phrases[:5])}\n"
+        if endings:
+            prompt += f"Preferred endings: {', '.join(endings[:2])}\n"
+        if lang_pref == 'ru':
+            prompt += "Language: respond in Russian.\n"
+
+        # Anti-generic constraints
+        ban_starters = [
+            'Погнали', 'Давай сделаем', 'Подписываюсь на апдейт', 'Интересно,',
+            'Прикольно,', 'Ммм,', 'Круто.'
+        ]
+        prompt += "Avoid generic openings: " + ", ".join(ban_starters) + "\n"
+        prompt += "Keep length close to my average sentence length; prefer a single sentence.\n"
+
+        prompt += "Respond ONLY with a valid JSON object with two keys:\n"
+        prompt += '1. "comment_text": string — the final comment text.\n'
+        prompt += '2. "context_summary": string — one-sentence neutral summary of the post.\n\n'
+        prompt += "No code fences, no markdown.\n\n"
         prompt += "Example Response Format:\n"
-        prompt += '{\n  "comment_text": "This is a really insightful take on the future of AI!",\n  "context_summary": "The post discusses recent advancements in artificial intelligence."\n}'
+        prompt += '{\n  "comment_text": "Коротко по делу — классная мысль про фокус.",\n  "context_summary": "Пост о личном опыте и выводах из него."\n}'
         
         if user.ai_profile and user.ai_profile.vibe_profile_json:
             vibe_profile = user.ai_profile.vibe_profile_json
