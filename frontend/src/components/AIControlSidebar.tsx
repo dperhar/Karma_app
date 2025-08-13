@@ -8,8 +8,8 @@ type Option = { label: string; value: string };
 
 const MODELS: Option[] = [
   { label: 'Gemini 2.5 Pro', value: 'gemini-2.5-pro' },
-  { label: 'Gemini 1.5 Flash', value: 'gemini-1.5-flash' },
-  { label: 'Claude Opus 4', value: 'claude-opus-4' },
+  { label: 'Gemini 2.0 Flash Lite', value: 'gemini-2.0-flash-lite' },
+  { label: 'Gemini 1.5 Pro', value: 'gemini-1.5-pro' },
 ];
 
 export const AIControlSidebar: React.FC = () => {
@@ -75,6 +75,30 @@ export const AIControlSidebar: React.FC = () => {
               </option>
             ))}
           </select>
+        </div>
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Fallbacks</label>
+          <div className="flex gap-2">
+            <button
+              className={`px-2 py-1 rounded text-sm ${!(settings as any).enableFallbacks ? 'bg-blue-600 text-white' : 'bg-black/20 border border-white/10 text-gray-200'}`}
+              onClick={async () => {
+                setSettings({ ...(settings as any), enableFallbacks: false } as any);
+                await persist({} as any);
+              }}
+            >
+              Off
+            </button>
+            <button
+              className={`px-2 py-1 rounded text-sm ${(settings as any).enableFallbacks ? 'bg-blue-600 text-white' : 'bg-black/20 border border-white/10 text-gray-200'}`}
+              onClick={async () => {
+                setSettings({ ...(settings as any), enableFallbacks: true } as any);
+                await persist({} as any);
+              }}
+            >
+              On
+            </button>
+          </div>
+          <p className="text-[10px] text-gray-500 mt-1">Use proxy alternates if preferred model is unavailable.</p>
         </div>
 
         {caps.supportsTemperature && (

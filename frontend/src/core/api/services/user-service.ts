@@ -143,6 +143,54 @@ export class UserService extends ApiClient {
     );
   }
 
+  // --- Digital Twin Freeform compiler endpoints ---
+  async dtFreeformPreview(content: string, initDataRaw?: string) {
+    return this.request<APIResponse<any>>(
+      `/users/me/dt-config/freeform/preview`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      },
+      initDataRaw
+    );
+  }
+
+  async dtFreeformApply(
+    body: { content: string; apply_mask: Record<string, boolean>; strategy: 'merge' | 'replace' },
+    initDataRaw?: string
+  ) {
+    return this.request<APIResponse<any>>(
+      `/users/me/dt-config/freeform/apply`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      initDataRaw
+    );
+  }
+
+  async dtFreeformLast(initDataRaw?: string) {
+    return this.request<APIResponse<{ dt_freeform: any; dt_config: any }>>(
+      `/users/me/dt-config/freeform/last`,
+      { method: 'GET' },
+      initDataRaw
+    );
+  }
+
+  async dtFreeformRollback(versionId: string, initDataRaw?: string) {
+    return this.request<APIResponse<any>>(
+      `/users/me/dt-config/rollback`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version_id: versionId }),
+      },
+      initDataRaw
+    );
+  }
+
 }
 
 export const userService = new UserService(); 

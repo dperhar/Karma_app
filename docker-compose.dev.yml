@@ -51,11 +51,7 @@ services:
       - TELETHON_API_ID=${TELETHON_API_ID}
       - TELETHON_API_HASH=${TELETHON_API_HASH}
       - ENCRYPTION_KEY=g-4imrdzJNd-qHXluWne6OIsy2GqyrRGR7IyYFFQQL0=
-      # LLM (pass-through from .env if present)
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GEMINI_BASE_URL=${GEMINI_BASE_URL}
-      - GEMINI_API_VERSION=${GEMINI_API_VERSION}
-      - GEMINI_AUTH_SCHEME=${GEMINI_AUTH_SCHEME}
+      # LLM: loaded from env_file .env inside container; avoid overriding with empty values
     ports:
       - "8000:8000"
     volumes:
@@ -113,11 +109,7 @@ services:
       - TELETHON_API_ID=${TELETHON_API_ID}
       - TELETHON_API_HASH=${TELETHON_API_HASH}
       - ENCRYPTION_KEY=g-4imrdzJNd-qHXluWne6OIsy2GqyrRGR7IyYFFQQL0=
-      # LLM (pass-through from .env if present)
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GEMINI_BASE_URL=${GEMINI_BASE_URL}
-      - GEMINI_API_VERSION=${GEMINI_API_VERSION}
-      - GEMINI_AUTH_SCHEME=${GEMINI_AUTH_SCHEME}
+      # LLM: loaded from env_file .env inside container; avoid overriding with empty values
     volumes:
       # Hot reload for Celery tasks
       - ./backend/app:/app/app

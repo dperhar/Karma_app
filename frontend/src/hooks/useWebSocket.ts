@@ -70,9 +70,26 @@ export const useWebSocket = ({ userId, initDataRaw }: UseWebSocketProps) => {
         console.log('Centrifugo disconnected');
         setIsConnected(false);
       });
-      centrifuge.on('error', (ctx) => {
-        setError((ctx as any).message || 'Centrifugo error');
+      centrifuge.on('error', async (ctx: any) => {
+        setError(ctx?.message || 'Centrifugo error');
         console.error('Centrifugo error', ctx);
+        const code = ctx?.code;
+        if (code === 109 || code === 112) {
+          try {
+            const newToken = await fetchWsToken();
+            if (newToken && centrifugeRef.current) {
+              centrifugeRef.current.setToken(newToken);
+              centrifugeRef.current.disconnect();
+              centrifugeRef.current.connect();
+            } else {
+              disconnect();
+              setTimeout(connect, 500);
+            }
+          } catch {
+            disconnect();
+            setTimeout(connect, 1000);
+          }
+        }
       });
 
       centrifuge.connect();

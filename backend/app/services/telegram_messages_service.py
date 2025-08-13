@@ -65,6 +65,44 @@ class TelegramMessengerMessagesService(BaseService):
         if messages:
             # Convert dictionary messages to TelegramMessengerMessage objects
             message_objects = []
+            # Helpers for enrichment
+            import re as _re
+            def _detect_language_simple(text: str) -> str:
+                cyr = sum(1 for ch in text if "\u0400" <= ch <= "\u04FF")
+                lat = sum(1 for ch in text if ("a" <= ch.lower() <= "z"))
+                if cyr and not lat:
+                    return "ru"
+                if lat and not cyr:
+                    return "en"
+                return "mixed" if cyr and lat else "unknown"
+            def _extract_links(text: str) -> list[str]:
+                return _re.findall(r"https?://\S+", text)
+            def _extract_entities_simple(text: str) -> list[str]:
+                return [
+                    _re.sub(r"\s+", " ", m.group(0)).strip()
+                    for m in _re.finditer(r"(?:\b[А-ЯЁ][а-яё]+\b(?:\s+|\-)){1,3}\b[А-ЯЁ][а-яё]+\b", text)
+                ][:10]
+            def _rhetoric(text: str) -> str:
+                t = (text or "").strip()
+                if t.endswith("?"):
+                    return "question"
+                if t.endswith("!"):
+                    return "exclamation"
+                return "statement"
+            def _style_snapshot(text: str) -> dict:
+                t = text or ""
+                return {
+                    "len": len(t),
+                    "exclam": t.count("!"),
+                    "quest": t.count("?"),
+                    "dots3": t.count("..."),
+                }
+            def _env_quadrant_for_chat(chat_title: str) -> str:
+                # Fallback map using chat.title and simple heuristics
+                title = (chat_title or chat.title or "").lower()
+                if any(k in title for k in ["club", "dev", "it", "data", "ai", "форум", "клуб"]):
+                    return "HIGH_SAFE_HIGH_DEPTH"
+                return "HIGH_SAFE_LOW_DEPTH"
             for message_data in messages:
                 # Use enhanced method that creates user if not found
                 sender = await self.chat_user_service.get_chat_user_by_telegram_id(
@@ -119,6 +157,7 @@ class TelegramMessengerMessagesService(BaseService):
                             )
                             continue  # Skip messages where we couldn't create a sender
 
+                text = message_data.get("message_text")
                 message = TelegramMessengerMessage(
                     id=uuid4().hex,
                     telegram_id=message_data["message_telegram_id"],
@@ -127,11 +166,18 @@ class TelegramMessengerMessagesService(BaseService):
                     reply_to_message_telegram_id=message_data.get(
                         "reply_to_message_telegram_id"
                     ),
-                    text=message_data.get("message_text"),
+                    text=text,
                     date=message_data["message_date"],
                     edit_date=message_data.get("edit_date"),
                     media_type=message_data.get("media_type"),
                     file_id=message_data.get("file_id"),
+                    language=_detect_language_simple(text or ""),
+                    link_urls=_extract_links(text or ""),
+                    named_entities=_extract_entities_simple(text or ""),
+                    tokens=(text or "").lower().split()[:32],
+                    rhetorical_type=_rhetoric(text or ""),
+                    env_quadrant=_env_quadrant_for_chat(chat.title),
+                    style_snapshot=_style_snapshot(text or ""),
                 )
                 message_objects.append(message)
             return await self.message_repository.create_or_update_messages(

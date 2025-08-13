@@ -29,6 +29,14 @@ export const DigitalTwinPanel: React.FC<DigitalTwinPanelProps> = ({
   const [newSubPersona, setNewSubPersona] = useState('');
   const [previewText, setPreviewText] = useState('');
   const [previewResult, setPreviewResult] = useState<{persona:string|null; score:number; semantic:number; keywords:number} | null>(null);
+  // Freeform compiler UI state
+  const [freeform, setFreeform] = useState('');
+  const [ffStatus, setFfStatus] = useState<'idle'|'queued'|'applying'|'error'|'done'>('idle');
+  const [ffPreview, setFfPreview] = useState<any | null>(null);
+  const [ffNotes, setFfNotes] = useState<string[]>([]);
+  const [ffTokens, setFfTokens] = useState<number | null>(null);
+  const [applyMask, setApplyMask] = useState<Record<string, boolean>>({ persona: true, dynamic_filters: true, state_model: true, core_tensions: true, style_dna: true, generation_controls: false, anti_generic: false });
+  const [strategy, setStrategy] = useState<'merge'|'replace'>('merge');
 
   // Safe deep path initializer
   const ensurePath = (root: any, path: (string|number)[], defaultLeaf: any) => {
@@ -152,6 +160,23 @@ export const DigitalTwinPanel: React.FC<DigitalTwinPanelProps> = ({
       if (!likelyDevSeedNext) {
         setError(lastMessage.data?.error || 'Анализ не удался');
       }
+    }
+    if (lastMessage.event === 'dt_freeform_status') {
+      setFfStatus('queued');
+    }
+    if (lastMessage.event === 'dt_freeform_preview') {
+      setFfStatus('done');
+      setFfPreview((lastMessage.data as any)?.parsed_dt_config || null);
+      const notes = (((lastMessage.data as any)?.compiler_notes?.warnings)||[]) as string[];
+      setFfNotes(notes);
+      setFfTokens(Number(((lastMessage.data as any)?.tokens_estimate)||0));
+    }
+    if (lastMessage.event === 'dt_freeform_completed') {
+      setFfStatus('done');
+    }
+    if (lastMessage.event === 'dt_freeform_failed') {
+      setFfStatus('error');
+      setError((lastMessage.data as any)?.error || 'Freeform compiler failed');
     }
   }, [lastMessage, onUserUpdate]);
 
@@ -478,6 +503,60 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
             </div>
           </details>
 
+          {/* Digital Twin Freeform Compiler */}
+          <div className="card bg-base-200">
+            <div className="card-body gap-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold">Freeform Compiler</h3>
+                <span className={`badge ${ffStatus==='queued'?'badge-warning':ffStatus==='error'?'badge-error':ffStatus==='done'?'badge-success':'badge-ghost'}`}>{ffStatus}</span>
+              </div>
+              <textarea className="textarea textarea-bordered w-full min-h-40" placeholder="Вставьте фрифлоу (описание тона, ценностей, подличностей, запреты)…" value={freeform} onChange={(e)=>setFreeform(e.target.value)} />
+              <div className="text-xs opacity-60 flex items-center justify-between">
+                <span>Символов: {freeform.length}</span>
+                <span>{isConnected ? 'WS connected' : 'WS disconnected'}</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="card bg-base-100">
+                  <div className="card-body gap-2">
+                    <h4 className="font-semibold text-sm">Маска применения</h4>
+                    {Object.keys(applyMask).map((k)=> (
+                      <label key={k} className="label cursor-pointer justify-start gap-2 text-xs">
+                        <input type="checkbox" className="toggle toggle-xs" checked={applyMask[k]} onChange={(e)=>setApplyMask({...applyMask, [k]: e.target.checked})} />
+                        <span>{k}</span>
+                      </label>
+                    ))}
+                    <div className="divider my-2" />
+                    <div className="flex items-center gap-3 text-xs">
+                      <label className="flex items-center gap-1"><input type="radio" name="ff-strategy" className="radio radio-xs" checked={strategy==='merge'} onChange={()=>setStrategy('merge')} /> merge</label>
+                      <label className="flex items-center gap-1"><input type="radio" name="ff-strategy" className="radio radio-xs" checked={strategy==='replace'} onChange={()=>setStrategy('replace')} /> replace</label>
+                    </div>
+                  </div>
+                </div>
+                <div className="card bg-base-100 md:col-span-2">
+                  <div className="card-body gap-2">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-semibold text-sm">Preview</h4>
+                      <div className="text-xs opacity-60">tokens≈{ffTokens ?? 0}</div>
+                    </div>
+                    <pre className="text-xs whitespace-pre-wrap max-h-64 overflow-auto">{ffPreview ? JSON.stringify(ffPreview, null, 2) : '—'}</pre>
+                    {ffNotes?.length > 0 && (
+                      <div className="alert alert-warning text-xs">
+                        <ul className="list-disc ml-4">
+                          {ffNotes.map((n,i)=>(<li key={`${i}-${n}`}>{n}</li>))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button className="btn btn-sm" onClick={async()=>{ setFfStatus('queued'); setFfPreview(null); setFfNotes([]); setError(''); try { const r = await userService.dtFreeformPreview(freeform, initDataRaw); if (!r.success) setFfStatus('error'); } catch { setFfStatus('error'); } }}>Preview</button>
+                <button className={`btn btn-primary btn-sm ${ffStatus==='applying'?'loading':''}`} disabled={!freeform.trim() || !Object.values(applyMask).some(Boolean)} onClick={async()=>{ setFfStatus('applying'); setError(''); try { const r = await userService.dtFreeformApply({ content: freeform, apply_mask: applyMask, strategy }, initDataRaw); setFfStatus(r.success?'queued':'error'); } catch { setFfStatus('error'); } }}>Apply</button>
+                <button className="btn btn-ghost btn-sm" onClick={async()=>{ try { const last = await userService.dtFreeformLast(initDataRaw); if (last.success) { const versions = (last.data?.dt_freeform?.versions||[]) as any[]; const lastId = versions?.slice(-1)[0]?.id; if (lastId) { await userService.dtFreeformRollback(lastId, initDataRaw); } } } catch {} }}>Rollback last</button>
+              </div>
+            </div>
+          </div>
+
           {/* AI Profile Summary */}
           <div className="flex justify-between items-center">
             <h3 className="font-semibold">Профиль ИИ</h3>
@@ -543,7 +622,23 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
                   <div className="label text-sm opacity-70 mb-1">Core Archetype</div>
                   <input className="input input-bordered w-full mb-2" value={draftEdit.dt_config?.persona?.core_archetype || ''} onChange={(e)=>{ setDraftEdit({...draftEdit, dt_config:{...draftEdit.dt_config, persona:{...(draftEdit.dt_config?.persona||{}), core_archetype:e.target.value}}}); if (hydratedRef.current) { const h = setTimeout(() => saveEdits(), 1200); (saveEdits as any)._t && clearTimeout((saveEdits as any)._t); (saveEdits as any)._t = h; } }} />
                   <div className="label text-sm opacity-70 mb-1">Talents</div>
-                  <TagInput label="" value={(draftEdit.dt_config?.persona?.talents||[])} onChange={(v)=>{ setDraftEdit((prev:any)=> ({...prev, dt_config:{...prev.dt_config, persona:{...(prev.dt_config?.persona||{}), talents:v}}})); }} />
+                  <TagInput
+                    label=""
+                    value={(() => {
+                      const t = (draftEdit.dt_config?.persona?.talents||[]) as any[];
+                      return Array.isArray(t) ? t.map((x:any)=> typeof x === 'string' ? x : (x?.name || '')).filter(Boolean) : [];
+                    })()}
+                    onChange={(names)=>{
+                      setDraftEdit((prev:any)=>{
+                        const next = JSON.parse(JSON.stringify(prev||{}));
+                        const arr = (names||[]).map((n:string)=> ({ name: n, weight: 1.0 }));
+                        next.dt_config = next.dt_config || {};
+                        next.dt_config.persona = next.dt_config.persona || {};
+                        next.dt_config.persona.talents = arr;
+                        return next;
+                      })
+                    }}
+                  />
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
                     <div>
                       <div className="label text-sm opacity-70 mb-1">Lexicon: system</div>
@@ -580,11 +675,11 @@ ${response.data.system_prompt ? `System Prompt создан` : ''}
                     </div>
                     <div>
                       <div className="label text-sm opacity-70 mb-1">Banned starters</div>
-                      <TagInput label="" value={((draftEdit.dt_config?.persona?.voice?.lexicon?.banned_starters)||[])} onChange={(v)=>{
+                      <TagInput label="" value={((draftEdit.dt_config?.persona?.voice?.banned_starters)||[])} onChange={(v)=>{
                         setDraftEdit((prev:any)=>{
                           const next = JSON.parse(JSON.stringify(prev));
-                          ensurePath(next,["dt_config","persona","voice","lexicon"],{});
-                          next.dt_config.persona.voice.lexicon.banned_starters = v;
+                          ensurePath(next,["dt_config","persona","voice"],{});
+                          next.dt_config.persona.voice.banned_starters = v;
                           return next;
                         });
                       }} />

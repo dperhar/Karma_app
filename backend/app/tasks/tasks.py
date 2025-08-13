@@ -147,6 +147,103 @@ DEFAULT_DT_CONFIG: Dict[str, Any] = {
     "classifier": {"threshold": 0.35}
 }
 
+
+def _local_compile_freeform(text: str) -> Dict[str, Any]:
+    """Heuristic, LLM‑free fallback: compile minimal dt_config from freeform text.
+
+    Conservative: detect language, derive tone, build small lexicon buckets by keywords.
+    """
+    try:
+        t = (text or "").strip()
+        if not t:
+            return {}
+        # Language detection by script
+        cyr = sum(1 for ch in t if "\u0400" <= ch <= "\u04FF")
+        lat = sum(1 for ch in t if ("a" <= ch.lower() <= "z"))
+        lang_ru = cyr >= lat
+        # Tokenize
+        import re as _re_loc
+        tokens = [w.lower() for w in _re_loc.findall(r"[A-Za-zА-Яа-яЁё]{3,}", t)]
+        # Stopwords
+        stop_ru = {"и","в","на","не","что","это","с","как","я","а","то","у","но","же","к","за","если","по","или","из","для","о","от","до","бы","да","ну","про","так","там","тут","чтобы","при","без","быть","есть","тот","эта","этот","только","уже","ещё","еще","где","когда","всё","все","мы","вы","они","он","она","оно","чем","ли","вот","сам","сама","самый"}
+        stop_en = {"the","and","or","of","to","a","an","in","on","for","with","is","are","be","as","at","by","it","this","that","these","those","we","you","they","i"}
+        def fil(w: str) -> bool:
+            if lang_ru:
+                return w not in stop_ru
+            return w not in stop_en
+        toks = [w for w in tokens if fil(w)]
+        # Buckets
+        system_kw = {"паттерн","систем","структур","динамик","метрик","процесс","модель","system","pattern","structure","metric","process","model"}
+        psych_kw = {"тень","проекц","травм","вина","стыд","уязвим","эмоци","ifs","shadow","projection","trauma","shame","guilt","vulnerab","emotion"}
+        direct_kw = {"разъеб","жестк","прямо","жестко","сра\w+","fuck","shit","damn","wtf"}
+        sys_list: list[str] = []
+        psy_list: list[str] = []
+        dir_list: list[str] = []
+        for w in toks:
+            if any(k in w for k in system_kw):
+                if w not in sys_list and len(sys_list) < 12:
+                    sys_list.append(w)
+            if any(k in w for k in psych_kw):
+                if w not in psy_list and len(psy_list) < 12:
+                    psy_list.append(w)
+            if any(_re_loc.match(r"(?:разъеб|жестк|прямо|fuck|shit|damn|wtf)", w) for _ in [0]) or any(k in w for k in direct_kw):
+                if w not in dir_list and len(dir_list) < 12:
+                    dir_list.append(w)
+        tone = "" if not toks else ("коротко, по делу" if lang_ru else "concise, direct")
+        # Simple style DNA from raw text
+        import re as _re_sd
+        sentences = [s.strip() for s in _re_sd.split(r"[\.!?\n]+", t) if s.strip()]
+        avg_len = (sum(len(s) for s in sentences) / max(len(sentences), 1)) if sentences else 0.0
+        variance = 0.0
+        if sentences and len(sentences) > 1:
+            import math as _m
+            mean = avg_len
+            variance = sum((len(s) - mean) ** 2 for s in sentences) / (len(sentences) - 1)
+        question_ratio = (t.count("?") / max(len(sentences), 1)) if sentences else 0.0
+        exclam_ratio = (t.count("!") / max(len(sentences), 1)) if sentences else 0.0
+        imperative_ratio = 0.0  # skip for heuristic
+        ellipsis = t.count("...")
+        dashes = t.count("—") + t.count("-")
+        quotes = t.count('"') + t.count("«") + t.count("»")
+        # basic emoji detection
+        emoji_ratio = sum(1 for ch in t if ord(ch) > 0x1F000) / max(len(t), 1)
+        style_dna = {
+            "prosody": {"avg_sentence_len": round(avg_len, 2), "variance": round(variance, 2), "line_break_ratio": t.count("\n") / max(len(t), 1)},
+            "rhetoric": {"question_ratio": round(question_ratio, 3), "exclamation_ratio": round(exclam_ratio, 3), "imperative_ratio": round(imperative_ratio, 3)},
+            "stance": {"hedging_ratio": 0.0, "assertion_ratio": 0.0, "self_reference_ratio": 0.0},
+            "punct_emoji": {"emoji_ratio": round(emoji_ratio, 3), "ellipsis": ellipsis, "dashes": dashes, "quotes": quotes},
+            "code_switching": {"languages": [{"tag": ("ru" if lang_ru else "en"), "ratio": 1.0}], "patterns": []},
+            "signature_metaphors": [],
+            "negative_openers": [],
+        }
+        dt_cfg = {
+            "persona": {
+                "archetype": "",
+                "core_conflict": "",
+                "values": [],
+                "talents": [],
+                "voice": {
+                    "tone": tone,
+                    "lexicon": {
+                        "system": sys_list,
+                        "psychology": psy_list,
+                        "direct": dir_list,
+                    },
+                    "banned_starters": []
+                }
+            },
+            "dynamic_filters": {"sub_personalities": {}},
+            "state_model": {},
+            "core_tensions": {"axes": []},
+            "style_dna": style_dna,
+            "generation_controls": {},
+            "anti_generic": {},
+            "generation_mode": "dynamic"
+        }
+        return dt_cfg
+    except Exception:
+        return {}
+
 def _compute_persona_directives(post_text: str, channel_title: Optional[str], dt_cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Infer archetype mode, environment quadrant, HD filter, authority and trauma sub-personality.
 
@@ -481,6 +578,521 @@ def _build_default_vibe_profile(lang: str = "en") -> Dict[str, Any]:
     }
 
 
+@celery_app.task(name="tasks.dt_ingest_freeform", queue="analysis")
+def dt_ingest_freeform(user_id: str, content: str, apply_mask: Optional[Dict[str, bool]] = None, strategy: str = "merge"):
+    """Ingest freeform text to compile and persist dt_config with provenance and versioning.
+
+    Applies guarded merge/replace semantics and sends WS updates. Field sizes are capped; HD/Astro edits are blocked.
+    """
+    asyncio.run(async_dt_ingest_freeform(user_id=user_id, content=content, apply_mask=apply_mask or {}, strategy=strategy))
+
+
+async def async_dt_ingest_freeform(user_id: str, content: str, apply_mask: Dict[str, bool], strategy: str = "merge"):
+    websocket_service = container.resolve(WebSocketService)
+    ai_profile_repo = container.resolve(AIProfileRepository)
+    gemini_service = container.resolve(GeminiService)
+    from app.core.config import settings
+
+    async def notify(stage: str, **extra: Any) -> None:
+        await websocket_service.send_user_notification(user_id, "dt_freeform_status", {"stage": stage, **extra})
+
+    try:
+        await notify("start")
+        text = (content or "").strip()
+        if not text:
+            await notify("failed", error="empty_content")
+            return
+        if len(text) > settings.DT_FREEFORM_MAX_CHARS:
+            text = text[: settings.DT_FREEFORM_MAX_CHARS]
+
+        # Build compiler prompt (deterministic, JSON-only) per system spec
+        compiler_spec = """SYSTEM: Digital Twin Freeform Compiler
+MODE: IFS‑Aware, Hierarchical, Dynamic, Multi‑lingual, Evidence‑traced, Persona‑agnostic
+
+ROLE
+You are a deterministic compiler and systemic analyst. You ingest FREEFORM inputs (any language, any script) and compile ONE persona’s Digital Twin configuration (dt_config).
+
+OUTPUT (single JSON object; no trailing commas)
+{
+  "analysis_meta": {
+    "primary_persona_id": "user",
+    "languages": [ { "tag": string, "ratio": number } ],
+    "dominant_part_in_text": "Self" | "Manager" | "Firefighter" | "Exile",
+    "detected_conflict": string,
+    "sources_used": integer,
+    "tokens_estimate": integer
+  },
+  "dt_config": {
+    "persona": {
+      "archetype": string,
+      "core_conflict": string,
+      "values": [ { "name": string, "weight": number } ],
+      "talents": [ { "name": string, "weight": number, "hints"?: string[] } ],
+      "voice": {
+        "tone": string,
+        "lexicon": { "system": string[], "psychology": string[], "direct": string[] },
+        "banned_starters": string[]
+      }
+    },
+    "dynamic_filters": {
+      "sub_personalities": { "<slug>": { "label": string, "semantic_hints": string[], "examples": string[], "triggers": string[], "counterpart"?: string } },
+      "trauma_response": { "<slug>": { "label": string, "triggers": string[], "style_mod": { "tone"?: string, "lexicon_add"?: string[], "lexicon_remove"?: string[] } } },
+      "environment": { "quadrants": { "HIGH_SAFE_HIGH_DEPTH"?: object, "HIGH_SAFE_LOW_DEPTH"?: object, "LOW_SAFE_HIGH_DEPTH"?: object, "LOW_SAFE_LOW_DEPTH"?: object } }
+    },
+    "state_model": {
+      "core_self": { "archetype": string, "values": [ { "name": string, "weight": number } ], "talents": [ { "name": string, "weight": number } ], "voice": { "tone": string, "lexicon": { "system": string[], "psychology": string[], "direct": string[] } }, "sub_personalities": { "<slug>": { "semantic_hints": string[], "examples": string[] } } },
+      "protective_system": {
+        "managers": { "<slug>": { "label": string, "positive_intent": string, "triggers": string[], "voice_mod": { "tone"?: string, "lexicon_add"?: string[], "lexicon_remove"?: string[] }, "examples": string[] } },
+        "firefighters": { "<slug>": { "label": string, "positive_intent": string, "triggers": string[], "voice_mod": { "tone"?: string, "lexicon_add"?: string[], "lexicon_remove"?: string[] }, "examples": string[] } }
+      },
+      "exiles": [ { "name": string, "wound": string, "burden": string } ],
+      "state_activation_rules": { "use_self_when": string[], "use_manager_when": string[], "use_firefighter_when": string[] }
+    },
+    "core_tensions": { "axes": [ { "name": string, "weight": number, "evidence": string[] } ] },
+    "style_dna": {
+      "prosody": { "avg_sentence_len": number, "variance": number, "line_break_ratio": number },
+      "rhetoric": { "question_ratio": number, "exclamation_ratio": number, "imperative_ratio": number },
+      "stance": { "hedging_ratio": number, "assertion_ratio": number, "self_reference_ratio": number },
+      "punct_emoji": { "emoji_ratio": number, "ellipsis": number, "dashes": number, "quotes": number },
+      "code_switching": { "languages": [ { "tag": string, "ratio": number } ], "patterns": string[] },
+      "signature_metaphors": string[],
+      "negative_openers": string[]
+    },
+    "generation_controls": { },
+    "anti_generic": { "stop_phrases": string[] },
+    "generation_mode": "dynamic"
+  },
+  "evidence": { "quotes": [ { "field": string, "text": string } ], "snippets_used": integer },
+  "compiler_notes": {
+    "warnings": string[],
+    "sections_detected": string[],
+    "ifs_detected": { "core_self": boolean, "managers": integer, "firefighters": integer, "exiles": integer },
+    "confidence": { "persona": number, "state_model": number, "style_dna": number, "core_tensions": number },
+    "coverage": { "values": integer, "talents": integer, "lexicon_system": integer, "lexicon_psychology": integer, "lexicon_direct": integer, "sub_personalities": integer, "managers": integer, "firefighters": integer, "exiles": integer, "anti_generic": integer }
+  }
+}
+
+MAPPING RULES
+- ONE primary persona. Preserve original language; do not translate.
+- Be conservative: when unsure, leave empty arrays/objects and add warnings.
+- SLUG: lowercase, spaces and '/' -> '_', keep label verbatim.
+
+POLICIES (HARD)
+- NEVER write or modify Human Design or Astro; add warning "locked: hd/astro".
+- DO NOT leak secrets/PII; drop anything that looks like credentials; add warning "sanitized: secret".
+- Output ONLY a single valid JSON object. No code fences. No prose.
+
+REPAIR & UNCERTAINTY
+- If parse risk, keep fields empty and record warnings like "empty: state_model.exiles", "counterpart omitted (unclear)", "insufficient evidence: core_tensions.order_vs_openness".
+"""
+        prompt = (
+            compiler_spec
+            + "\nINPUT\n- FREEFORM:\n"
+            + text
+            + "\nOUTPUT: Return exactly one JSON matching the schema above."
+        )
+        await notify("llm_start")
+        resp = await gemini_service.generate_content(
+            prompt,
+            overrides={"max_output_tokens": 2048, "provider": "proxy" if settings.GEMINI_BASE_URL else None},
+        )
+
+        compiled: Dict[str, Any] | None = None
+        if not resp or not resp.get("success"):
+            await notify("llm_empty")
+
+            # Fieldwise fallback directly from FREEFORM
+            base_ctx = f"FREEFORM INPUT\n{text[:settings.DT_FREEFORM_MAX_CHARS]}\n"
+
+            async def _ask_small_json(p: str) -> dict:
+                r = await gemini_service.generate_content(
+                    p,
+                    overrides={
+                        "temperature": 0.3,
+                        "max_output_tokens": 384,
+                        "provider": "proxy" if settings.GEMINI_BASE_URL else None,
+                    },
+                )
+                c = (r.get("content") or "").strip() if r and r.get("success") else ""
+                if not c:
+                    return {}
+                if c.startswith("```"):
+                    fe = c.rfind("```")
+                    inner = c[3:fe] if fe != -1 else c[3:]
+                    if inner.lower().startswith("json"):
+                        inner = inner[4:]
+                    c = inner.strip()
+                import re as _re_s
+                c = _re_s.sub(r",\s*([}\]])", r"\1", c)
+                try:
+                    return json.loads(c)
+                except Exception:
+                    s = c.find("{")
+                    e = c.rfind("}")
+                    if s != -1 and e != -1 and e > s:
+                        try:
+                            return json.loads(c[s : e + 1])
+                        except Exception:
+                            return {}
+                    return {}
+
+            p_voice = base_ctx + '\nReturn ONLY JSON: {"tone": string, "lexicon": {"system": string[], "psychology": string[], "direct": string[]}}'
+            p_meta = base_ctx + '\nReturn ONLY JSON: {"talents": [string], "core_conflict": string}'
+            jv = await _ask_small_json(p_voice)
+            jm = await _ask_small_json(p_meta)
+            if jv or jm:
+                compiled = {
+                    "dt_config": {
+                        "persona": {
+                            "archetype": "",
+                            "core_conflict": (jm.get("core_conflict") if isinstance(jm, dict) else "") or "",
+                            "values": [],
+                            "talents": [
+                                {"name": t, "weight": 1.0} for t in (jm.get("talents") or [])
+                            ][:8]
+                            if isinstance(jm, dict)
+                            else [],
+                            "voice": {
+                                "tone": (jv.get("tone") or "") if isinstance(jv, dict) else "",
+                                "lexicon": (
+                                    (jv.get("lexicon") or {})
+                                    if isinstance(jv, dict)
+                                    else {"system": [], "psychology": [], "direct": []}
+                                ),
+                                "banned_starters": [],
+                            },
+                        }
+                    },
+                    "compiler_notes": {"warnings": ["chunk_fallback"]},
+                }
+                await notify("chunk_fallback")
+            else:
+                local_dt = _local_compile_freeform(text)
+                compiled = {
+                    "dt_config": (
+                        local_dt
+                        or {
+                            "persona": {
+                                "voice": {
+                                    "tone": "",
+                                    "lexicon": {
+                                        "system": [],
+                                        "psychology": [],
+                                        "direct": [],
+                                    },
+                                    "banned_starters": [],
+                                }
+                            },
+                            "dynamic_filters": {"sub_personalities": {}},
+                            "state_model": {},
+                            "core_tensions": {"axes": []},
+                            "style_dna": {},
+                            "generation_controls": {},
+                            "anti_generic": {},
+                            "generation_mode": "dynamic",
+                        }
+                    ),
+                    "compiler_notes": {"warnings": ["llm_empty", "local_heuristic"]},
+                }
+                await notify("local_heuristic")
+        else:
+            # Parse LLM JSON response
+            raw = (resp.get("content") or "").strip()
+            import re as _re
+            raw = _re.sub(r",\s*([}\]])", r"\1", raw)
+            if raw.startswith("```"):
+                try:
+                    fe = raw.rfind("```")
+                    inner = raw[3:fe] if fe != -1 else raw[3:]
+                    if inner.lower().startswith("json"):
+                        inner = inner[4:]
+                    raw = inner.strip()
+                except Exception:
+                    pass
+            try:
+                compiled = json.loads(raw)
+            except Exception:
+                s = raw.find("{")
+                e = raw.rfind("}")
+                candidate = raw[s : e + 1] if (s != -1 and e != -1 and e > s) else raw
+                # Attempt aggressive repair similar to chat analyzer path; if still fails, fallback to heuristic
+                try:
+                    candidate = candidate.replace("“", '"').replace("”", '"').replace("’", "'")
+                except Exception:
+                    pass
+                try:
+                    import re as _re_repair
+                    candidate = _re_repair.sub(r",\s*([}\]])", r"\\1", candidate)
+                    candidate = _re_repair.sub(r"([\{,]\s*)([A-Za-z_][A-Za-z0-9_\-]*)\s*:", r"\\1""\2"":", candidate)
+                    candidate = _re_repair.sub(r"}\s*{", "}, {", candidate)
+                    candidate = _re_repair.sub(r",\s*,+", ",", candidate)
+                    # Balance braces
+                    open_curly = candidate.count("{")
+                    close_curly = candidate.count("}")
+                    open_square = candidate.count("[")
+                    close_square = candidate.count("]")
+                    candidate += "}" * max(0, open_curly - close_curly)
+                    candidate += "]" * max(0, open_square - close_square)
+                except Exception:
+                    pass
+                try:
+                    compiled = json.loads(candidate)
+                except Exception:
+                    local_dt = _local_compile_freeform(text)
+                    compiled = {
+                        "dt_config": local_dt or {},
+                        "compiler_notes": {"warnings": ["repair_failed", "local_heuristic"]},
+                    }
+                    await notify("local_heuristic")
+
+        # Guardrails: remove forbidden sections
+        try:
+            dt_cfg = compiled.get("dt_config") or {}
+            if isinstance(dt_cfg, dict):
+                dyn = dt_cfg.get("dynamic_filters") or {}
+                if isinstance(dyn, dict):
+                    dyn.pop("astro_axis", None)
+                    dyn.pop("hd_profile", None)
+                    dt_cfg["dynamic_filters"] = dyn
+        except Exception:
+            pass
+
+        # Load current profile
+        ai_profile = await ai_profile_repo.get_ai_profile_by_user(user_id)
+        if not ai_profile:
+            ai_profile = await ai_profile_repo.create_ai_profile(user_id=user_id)
+        base_vp: Dict[str, Any] = dict(getattr(ai_profile, "vibe_profile_json", {}) or {})
+        current_dt: Dict[str, Any] = dict((base_vp.get("dt_config") or {}))
+
+        proposed_dt: Dict[str, Any] = dict((compiled.get("dt_config") or {}))
+
+        # Merge/replace with apply_mask per top-level sections
+        def capped_list(xs: list, cap: int) -> list:
+            out = []
+            seen = set()
+            for x in xs or []:
+                k = (str(x)[:160] if isinstance(x, str) else json.dumps(x, ensure_ascii=False)[:160]).strip()
+                if not k or k in seen:
+                    continue
+                out.append(x if isinstance(x, (int, float)) else (x[:160] if isinstance(x, str) else x))
+                seen.add(k)
+                if len(out) >= cap:
+                    break
+            return out
+
+        def deep_merge(dst: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
+            for k, v in (src or {}).items():
+                if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                    dst[k] = deep_merge(dict(dst[k]), v)
+                elif isinstance(v, list):
+                    # unique by normalized token, cap
+                    a = dst.get(k) if isinstance(dst.get(k), list) else []
+                    merged = a + [x for x in v if x not in a]
+                    dst[k] = capped_list(merged, 12)
+                else:
+                    dst[k] = v
+            return dst
+
+        out_dt = dict(current_dt)
+        for section in ("persona", "dynamic_filters", "state_model", "core_tensions", "style_dna", "generation_controls", "anti_generic"):
+            want = bool(apply_mask.get(section, False))
+            if not want and strategy == "replace":
+                continue
+            if strategy == "replace":
+                if section in proposed_dt:
+                    out_dt[section] = proposed_dt.get(section)
+            else:  # merge
+                if section in proposed_dt:
+                    cur = out_dt.get(section) or ({} if isinstance(proposed_dt.get(section), dict) else [])
+                    if isinstance(cur, dict) and isinstance(proposed_dt.get(section), dict):
+                        out_dt[section] = deep_merge(dict(cur), dict(proposed_dt.get(section) or {}))
+                    elif isinstance(cur, list) and isinstance(proposed_dt.get(section), list):
+                        out_dt[section] = capped_list(cur + proposed_dt.get(section), 12)
+                    else:
+                        out_dt[section] = proposed_dt.get(section)
+
+        # Prepare provenance and versioning (simple append-only log)
+        dt_freeform = dict(base_vp.get("dt_freeform", {}) or {})
+        history = list(dt_freeform.get("versions", []) or [])
+        version_id = f"v{len(history)+1}"
+        record = {
+            "id": version_id,
+            "ts": _now_ms(),
+            "apply_mask": apply_mask,
+            "strategy": strategy,
+            "content_sha": str(abs(hash(text)))[:16],
+            "compiler_notes": (compiled.get("compiler_notes") or {}),
+            "prev_dt_config": current_dt,
+            "new_dt_config": out_dt,
+        }
+        history.append(record)
+        dt_freeform.update({
+            "last": {
+                "raw": text[: settings.DT_FREEFORM_MAX_CHARS],
+                "parsed": compiled.get("dt_config") or {},
+                "notes": (compiled.get("compiler_notes") or {}),
+                "ts": _now_ms(),
+            },
+            "versions": history[-20:],
+        })
+
+        # Persist
+        new_vp = dict(base_vp)
+        new_vp["dt_config"] = out_dt
+        new_vp["dt_freeform"] = dt_freeform
+        updated = await ai_profile_repo.update_ai_profile(ai_profile.id, vibe_profile_json=new_vp)
+        await websocket_service.send_user_notification(user_id, "dt_freeform_completed", {"dt_config": out_dt, "version_id": version_id})
+    except Exception as e:
+        await websocket_service.send_user_notification(user_id, "dt_freeform_failed", {"error": str(e)})
+
+
+@celery_app.task(name="tasks.dt_preview_freeform", queue="analysis")
+def dt_preview_freeform(user_id: str, content: str):
+    """Preview compile of freeform into dt_config; no persistence. Emits WS event with result.
+
+    Uses simple SHA cache in Redis to avoid repeated spends.
+    """
+    asyncio.run(async_dt_preview_freeform(user_id=user_id, content=content))
+
+
+async def async_dt_preview_freeform(user_id: str, content: str):
+    websocket_service = container.resolve(WebSocketService)
+    gemini_service = container.resolve(GeminiService)
+    try:
+        from app.services.redis_service import RedisService
+        redis = container.resolve(RedisService)
+    except Exception:
+        redis = None
+    from app.core.config import settings
+
+    async def push(event: str, payload: Dict[str, Any]) -> None:
+        await websocket_service.send_user_notification(user_id, event, payload)
+
+    text = (content or "").strip()
+    if not text:
+        await push("dt_freeform_failed", {"error": "empty_content"})
+        return
+    if len(text) > settings.DT_FREEFORM_MAX_CHARS:
+        text = text[: settings.DT_FREEFORM_MAX_CHARS]
+
+    sha = str(abs(hash(text)))[:16]
+    if redis:
+        cached = redis.get(f"dtprev:{sha}")
+        if isinstance(cached, dict):
+            await push("dt_freeform_preview", {"parsed_dt_config": cached.get("dt_config") or {}, "compiler_notes": cached.get("compiler_notes") or {}, "evidence": cached.get("evidence") or {}, "tokens_estimate": cached.get("tokens_estimate") or 0})
+            return
+
+    compiler_spec = """SYSTEM: Digital Twin Freeform Compiler
+MODE: IFS‑Aware, Hierarchical, Dynamic, Multi‑lingual, Evidence‑traced, Persona‑agnostic
+ROLE: Deterministic compiler for FREEFORM → dt_config. Preserve language; conservative fill; strict JSON.
+Include keys analysis_meta, dt_config, evidence, compiler_notes. Apply HARD POLICIES: lock hd/astro; sanitize secrets; no code fences.
+Use the same schema as in the main compiler spec.
+"""
+    prompt = compiler_spec + "\nINPUT\n- FREEFORM:\n" + text + "\nOUTPUT: Return exactly one JSON."
+    await push("dt_freeform_status", {"stage": "preview_llm_start"})
+    resp = await gemini_service.generate_content(prompt, overrides={"max_output_tokens": 2048, "provider": "proxy" if settings.GEMINI_BASE_URL else None})
+
+    async def _ask_small_json(p: str) -> dict:
+        r = await gemini_service.generate_content(p, overrides={"temperature": 0.3, "max_output_tokens": 384, "provider": "proxy" if settings.GEMINI_BASE_URL else None})
+        c = (r.get("content") or "").strip() if r and r.get("success") else ""
+        if not c:
+            return {}
+        if c.startswith("```"):
+            fe = c.rfind("```"); inner = c[3:fe] if fe != -1 else c[3:]
+            if inner.lower().startswith("json"): inner = inner[4:]
+            c = inner.strip()
+        import re as _re_s
+        c = _re_s.sub(r",\s*([}\]])", r"\1", c)
+        try:
+            return json.loads(c)
+        except Exception:
+            s = c.find("{"); e = c.rfind("}")
+            if s != -1 and e != -1 and e > s:
+                try:
+                    return json.loads(c[s:e+1])
+                except Exception:
+                    return {}
+            return {}
+
+    def _skeleton() -> dict:
+        return {
+            "dt_config": {
+                "persona": {"voice": {"tone": "", "lexicon": {"system": [], "psychology": [], "direct": []}, "banned_starters": []}},
+                "dynamic_filters": {"sub_personalities": {}},
+                "state_model": {},
+                "core_tensions": {"axes": []},
+                "style_dna": {},
+                "generation_controls": {},
+                "anti_generic": {},
+                "generation_mode": "dynamic"
+            },
+            "compiler_notes": {"warnings": ["llm_empty"]}
+        }
+
+    if not resp or not resp.get("success"):
+        await push("dt_freeform_status", {"stage": "llm_empty"})
+        # Fieldwise fallback from FREEFORM
+        base_ctx = f"FREEFORM INPUT\n{text[:settings.DT_FREEFORM_MAX_CHARS]}\n"
+        p_voice = base_ctx + "\nReturn ONLY JSON: {\"tone\": string, \"lexicon\": {\"system\": string[], \"psychology\": string[], \"direct\": string[]}}"
+        p_meta = base_ctx + "\nReturn ONLY JSON: {\"talents\": [string], \"core_conflict\": string}"
+        jv = await _ask_small_json(p_voice)
+        jm = await _ask_small_json(p_meta)
+        if jv or jm:
+            dt_cfg = {
+                "persona": {
+                    "archetype": "",
+                    "core_conflict": (jm.get("core_conflict") if isinstance(jm, dict) else "") or "",
+                    "values": [],
+                    "talents": [{"name": t, "weight": 1.0} for t in (jm.get("talents") or [])][:8] if isinstance(jm, dict) else [],
+                    "voice": {
+                        "tone": (jv.get("tone") or "") if isinstance(jv, dict) else "",
+                        "lexicon": ((jv.get("lexicon") or {}) if isinstance(jv, dict) else {"system":[],"psychology":[],"direct":[]}),
+                        "banned_starters": []
+                    }
+                }
+            }
+            tokens_estimate = min(len(text) // 4, 20000)
+            payload = {"parsed_dt_config": dt_cfg, "compiler_notes": {"warnings": ["chunk_fallback"]}, "evidence": {}, "tokens_estimate": tokens_estimate}
+            if redis:
+                redis.set(f"dtprev:{sha}", {"dt_config": dt_cfg, "compiler_notes": payload["compiler_notes"], "evidence": {}, "tokens_estimate": tokens_estimate}, expire=600)
+            await push("dt_freeform_preview", payload)
+            return
+        # Skeleton fallback enriched by local heuristic compile
+        local_dt = _local_compile_freeform(text)
+        sk = {"dt_config": (local_dt or _skeleton()["dt_config"]), "compiler_notes": {"warnings": ["llm_empty", "local_heuristic"]}}
+        tokens_estimate = min(len(text) // 4, 20000)
+        await push("dt_freeform_status", {"stage": "local_heuristic"})
+        await push("dt_freeform_preview", {"parsed_dt_config": sk["dt_config"], "compiler_notes": sk.get("compiler_notes", {}), "evidence": {}, "tokens_estimate": tokens_estimate})
+        return
+
+    raw = (resp.get("content") or "").strip()
+    import re as _re
+    raw = _re.sub(r",\s*([}\]])", r"\1", raw)
+    if raw.startswith("```"):
+        try:
+            fe = raw.rfind("```"); inner = raw[3:fe] if fe != -1 else raw[3:]
+            if inner.lower().startswith("json"): inner = inner[4:]
+            raw = inner.strip()
+        except Exception:
+            pass
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        s = raw.find("{"); e = raw.rfind("}")
+        parsed = json.loads(raw[s:e+1]) if s != -1 and e != -1 and e > s else {"compiler_notes": {"warnings": ["repair: greedy"]}}
+    try:
+        dt_cfg = parsed.get("dt_config") or {}
+        if isinstance(dt_cfg, dict):
+            (dt_cfg.get("persona") or {}).pop("hd_profile", None)
+            (dt_cfg.get("dynamic_filters") or {}).pop("astro_axis", None)
+    except Exception:
+        pass
+    tokens_estimate = min(len(text) // 4, 20000)
+    if redis:
+        redis.set(f"dtprev:{sha}", {"dt_config": parsed.get("dt_config") or {}, "compiler_notes": parsed.get("compiler_notes") or {}, "evidence": parsed.get("evidence") or {}, "tokens_estimate": tokens_estimate}, expire=600)
+    await push("dt_freeform_preview", {"parsed_dt_config": parsed.get("dt_config") or {}, "compiler_notes": parsed.get("compiler_notes") or {}, "evidence": parsed.get("evidence") or {}, "tokens_estimate": tokens_estimate})
+
+
 @celery_app.task(name="tasks.fetch_telegram_chats_task", queue="drafts")
 def fetch_telegram_chats_task(user_id: str, limit: int = 50, offset: int = 0):
     """
@@ -726,6 +1338,8 @@ async def async_analyze_vibe_profile(
     websocket_service = container.resolve(WebSocketService)
     draft_repo = container.resolve(DraftCommentRepository)
     user_repo = container.resolve(UserRepository)
+    # Local import to avoid circulars at module import time
+    from app.core.config import settings
     # Optional: pause schedulers that might generate drafts concurrently for this user
     try:
         from app.services.redis_service import RedisService  # local import to avoid circulars at import time
@@ -970,6 +1584,48 @@ async def async_analyze_vibe_profile(
         # Hapax legomena (unique tokens) – sample of most informative
         hapax = [w for w, c in unigram_counter.items() if c == 1][:100]
 
+        # Lightweight anchors and environment map
+        import re as _re_anc
+        def _dedup(vals: list[str], cap: int) -> list[str]:
+            seen: set[str] = set(); out: list[str] = []
+            for v in vals:
+                vv = (v or '').strip(); key = vv.lower()
+                if vv and key not in seen:
+                    out.append(vv); seen.add(key)
+                if len(out) >= cap: break
+            return out
+        anchors_numbers: list[str] = []
+        anchors_quotes: list[str] = []
+        anchors_entities: list[str] = []
+        for t in cleaned[:400]:
+            anchors_numbers += _re_anc.findall(r"(?<!\w)(?:[0-9][0-9\.,%]*)", t)
+            anchors_quotes += [m.group(1) for m in _re_anc.finditer(r"[«\"\']([^»\"\']{4,120})[»\"\']", t)]
+            anchors_entities += [
+                _re_anc.sub(r"\s+", " ", m.group(0)).strip()
+                for m in _re_anc.finditer(r"(?:\b[А-ЯЁ][а-яё]+\b(?:\s+|\-)){1,3}\b[А-ЯЁ][а-яё]+\b", t)
+            ]
+        env_quadrant_map: Dict[str, str] = {}
+        try:
+            profanity = {"бляд","сука","хуй","пизд","fuck","shit","idiot"}
+            per_chat: Dict[str, list[str]] = {}
+            for m in (user_sent_messages or []):
+                ct = (m.get("chat_title") or str(m.get("chat_id") or "")).strip() or "unknown"
+                per_chat.setdefault(ct, []).append((m.get("text") or "")[:240])
+            for ct, texts in per_chat.items():
+                n = len(texts) or 1
+                avg_len = sum(len(x) for x in texts)/n
+                harsh = sum(1 for x in texts if any(b in x.lower() for b in profanity))/n
+                safety = 1.0 - harsh
+                depth = 1.0 if avg_len>=180 else (0.0 if avg_len<=60 else (avg_len-60)/120.0)
+                env_quadrant_map[ct] = (
+                    "HIGH_SAFE_HIGH_DEPTH" if safety>=0.5 and depth>=0.5 else
+                    "HIGH_SAFE_LOW_DEPTH" if safety>=0.5 else
+                    "LOW_SAFE_HIGH_DEPTH" if depth>=0.5 else
+                    "LOW_SAFE_LOW_DEPTH"
+                )
+        except Exception:
+            env_quadrant_map = {}
+
         precomputed_stats = {
             "top_unigrams": [w for w, _ in unigram_counter.most_common(50)],
             "top_bigrams": [" ".join(b) for b, _ in bigram_counter.most_common(30)],
@@ -998,6 +1654,12 @@ async def async_analyze_vibe_profile(
             "channel_topic_hints": [w for w, _ in channel_topic_tokens.most_common(20)],
             "greetings": [w for w, _ in greetings_counter.most_common(5)],
             "farewells": [w for w, _ in farewells_counter.most_common(5)],
+            "anchors": {
+                "numbers": _dedup(anchors_numbers, 20),
+                "quotes": _dedup(anchors_quotes, 10),
+                "entities": _dedup(anchors_entities, 20),
+            },
+            "env_quadrant_map": env_quadrant_map,
         }
 
         # Sample representative messages for style (cap for prompt size)
@@ -1010,6 +1672,93 @@ async def async_analyze_vibe_profile(
             sample_blob = sample_blob[:max_chars]
 
         await notify("llm_prepare", prompt_chars=len(sample_blob), messages_used=len(sample_messages))
+
+        # Derive Style DNA and Core Tensions heuristics (lightweight, deterministic)
+        try:
+            # Prosody
+            sent_lens = [len(s.split()) for s in sentences]
+            import math as _mstats
+            variance = round((_mstats.fsum((l - avg_sentence_len_words) ** 2 for l in sent_lens) / max(len(sent_lens), 1)), 3)
+            line_break_ratio = round((sample_blob.count("\n") / max(len(sample_blob), 1)), 4)
+            # Rhetoric
+            total_sent = max(len(sentences), 1)
+            question_ratio = sentence_types.get("question", 0.0)
+            exclamation_ratio = sentence_types.get("exclamation", 0.0)
+            imperative_ratio = 0.0  # conservative (not reliably detected heuristically)
+            # Stance
+            hedgers = {"кажется","наверное","вроде","может","мб","maybe","perhaps","seems","i think","i guess"}
+            assertions = {"точно","явно","ясно","факт","must","always","never"}
+            self_refs = {"я","мне","мой","i","me","my"}
+            total_tokens_all = max(total_tokens, 1)
+            hedging_ratio = round(sum(unigram_counter.get(h, 0) for h in hedgers) / total_tokens_all, 3)
+            assertion_ratio = round(sum(unigram_counter.get(a, 0) for a in assertions) / total_tokens_all, 3)
+            self_reference_ratio = round(sum(unigram_counter.get(sr, 0) for sr in self_refs) / total_tokens_all, 3)
+            # Punct/emoji
+            punct_emoji = {
+                "emoji_ratio": emoji_ratio,
+                "ellipsis": dots3,
+                "dashes": dashes + hyphens,
+                "quotes": quotes_angled + quotes_straight,
+            }
+            # Code switching
+            code_switching = {
+                "languages": [
+                    {"tag": "ru", "ratio": float(lang_dist.get("ru_cyrillic", 0))},
+                    {"tag": "en", "ratio": float(lang_dist.get("en_latin", 0))},
+                ],
+                "patterns": [],
+            }
+            # Signature metaphors (reuse short quotes as imagery proxies)
+            signature_metaphors = precomputed_stats.get("anchors", {}).get("quotes", [])[:8]
+            negative_openers = [
+                "погнали","давай сделаем","интересно,","круто","жиза","+1","подписываюсь","согласен",
+                "let's go","cool","nice","interesting"
+            ]
+            style_dna_obj = {
+                "prosody": {"avg_sentence_len": avg_sentence_len_words, "variance": variance, "line_break_ratio": line_break_ratio},
+                "rhetoric": {"question_ratio": question_ratio, "exclamation_ratio": exclamation_ratio, "imperative_ratio": imperative_ratio},
+                "stance": {"hedging_ratio": hedging_ratio, "assertion_ratio": assertion_ratio, "self_reference_ratio": self_reference_ratio},
+                "punct_emoji": punct_emoji,
+                "code_switching": code_switching,
+                "signature_metaphors": signature_metaphors,
+                "negative_openers": negative_openers,
+            }
+        except Exception:
+            style_dna_obj = {}
+
+        try:
+            # Core tensions simple lexical heuristics
+            def _score(tokens: list[str], kws: set[str]) -> float:
+                return sum(1 for t in tokens if any(k in t for k in kws)) / max(len(tokens), 1)
+            toks = [t.lower() for lst in tokens_lists for t in lst]
+            stabi = {"стабил","процесс","порядок","ритм","routine","process","stable"}
+            trans = {"кризис","перелом","трансформ","нов","смена","change","pivot","transform"}
+            order = {"структур","процесс","окр","kpi","метрик","framework","system"}
+            openx = {"интуи","смысл","хаос","креатив","openness","intuition","vibe"}
+            dom = {"давлю","жму","жестко","прав","надо","must","should"}
+            comm = {"вместе","мы","команда","support","care"}
+            vuln = {"боль","страх","стыд","вина","уязвим","vulnerable","shame","fear"}
+            analy = {"логик","данн","цифр","факт","метрик","логика","data","metrics","facts"}
+            axes: list[dict[str, Any]] = []
+            def _axis(name: str, a_kw: set[str], b_kw: set[str]) -> dict[str, Any]:
+                a = _score(toks, a_kw); b = _score(toks, b_kw)
+                w = round(min(1.0, (a + b) * 0.8), 2)
+                # pick up to 2 evidence snippets
+                ev = []
+                for s in (cleaned[:200] if cleaned else [])[:50]:
+                    ls = s.lower()
+                    if any(k in ls for k in a_kw.union(b_kw)):
+                        ev.append(s[:160])
+                        if len(ev) >= 2:
+                            break
+                return {"name": name, "weight": w, "evidence": ev}
+            axes.append(_axis("stability_vs_transformation", stabi, trans))
+            axes.append(_axis("order_vs_openness", order, openx))
+            axes.append(_axis("dominance_vs_communion", dom, comm))
+            axes.append(_axis("analysis_vs_vulnerability", analy, vuln))
+            core_tensions_obj = {"axes": axes[:4]}
+        except Exception:
+            core_tensions_obj = {"axes": []}
 
         # Merge Digital Twin config into prompt as control hints (lightweight)
         try:
@@ -1078,7 +1827,7 @@ async def async_analyze_vibe_profile(
         - Keep arrays ≤ 12 items. Prefer exact phrases from messages when possible.
         - DO NOT include generic fillers as signature phrases or phrase_weights. Ban list: ["Погнали","Давай сделаем","Круто","Интересно","Поехали","Let's go","Cool","Nice"]. If they occur in data, exclude them.
 
-        PRECOMPUTED_STATS:
+        PRECOMPUTED_STATS (use anchors and env_quadrant_map; prefer multi-word topics; ignore generic tokens like 'завтра','сколько'):
         {json.dumps(precomputed_stats, ensure_ascii=False)}
 
         DT_CONFIG (controls for generation in downstream tasks):
@@ -1105,35 +1854,53 @@ async def async_analyze_vibe_profile(
         except Exception:
             ai_overrides = {}
 
-        # First attempt: normal call
-        response = await gemini_service.generate_content(prompt, overrides={**ai_overrides, "max_output_tokens": 1024})
+        # First attempt: normal call (guard against exceptions so `response` is always defined)
+        response: Dict[str, Any] | None = None
+        try:
+            # First attempt with modest token cap to reduce flake
+            response = await gemini_service.generate_content(
+                prompt,
+                overrides={
+                    **ai_overrides,
+                    "temperature": 0.6,
+                    "max_output_tokens": 768,
+                    "provider": "proxy" if settings.GEMINI_BASE_URL else None,
+                },
+            )
+        except Exception as call_err:
+            response = {"success": False, "error": str(call_err)}
         if not response or not response.get("success"):
-            from app.core.config import settings
+            # Fallback immediately without emitting a hard failure to UI
             err_msg = (response or {}).get("error", "LLM analysis failed.")
             logger.error(f"LLM analysis failed for user {user_id}: {err_msg}")
-            await websocket_service.send_user_notification(user_id, "vibe_profile_failed", {"error": err_msg})
             await notify("llm_failed", error=err_msg)
-            if settings.IS_DEVELOP:
-                await notify("dev_seed_start")
+            try:
                 # Choose default profile language based on recent messages
                 try:
                     dom_lang = "ru" if precomputed_stats.get("language_distribution", {}).get("ru_cyrillic", 0) > 0.5 else "en"
                 except Exception:
                     dom_lang = "en"
                 default_profile = _build_default_vibe_profile(dom_lang)
-                ai_profile = await ai_profile_repo.get_ai_profile_by_user(user_id)
-                if not ai_profile:
-                    ai_profile = await ai_profile_repo.create_ai_profile(user_id=user_id)
-                await ai_profile_repo.mark_analysis_completed(
-                    profile_id=ai_profile.id,
-                    vibe_profile=default_profile,
-                    messages_count=0,
+                ai_profile_local = await ai_profile_repo.get_ai_profile_by_user(user_id)
+                if not ai_profile_local:
+                    ai_profile_local = await ai_profile_repo.create_ai_profile(user_id=user_id)
+                # Persist and mark OUTDATED
+                await ai_profile_repo.update_ai_profile(
+                    ai_profile_local.id,
+                    vibe_profile_json=default_profile,
+                    analysis_status=AnalysisStatus.OUTDATED,
+                    last_analyzed_at=__import__('datetime').datetime.utcnow(),
+                    messages_analyzed_count=str(0),
                 )
                 await websocket_service.send_user_notification(user_id, "vibe_profile_completed", {"profile": default_profile})
-                await notify("dev_seed_done")
+                await notify("done", status="OUTDATED")
+            except Exception:
+                await websocket_service.send_user_notification(user_id, "vibe_profile_warning", {"warning": err_msg})
             return
 
         content = (response.get("content") or "").strip()
+        # Normalize any trailing commas immediately to reduce parsing failures
+        content = re.sub(r",\s*([}\]])", r"\1", content)
         await notify("llm_response_received", content_preview=content[:120])
         # Strip markdown code fences if present (```json ... ``` or ``` ... ```)
         if content.startswith("```"):
@@ -1145,29 +1912,54 @@ async def async_analyze_vibe_profile(
                 content = inner.strip()
             except Exception:
                 pass
-        # Extract JSON block
-        json_match = re.search(r"\{[\s\S]*\}", content)
-        json_str = json_match.group(0) if json_match else ""
+        # Extract JSON block (prefer fenced block first if present)
+        json_str = ""
+        try:
+            if "{" in content and "}" in content:
+                # Greedy from first { to last }
+                start = content.find('{')
+                end = content.rfind('}')
+                if start != -1 and end != -1 and end > start:
+                    json_str = content[start:end+1]
+        except Exception:
+            json_str = ""
         if not json_str:
-            # Retry with slightly lower temperature to coax stricter JSON
+            # Retry with slightly lower temperature and tokens & attempt minimal schema slice
             try:
-                response2 = await gemini_service.generate_content(
-                    prompt,
-                    overrides={**ai_overrides, "temperature": 0.4, "max_output_tokens": 1024},
-                )
+                response2 = await gemini_service.generate_content(prompt, overrides={**ai_overrides, "temperature": 0.35, "max_output_tokens": 640, "provider": "proxy" if settings.GEMINI_BASE_URL else None})
                 c2 = (response2.get("content") or "").strip() if response2 and response2.get("success") else ""
                 if c2:
                     await notify("llm_response_received_alt", content_preview=c2[:120])
-                    content = c2
-                    json_match = re.search(r"\{[\s\S]*\}", content)
-                    json_str = json_match.group(0) if json_match else ""
+                    content = re.sub(r",\s*([}\]])", r"\1", c2)
+                    if "{" in content and "}" in content:
+                        s2 = content.find('{'); e2 = content.rfind('}')
+                        if s2 != -1 and e2 != -1 and e2 > s2:
+                            json_str = content[s2:e2+1]
             except Exception:
                 pass
         if not json_str:
-            # Attempt to salvage by brace balancing from first '{'
+            # Attempt to salvage by repair rules and brace balancing
             first_idx = content.find('{')
             if first_idx != -1:
                 candidate = content[first_idx:]
+                # Strip code fences/smart quotes defensively
+                try:
+                    candidate = candidate.replace('“', '"').replace('”', '"').replace('’', "'")
+                except Exception:
+                    pass
+                # Ensure object keys are quoted when preceded by { or ,
+                try:
+                    import re as _re_repair
+                    candidate = _re_repair.sub(r'([\{,]\s*)([A-Za-z_][A-Za-z0-9_\-]*)\s*:', r'\1"\2":', candidate)
+                    # Insert missing commas between object literals in arrays: '}{' -> '}, {'
+                    candidate = _re_repair.sub(r'\}\s*\{', '}, {', candidate)
+                    # Remove trailing commas before closing braces/brackets
+                    candidate = _re_repair.sub(r',\s*([}\]])', r'\1', candidate)
+                    # Collapse double commas
+                    candidate = _re_repair.sub(r',\s*,+', ',', candidate)
+                except Exception:
+                    pass
+                # Balance braces
                 open_curly = candidate.count('{')
                 close_curly = candidate.count('}')
                 open_square = candidate.count('[')
@@ -1180,6 +1972,113 @@ async def async_analyze_vibe_profile(
                 except Exception:
                     json_str = ""
         if not json_str:
+            # Fieldwise extraction attempt: ask LLM for small, strict JSON chunks and merge
+            try:
+                async def _ask_small_json(prompt_text: str) -> Dict[str, Any]:
+                    r = await gemini_service.generate_content(prompt_text, overrides={**ai_overrides, "temperature": 0.3, "max_output_tokens": 384, "provider": "proxy" if settings.GEMINI_BASE_URL else None})
+                    c = (r.get("content") or "").strip() if r and r.get("success") else ""
+                    if not c:
+                        return {}
+                    # Strip code fences and trailing commas
+                    if c.startswith("```"):
+                        fe = c.rfind("```")
+                        inner = c[3:fe] if fe != -1 else c[3:]
+                        if inner.lower().startswith("json"):
+                            inner = inner[4:]
+                        c = inner.strip()
+                    import re as _re_small
+                    c = _re_small.sub(r",\s*([}\]])", r"\1", c)
+                    try:
+                        return json.loads(c)
+                    except Exception:
+                        # try greedy braces
+                        s = c.find('{'); e = c.rfind('}')
+                        if s != -1 and e != -1 and e > s:
+                            cc = c[s:e+1]
+                            try:
+                                return json.loads(cc)
+                            except Exception:
+                                return {}
+                        return {}
+
+                base_ctx = (
+                    f"SAMPLE_MESSAGES_START\n{sample_blob[:15000]}\nSAMPLE_MESSAGES_END\n\n"
+                    f"PRECOMPUTED_STATS:\n{json.dumps(precomputed_stats, ensure_ascii=False)}\n"
+                )
+                p1 = (
+                    "Infer tone, verbosity, and emoji_usage from the context above.\n"
+                    "Return ONLY this JSON object with double-quoted keys/strings and no trailing commas:\n"
+                    "{\n  \"tone\": string,\n  \"verbosity\": string,\n  \"emoji_usage\": string\n}"
+                )
+                j1 = await _ask_small_json(base_ctx + "\n" + p1)
+
+                p2 = (
+                    "Extract up to 8 signature phrases you actually use, with integer counts from messages.\n"
+                    "Return JSON: {\"signature_phrases\":[{\"text\":string,\"count\":number}]}\n"
+                    "Use only double quotes, no trailing commas."
+                )
+                j2 = await _ask_small_json(base_ctx + "\n" + p2)
+
+                p3 = (
+                    "Propose top n-grams that reflect your style (no greetings). Return JSON:"
+                    " {\"ngrams\":{\"bigrams\":[string],\"trigrams\":[string]}}\n"
+                    "Double quotes only; no trailing commas."
+                )
+                j3 = await _ask_small_json(base_ctx + "\n" + p3)
+
+                p4 = (
+                    "List up to 10 topics_of_interest derived from messages (avoid stopwords/brands).\n"
+                    "Return JSON: {\"topics_of_interest\":[string]}\n"
+                    "Double quotes only; no trailing commas."
+                )
+                j4 = await _ask_small_json(base_ctx + "\n" + p4)
+
+                # Build vibe_profile from chunks + computed markers
+                vibe_profile = {
+                    "tone": j1.get("tone") or "",
+                    "verbosity": j1.get("verbosity") or "",
+                    "emoji_usage": j1.get("emoji_usage") or "",
+                    "signature_phrases": j2.get("signature_phrases") or [],
+                    "ngrams": j3.get("ngrams") or {"bigrams": [], "trigrams": []},
+                    "topics_of_interest": j4.get("topics_of_interest") or [],
+                    "topic_weights": {},
+                    "phrase_weights": {},
+                }
+                # Attach style markers and language distribution from stats
+                vibe_profile["style_markers"] = {
+                    "emoji_ratio": emoji_ratio,
+                    "caps_ratio": caps_ratio,
+                    "avg_sentence_len_words": avg_sentence_len_words,
+                    "sentence_types": sentence_types,
+                    "punctuation": precomputed_stats.get("punctuation", {}),
+                    "language_distribution": precomputed_stats.get("language_distribution", {}),
+                }
+                # Digital comm (minimal)
+                endings_sorted = sorted(endings.items(), key=lambda x: x[1], reverse=True)
+                vibe_profile["digital_comm"] = {"addressing_style": "ты", "typical_endings": [k for k,_ in endings_sorted[:2]]}
+                # Remove greetings/temps if present
+                vibe_profile.pop("signature_templates", None)
+                # Attach style_dna and core_tensions
+                if style_dna_obj:
+                    vibe_profile["style_dna"] = style_dna_obj
+                if core_tensions_obj:
+                    vibe_profile["core_tensions"] = core_tensions_obj
+
+                # Persist fieldwise result
+                ai_profile_local = await ai_profile_repo.get_ai_profile_by_user(user_id)
+                if not ai_profile_local:
+                    ai_profile_local = await ai_profile_repo.create_ai_profile(user_id=user_id)
+                await ai_profile_repo.mark_analysis_completed(
+                    profile_id=ai_profile_local.id,
+                    vibe_profile=vibe_profile,
+                    messages_count=len(user_sent_messages),
+                )
+                await websocket_service.send_user_notification(user_id, "vibe_profile_completed", {"profile": vibe_profile})
+                await notify("done", status="FIELDWISE")
+                return
+            except Exception:
+                pass
+
             # As a last resort, synthesize a profile from precomputed_stats instead of failing hard
             msg = "LLM did not return a JSON block"
             logger.error(f"{msg} for user {user_id}: {content[:200]}")
@@ -1190,7 +2089,7 @@ async def async_analyze_vibe_profile(
             except Exception:
                 dom_lang = "en"
             vibe_profile = _build_default_vibe_profile(dom_lang)
-            # Merge topics with filtering and n-gram preference before persisting
+            # Merge topics with filtering, n-gram preference, and recency weighting before persisting
             try:
                 manual_topics = []
                 urepo = container.resolve(UserRepository)
@@ -1203,18 +2102,20 @@ async def async_analyze_vibe_profile(
                 channel_hints = precomputed_stats.get("channel_topic_hints", [])
                 from collections import Counter as _CtrTopics
                 counter = _CtrTopics()
-                import re as _re_topic
+                import re as _re_topic, math as _m
+                # Stoplists and noise filters
                 stop_ru = {"и","в","на","не","что","это","с","как","я","а","то","у","но","же","к","за","если","по","или","из","для","о","от","до","бы","да","ну","про","так","там","тут","чтобы","при","без","быть","есть","тот","эта","этот","только","уже","ещё","еще","где","когда","всё","все","мы","вы","они","он","она","оно","чем","ли","лишь","вот","такой","такая","такие","мой","моя","мои","твой","твоя","твои","их","наш","ваш","его","ее","её","ничего","чего","кто","что","года","лет","день","раз","сам","сама","само","самые","самый","либо","ни","—","-","мне","меня","мной","нам","нами","вам","вами","тебе","тобой","тебя","ему","ей","ими","всем","себя","очень","просто","тоже","через","если","будет","будут","буду","можно","может","нужно","надо","хочу","хотел","хотела","хотели"}
                 stop_en = {"the","and","or","of","to","a","an","in","on","for","with","is","are","be","as","at","by","it","this","that","these","those","we","you","they","i"}
+                time_noise_ru = {"сегодня","завтра","вчера","сколько","когда","сейчас","потом","позже","раньше"}
+                brand_noise = {"ponchik","чат","channel","club","official","news","тг","чатик","итмо","экс","командой","mindcraft"}
                 def is_topic_token(tok: str) -> bool:
                     t = (tok or "").strip().lower()
                     if not t:
                         return False
-                    if t in stop_ru or t in stop_en:
+                    if t in stop_ru or t in stop_en or t in time_noise_ru or t in brand_noise:
                         return False
                     if t == "-":
                         return False
-                    # heuristic verb-ish endings (ru)
                     if _re_topic.search(r"(юсь|ешь|ешься|ет|ете|ем|ют|ят|ал|ала|али|ишь|ит|им|ите|аю|аешь|ают|ется)$", t):
                         return False
                     if len(t) < 3 and t not in {"ии","ai"}:
@@ -1228,7 +2129,7 @@ async def async_analyze_vibe_profile(
                     if len(valid_parts) != len(parts):
                         return False
                     return any(len(pp) >= 4 for pp in parts)
-
+                # Seed with manual/channel/mine signals
                 for t in manual_topics or []:
                     if is_topic_token(str(t)):
                         counter[str(t).lower()] += 3
@@ -1244,18 +2145,37 @@ async def async_analyze_vibe_profile(
                 for t in channel_hints or []:
                     if is_topic_token(str(t)):
                         counter[str(t).lower()] += 1
+                # Recency-weighted boost from actual messages
+                try:
+                    from datetime import datetime as _dt
+                    now = _dt.utcnow()
+                    for m in (user_sent_messages or [])[-600:]:
+                        txt = (m.get("text") or "")
+                        msg_dt = m.get("date")
+                        if not txt or not msg_dt:
+                            continue
+                        age_days = max((now - msg_dt).days, 0)
+                        w = max(0.3, _m.exp(-age_days / 180.0))
+                        for tok in _re_topic.findall(r"[A-Za-zА-Яа-яЁё]{3,}", txt):
+                            if is_topic_token(tok):
+                                counter[tok.lower()] += w
+                except Exception:
+                    pass
                 top_pairs_all = counter.most_common(40)
-                # Prefer multi-word phrases first, then allow up to 5 unigrams
-                # remove brand/noisy tokens from unigrams
-                noise_uni = {"ponchik","чат","channel","club","official","news","тг","чатик"}
+                # Prefer multi-word phrases first, then allow up to 3 clean unigrams
                 phrases = [(k, w) for k, w in top_pairs_all if " " in k]
-                unigrams = [(k, w) for k, w in top_pairs_all if " " not in k and k not in noise_uni]
-                selected = phrases[:12] + unigrams[:5]
+                unigrams = [(k, w) for k, w in top_pairs_all if " " not in k and is_topic_token(k)]
+                selected = phrases[:12] + unigrams[:3]
                 if selected:
                     total_w = max(sum(w for _, w in selected), 1)
                     vibe_profile["topics_of_interest"] = [k for k, _ in selected]
-                    vibe_profile["topic_weights"] = {k: round(w/total_w, 2) for k, w in selected}
+                    vibe_profile["topic_weights"] = {k: round(float(w)/float(total_w), 2) for k, w in selected}
                 vibe_profile.pop("signature_templates", None)
+                # Attach style_dna and core_tensions
+                if style_dna_obj:
+                    vibe_profile["style_dna"] = style_dna_obj
+                if core_tensions_obj:
+                    vibe_profile["core_tensions"] = core_tensions_obj
             except Exception:
                 pass
             ai_profile = await ai_profile_repo.get_ai_profile_by_user(user_id)
@@ -1279,17 +2199,213 @@ async def async_analyze_vibe_profile(
             await websocket_service.send_user_notification(user_id, "vibe_profile_completed", {"profile": vibe_profile})
             await notify("done")
             return
-        # Sanitize common issues: trailing commas, smart quotes
+        # Sanitize common issues: trailing commas, smart quotes; fallback to fieldwise if still failing
         try:
             import re as _re_fix
+            # Remove any code fences again inside the extracted block
+            if json_str.startswith("```"):
+                fence_end = json_str.rfind("```")
+                inner = json_str[3:fence_end] if fence_end != -1 else json_str[3:]
+                if inner.lower().startswith("json"):
+                    inner = inner[4:]
+                json_str = inner.strip()
+            # Strip trailing commas
             json_str = _re_fix.sub(r",\s*([}\]])", r"\1", json_str)
+            # Quote unquoted keys at object boundaries
+            json_str = _re_fix.sub(r"([\{,]\s*)([A-Za-z_][A-Za-z0-9_\-]*)\s*:", r"\1""\2"":", json_str)
+            # Insert missing commas between adjacent object literals
+            json_str = _re_fix.sub(r"}\s*{", "}, {", json_str)
+            # Collapse accidental double commas
+            json_str = _re_fix.sub(r",\s*,+", ",", json_str)
+            # Balance braces/brackets conservatively
+            oc, cc = json_str.count('{'), json_str.count('}')
+            osq, csq = json_str.count('['), json_str.count(']')
+            if oc > cc:
+                json_str += '}' * (oc - cc)
+            if osq > csq:
+                json_str += ']' * (osq - csq)
             json_str = json_str.replace("“", '"').replace("”", '"').replace("’", "'")
             vibe_profile = json.loads(json_str)
         except Exception as e:
             logger.error(f"JSON parse failed for user {user_id}: {e}")
-            await websocket_service.send_user_notification(user_id, "vibe_profile_failed", {"error": str(e)})
-            await notify("llm_parse_failed")
-            return
+            # Try fieldwise extraction before final synth fallback
+            try:
+                async def _ask_small_json_fw(p: str) -> dict:
+                    r = await gemini_service.generate_content(
+                        p,
+                        overrides={"temperature": 0.3, "max_output_tokens": 384, "provider": "proxy" if settings.GEMINI_BASE_URL else None},
+                    )
+                    c = (r.get("content") or "").strip() if r and r.get("success") else ""
+                    if not c:
+                        return {}
+                    if c.startswith("```"):
+                        fe = c.rfind("```"); inner = c[3:fe] if fe != -1 else c[3:]
+                        if inner.lower().startswith("json"): inner = inner[4:]
+                        c = inner.strip()
+                    c = _re_fix.sub(r",\s*([}\]])", r"\1", c)
+                    try:
+                        return json.loads(c)
+                    except Exception:
+                        s = c.find("{"); e2 = c.rfind("}")
+                        if s != -1 and e2 != -1 and e2 > s:
+                            try:
+                                return json.loads(c[s:e2+1])
+                            except Exception:
+                                return {}
+                        return {}
+
+                base_ctx_fw = (
+                    f"SAMPLE_MESSAGES_START\n{sample_blob[:15000]}\nSAMPLE_MESSAGES_END\n\n"
+                    f"PRECOMPUTED_STATS:\n{json.dumps(precomputed_stats, ensure_ascii=False)}\n"
+                )
+                p1 = (
+                    "Infer tone, verbosity, and emoji_usage from the context above.\n"
+                    "Return ONLY this JSON object with double-quoted keys/strings and no trailing commas:\n"
+                    "{\n  \"tone\": string,\n  \"verbosity\": string,\n  \"emoji_usage\": string\n}"
+                )
+                p2 = (
+                    "Extract up to 8 signature phrases you actually use, with integer counts from messages.\n"
+                    "Return JSON: {\"signature_phrases\":[{\"text\":string,\"count\":number}]}\n"
+                    "Use only double quotes, no trailing commas."
+                )
+                p3 = (
+                    "Propose top n-grams that reflect your style (no greetings). Return JSON: {\"ngrams\":{\"bigrams\":[string],\"trigrams\":[string]}}\n"
+                    "Double quotes only; no trailing commas."
+                )
+                p4 = (
+                    "List up to 10 topics_of_interest derived from messages (avoid stopwords/brands).\n"
+                    "Return JSON: {\"topics_of_interest\":[string]}\n"
+                    "Double quotes only; no trailing commas."
+                )
+                j1 = await _ask_small_json_fw(base_ctx_fw + "\n" + p1)
+                j2 = await _ask_small_json_fw(base_ctx_fw + "\n" + p2)
+                j3 = await _ask_small_json_fw(base_ctx_fw + "\n" + p3)
+                j4 = await _ask_small_json_fw(base_ctx_fw + "\n" + p4)
+                vibe_profile = {
+                    "tone": j1.get("tone") or "",
+                    "verbosity": j1.get("verbosity") or "",
+                    "emoji_usage": j1.get("emoji_usage") or "",
+                    "signature_phrases": j2.get("signature_phrases") or [],
+                    "ngrams": j3.get("ngrams") or {"bigrams": [], "trigrams": []},
+                    "topics_of_interest": j4.get("topics_of_interest") or [],
+                    "topic_weights": {},
+                    "phrase_weights": {},
+                }
+                # Attach style markers and computed DNA/tensions if available
+                vibe_profile["style_markers"] = {
+                    "emoji_ratio": emoji_ratio,
+                    "caps_ratio": caps_ratio,
+                    "avg_sentence_len_words": avg_sentence_len_words,
+                    "sentence_types": sentence_types,
+                    "punctuation": precomputed_stats.get("punctuation", {}),
+                    "language_distribution": precomputed_stats.get("language_distribution", {}),
+                }
+                if style_dna_obj:
+                    vibe_profile["style_dna"] = style_dna_obj
+                if core_tensions_obj:
+                    vibe_profile["core_tensions"] = core_tensions_obj
+                # Persist
+                ai_profile_local = await ai_profile_repo.get_ai_profile_by_user(user_id)
+                if not ai_profile_local:
+                    ai_profile_local = await ai_profile_repo.create_ai_profile(user_id=user_id)
+                await ai_profile_repo.mark_analysis_completed(
+                    profile_id=ai_profile_local.id,
+                    vibe_profile=vibe_profile,
+                    messages_count=len(user_sent_messages),
+                )
+                await websocket_service.send_user_notification(user_id, "vibe_profile_completed", {"profile": vibe_profile})
+                await notify("done", status="FIELDWISE_AFTER_PARSE_FAIL")
+                return
+            except Exception:
+                await notify("llm_parse_failed")
+            # FINAL FALLBACK: synthesize from stats and mark OUTDATED instead of hard fail
+            try:
+                try:
+                    dom_lang = "ru" if precomputed_stats.get("language_distribution", {}).get("ru_cyrillic", 0) > 0.5 else "en"
+                except Exception:
+                    dom_lang = "en"
+                vibe_profile = _build_default_vibe_profile(dom_lang)
+                # Merge topics with filtering and n-gram preference
+                manual_topics = []
+                try:
+                    urepo = container.resolve(UserRepository)
+                    u = await urepo.get_user(user_id)
+                    if getattr(u, 'persona_interests_json', None) and isinstance(u.persona_interests_json, list):
+                        manual_topics = [str(x) for x in u.persona_interests_json if x]
+                except Exception:
+                    manual_topics = []
+                mined_uni = precomputed_stats.get("top_unigrams", [])[:100]
+                mined_bi = precomputed_stats.get("top_bigrams", [])[:60]
+                mined_tri = precomputed_stats.get("top_trigrams", [])[:40]
+                channel_hints = precomputed_stats.get("channel_topic_hints", [])
+                from collections import Counter as _CtrTopics
+                counter = _CtrTopics()
+                import re as _re_topic
+                stop_ru = {"и","в","на","не","что","это","с","как","я","а","то","у","но","же","к","за","если","по","или","из","для","о","от","до","бы","да","ну","про","так","там","тут","чтобы","при","без","быть","есть","тот","эта","этот","только","уже","ещё","еще","где","когда","всё","все","мы","вы","они","он","она","оно","чем","ли","лишь","вот","такой","такая","такие","мой","моя","мои","твой","твоя","твои","их","наш","ваш","его","ее","её","ничего","чего","кто","что","года","лет","день","раз","сам","сама","само","самые","самый","либо","ни","—","-","мне","меня","мной","нам","нами","вам","вами","тебе","тобой","тебя","ему","ей","ими","всем","себя","очень","просто","тоже","через","если","будет","будут","буду","можно","может","нужно","надо","хочу","хотел","хотела","хотели"}
+                stop_en = {"the","and","or","of","to","a","an","in","on","for","with","is","are","be","as","at","by","it","this","that","these","those","we","you","they","i"}
+                def is_topic_token(tok: str) -> bool:
+                    t = (tok or "").strip().lower()
+                    if not t:
+                        return False
+                    if t in stop_ru or t in stop_en:
+                        return False
+                    if t == "-":
+                        return False
+                    if _re_topic.search(r"(юсь|ешь|ешься|ет|ете|ем|ют|ят|ал|ала|али|ишь|ит|им|ите|аю|аешь|ают|ется)$", t):
+                        return False
+                    if len(t) < 3 and t not in {"ии","ai"}:
+                        return False
+                    return bool(_re_topic.match(r"^[a-zа-яё-]+$", t))
+                def is_good_phrase(phrase: str) -> bool:
+                    parts = [p for p in phrase.split() if p]
+                    if not parts:
+                        return False
+                    valid_parts = [pp for pp in parts if is_topic_token(pp)]
+                    if len(valid_parts) != len(parts):
+                        return False
+                    return any(len(pp) >= 4 for pp in parts)
+                for t in manual_topics or []:
+                    if is_topic_token(str(t)):
+                        counter[str(t).lower()] += 3
+                for t in mined_tri or []:
+                    if is_good_phrase(str(t)):
+                        counter[str(t).lower()] += 4
+                for t in mined_bi or []:
+                    if is_good_phrase(str(t)):
+                        counter[str(t).lower()] += 3
+                for t in mined_uni or []:
+                    if is_topic_token(str(t)):
+                        counter[str(t).lower()] += 1
+                for t in channel_hints or []:
+                    if is_topic_token(str(t)):
+                        counter[str(t).lower()] += 1
+                top_pairs_all = counter.most_common(40)
+                noise_uni = {"ponchik","чат","channel","club","official","news","тг","чатик"}
+                phrases = [(k, w) for k, w in top_pairs_all if " " in k]
+                unigrams = [(k, w) for k, w in top_pairs_all if " " not in k and k not in noise_uni]
+                selected = phrases[:12] + unigrams[:5]
+                if selected:
+                    total_w = max(sum(w for _, w in selected), 1)
+                    vibe_profile["topics_of_interest"] = [k for k, _ in selected]
+                    vibe_profile["topic_weights"] = {k: round(w/total_w, 2) for k, w in selected}
+                vibe_profile.pop("signature_templates", None)
+                # Persist fallback profile
+                ai_profile_local = await ai_profile_repo.get_ai_profile_by_user(user_id)
+                if not ai_profile_local:
+                    ai_profile_local = await ai_profile_repo.create_ai_profile(user_id=user_id)
+                await ai_profile_repo.mark_analysis_completed(
+                    profile_id=ai_profile_local.id,
+                    vibe_profile=vibe_profile,
+                    messages_count=len(user_sent_messages),
+                )
+                # Immediately mark as OUTDATED to prompt re-run later, without failing the flow
+                await ai_profile_repo.update_ai_profile(ai_profile_local.id, analysis_status=AnalysisStatus.OUTDATED)
+                await websocket_service.send_user_notification(user_id, "vibe_profile_completed", {"profile": vibe_profile})
+                await notify("done", status="OUTDATED")
+                return
+            except Exception as e2:
+                await websocket_service.send_user_notification(user_id, "vibe_profile_warning", {"warning": str(e)})
+                return
         try:
             dom_lang = "ru" if precomputed_stats.get("language_distribution", {}).get("ru_cyrillic", 0) > 0.5 else "en"
             vibe_profile["dominant_language"] = dom_lang
@@ -1404,6 +2520,14 @@ async def async_analyze_vibe_profile(
         try:
             if isinstance(vibe_profile, dict) and "signature_templates" in vibe_profile:
                 vibe_profile.pop("signature_templates", None)
+        except Exception:
+            pass
+        # Ensure style_dna/core_tensions attached if LLM response lacked them
+        try:
+            if style_dna_obj and not isinstance(vibe_profile.get("style_dna"), dict):
+                vibe_profile["style_dna"] = style_dna_obj
+            if core_tensions_obj and not isinstance(vibe_profile.get("core_tensions"), dict):
+                vibe_profile["core_tensions"] = core_tensions_obj
         except Exception:
             pass
 
@@ -1623,6 +2747,7 @@ async def async_generate_draft_for_post(
 ):
     """The async implementation of draft generation."""
     # Resolve dependencies
+    from app.core.config import settings
     user_repo = container.resolve(UserRepository)
     ai_profile_repo = container.resolve(AIProfileRepository)
     draft_repo = container.resolve(DraftCommentRepository)
@@ -1840,6 +2965,24 @@ async def async_generate_draft_for_post(
             dt_cfg=dt_cfg,
         )
 
+        # Extract anchors from the current post content for grounding and scoring
+        import re as _re_anchor
+        _post_full = (post_data.get('original_post_content') or post_data.get('original_post_text_preview') or '')
+        def _extract_numbers(text: str) -> list[str]:
+            return _re_anchor.findall(r"(?<!\w)(?:[0-9][0-9\.,%]*)", text)
+        def _extract_quotes(text: str) -> list[str]:
+            return [m.group(1) for m in _re_anchor.finditer(r"[«\"\']([^»\"\']{4,120})[»\"\']", text)]
+        def _extract_named_entities_simple(text: str) -> list[str]:
+            return [
+                _re_anchor.sub(r"\s+", " ", m.group(0)).strip()
+                for m in _re_anchor.finditer(r"(?:\b[А-ЯЁ][а-яё]+\b(?:\s+|\-)){1,3}\b[А-ЯЁ][а-яё]+\b", text)
+            ]
+        anchors_post = {
+            "numbers": _extract_numbers(_post_full)[:20],
+            "quotes": _extract_quotes(_post_full)[:10],
+            "entities": _extract_named_entities_simple(_post_full)[:20],
+        }
+
         prompt = f"""
         You are an AI assistant generating a Telegram comment for a user.
         USER VIBE PROFILE: {json.dumps(ai_profile.vibe_profile_json, indent=2)}
@@ -1868,9 +3011,10 @@ async def async_generate_draft_for_post(
         - Match the user's vibe PERFECTLY (tone, brevity, emoji level). Use their typical endings if natural.
         - Avoid generic starters or filler phrases. Be specific and situated in the post.
         - Output ONLY the comment text. No quotes, no markdown.
+        - If environment is LOW_SAFE_LOW_DEPTH and no concrete anchor can be cited confidently, return exactly: __SKIP__
         """
 
-        # Generate comment
+        # Generate comment (K candidates + rerank)
         # Allow per-user overrides from temporary ai settings via websocket/UI
         ai_overrides: Dict[str, Any] = {}
         try:
@@ -1887,9 +3031,67 @@ async def async_generate_draft_for_post(
         except Exception:
             ai_overrides = {}
 
+        candidates: list[tuple[str, float]] = []
+        k = int((dt_cfg.get("generation_controls") or {}).get("num_candidates", 1))
+        k = max(1, min(k, 3))
+        for i in range(k):
+            resp = await gemini_service.generate_content(prompt, overrides={**ai_overrides, "provider": "proxy" if settings.GEMINI_BASE_URL else None})
+            draft = (resp.get("content") or "").strip() if resp and resp.get("success") else ""
+            if not draft:
+                continue
+            # Post-process
+            draft = _strip_generic_openers(draft, dt_cfg)
+            # Scoring: style match + persona congruence + anchor presence + env appropriateness
+            score = 0.0
+            # Anchor presence: entities or numeric patterns from the post appear in the draft
+            has_anchor = False
+            try:
+                dl = draft.lower()
+                for ent in anchors_post.get('entities', [])[:5]:
+                    if ent and ent.lower() in dl:
+                        has_anchor = True
+                        break
+                if not has_anchor:
+                    nums = anchors_post.get('numbers', [])[:5]
+                    if nums:
+                        draft_digits = _re_anchor.findall(r"[0-9]+", draft)
+                        draft_digits_blob = " ".join(draft_digits)
+                        for num in nums:
+                            n_digits = "".join(_re_anchor.findall(r"[0-9]+", num))
+                            if n_digits and n_digits in draft_digits_blob:
+                                has_anchor = True
+                                break
+            except Exception:
+                has_anchor = False
+            score += 0.3 if has_anchor else 0.0
+            # Question ratio preference
+            want_q = (dt_cfg.get("generation_controls",{}).get("rhetoric",{}).get("question_ratio_target",0.6) or 0.0)
+            is_q = 1.0 if draft.strip().endswith('?') else 0.0
+            score += 0.2 * (1.0 - abs(want_q - is_q))
+            # Length window
+            min_len, max_len = (dt_cfg.get("generation_controls",{}).get("length",{}).get("char_target", [80,180]) or [80,180])
+            L = len(draft)
+            if min_len <= L <= max_len:
+                score += 0.2
+            # Environment appropriateness
+            env = persona_directives.get('environment_quadrant')
+            if env == 'LOW_SAFE_HIGH_DEPTH' and '!' not in draft:
+                score += 0.1
+            if env == 'LOW_SAFE_LOW_DEPTH' and draft == '__SKIP__':
+                score += 0.3
+            candidates.append((draft, score))
+
+        if not candidates:
+            return
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_text = candidates[0][0]
+        if best_text == '__SKIP__':
+            logger.info(f"Skipping draft due to toxic/low-depth environment for user {user_id}")
+            return
+
         # Call LLM with protective try/except so we can fallback on failures
         try:
-            response = await gemini_service.generate_content(prompt, overrides=ai_overrides)
+            response = await gemini_service.generate_content(prompt, overrides={**ai_overrides, "provider": "proxy" if settings.GEMINI_BASE_URL else None})
         except Exception as e:
             # Normalize into response dict so the fallback below can trigger
             response = {"success": False, "error": str(e)}
@@ -1915,6 +3117,17 @@ async def async_generate_draft_for_post(
                 )
         else:
             draft_text = content_text
+        # Unwrap accidental JSON objects like {"comment": "..."}
+        try:
+            if isinstance(draft_text, str) and draft_text.strip().startswith('{'):
+                parsed = json.loads(draft_text)
+                if isinstance(parsed, dict):
+                    for key in ("comment", "text", "reply", "message"):
+                        if isinstance(parsed.get(key), str) and parsed.get(key).strip():
+                            draft_text = parsed.get(key).strip()
+                            break
+        except Exception:
+            pass
 
         # Enforce anti-generic controls: strip emoji/symbol-only starters
         try:
