@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## v1.8 – DT freeform robustness, Gemini proxy hardening, DT-aware analysis prep (2025-08-13)
+
+### Backend
+- Freeform compiler: chunked fallback + heuristic compile; preview/apply never hard-fails; richer WS stages.
+- Analyzer: stricter JSON repair; fieldwise extraction after parse-fail; synthesized profile only as last resort; no generic caps.
+- Draft generation: proxy provider override, safer guards, SKIP preserved; settings imported in function scopes to avoid NameErrors.
+- Gemini service: proxy model candidates (gemini-2.0-flash-lite, gemini-pro, 1.5-pro), response_format json_object, relaxed safety; env-driven model prefs and optional fallbacks.
+- Config: DT_FREEFORM flags; GEMINI_MODEL_DEV/PROD and GEMINI_ENABLE_FALLBACKS.
+- Compose: rely on .env via env_file; avoid overriding GEMINI_* with empty values.
+
+### Frontend
+- AI Controls: model list updated (2.5 Pro, 2.0 Flash Lite, 1.5 Pro), provider toggle, fallback toggle (UI-only).
+- Digital Twin panel: Freeform panel (preview/apply/rollback), tokens estimate, notes; talents and banned_starters normalized; logs stable.
+- Store: modelCapabilities extended.
+
+### Notes
+- No DB migrations; JSON-only changes in `vibe_profile_json`.
+- Next step: DT-aware alignment/drift metrics and recalibration flow.
+
+---
+
 ## v1.4 – Digital Twin upgrade, Gemini hardening, and DT UI overhaul (2025-08-12)
 
 ### Highlights
