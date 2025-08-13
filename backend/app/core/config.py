@@ -72,6 +72,15 @@ class Settings:
     GEMINI_API_VERSION: str = os.getenv("GEMINI_API_VERSION", "v1beta")
     # Auth scheme: 'auto' (infer), 'bearer' (Authorization header), or 'x-goog' (X-goog-api-key)
     GEMINI_AUTH_SCHEME: str = os.getenv("GEMINI_AUTH_SCHEME", "auto").lower()
+    # Preferred models by environment
+    GEMINI_MODEL_DEV: str = os.getenv("GEMINI_MODEL_DEV", "gemini-2.0-flash-lite")
+    GEMINI_MODEL_PROD: str = os.getenv("GEMINI_MODEL_PROD", "gemini-2.5-pro")
+    # Allow trying alternates if the preferred model fails
+    GEMINI_ENABLE_FALLBACKS: bool = os.getenv("GEMINI_ENABLE_FALLBACKS", "false").lower() == "true"
+
+    # Feature flags
+    DT_FREEFORM_ENABLED: bool = os.getenv("DT_FREEFORM_ENABLED", "false").lower() == "true"
+    DT_FREEFORM_MAX_CHARS: int = int(os.getenv("DT_FREEFORM_MAX_CHARS", "15000"))
 
     # Centrifugo WebSocket
     CENTRIFUGO_API_KEY: str = os.getenv("CENTRIFUGO_API_KEY", "dummy-centrifugo-key")

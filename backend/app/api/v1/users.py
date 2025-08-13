@@ -1,6 +1,7 @@
 """API routes for user management."""
 
 import os
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body
@@ -11,7 +12,7 @@ from app.schemas.ai_profile import AIProfileResponse, AIProfileUpdate
 from app.schemas.ai_settings import AISettings, AISettingsUpdate
 from app.schemas.user import UserResponse, UserUpdate
 from app.core.dependencies import container
-from app.tasks.tasks import analyze_vibe_profile, capture_context_dry_run, DEFAULT_DT_CONFIG
+from app.tasks.tasks import analyze_vibe_profile, capture_context_dry_run, DEFAULT_DT_CONFIG, dt_ingest_freeform, dt_preview_freeform
 from app.schemas.context_analysis import ContextApproveRequest
 from app.core.config import settings
 
@@ -255,6 +256,107 @@ async def update_my_ai_profile(
     )
 
     return APIResponse(success=True, data=AIProfileResponse.model_validate(updated))
+
+
+@router.post("/me/dt-config/freeform/preview", response_model=APIResponse[dict])
+async def dt_config_freeform_preview(
+    body: dict = Body(...),
+    current_user: Optional[UserResponse] = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """Queue preview compile of Digital Twin config from freeform text. Does NOT persist.
+
+    Body: { content: str }
+    Returns queued status; result will be sent via WS event `dt_freeform_preview` and cached for 10m.
+    """
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    if not settings.DT_FREEFORM_ENABLED:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="DT freeform is disabled")
+
+    content = str((body or {}).get("content") or "")
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="content is required")
+    if len(content) > settings.DT_FREEFORM_MAX_CHARS:
+        content = content[: settings.DT_FREEFORM_MAX_CHARS]
+    try:
+        dt_preview_freeform.delay(user_id=current_user.id, content=content)
+    except Exception:
+        raise HTTPException(status_code=503, detail="queue_unavailable")
+    return APIResponse(success=True, data={"status": "queued", "tokens_estimate": min(len(content)//4, 20000)})
+
+
+@router.post("/me/dt-config/freeform/apply", response_model=APIResponse[dict])
+async def dt_config_freeform_apply(
+    body: dict = Body(...),
+    current_user: Optional[UserResponse] = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """Queue Celery to ingest freeform and persist compiled dt_config with versioning."""
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    if not settings.DT_FREEFORM_ENABLED:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="DT freeform is disabled")
+    content = str((body or {}).get("content") or "")
+    apply_mask = (body or {}).get("apply_mask") or {}
+    strategy = (body or {}).get("strategy") or "merge"
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="content is required")
+    if len(content) > settings.DT_FREEFORM_MAX_CHARS:
+        content = content[: settings.DT_FREEFORM_MAX_CHARS]
+    try:
+        dt_ingest_freeform.delay(user_id=current_user.id, content=content, apply_mask=apply_mask, strategy=strategy)
+    except Exception:
+        raise HTTPException(status_code=503, detail="queue_unavailable")
+    return APIResponse(success=True, data={"status": "queued"})
+
+
+@router.get("/me/dt-config/freeform/last", response_model=APIResponse[dict])
+async def dt_config_freeform_last(
+    current_user: Optional[UserResponse] = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """Return last saved freeform provenance for UI restoration."""
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    from app.repositories.ai_profile_repository import AIProfileRepository
+    repo = container.resolve(AIProfileRepository)
+    ai_profile = await repo.get_ai_profile_by_user(current_user.id)
+    vp = dict(getattr(ai_profile, "vibe_profile_json", {}) or {}) if ai_profile else {}
+    return APIResponse(success=True, data={
+        "dt_freeform": vp.get("dt_freeform") or {},
+        "dt_config": vp.get("dt_config") or {},
+    })
+
+
+@router.post("/me/dt-config/rollback", response_model=APIResponse[dict])
+async def dt_config_rollback(
+    body: dict = Body(...),
+    current_user: Optional[UserResponse] = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """Rollback dt_config to a previous version id stored in `vibe_profile_json.dt_freeform.versions`.
+
+    Body: { version_id: string }
+    """
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    from app.repositories.ai_profile_repository import AIProfileRepository
+    repo = container.resolve(AIProfileRepository)
+    ai_profile = await repo.get_ai_profile_by_user(current_user.id)
+    if not ai_profile or not getattr(ai_profile, "vibe_profile_json", None):
+        raise HTTPException(status_code=404, detail="profile_not_found")
+    vp = dict(ai_profile.vibe_profile_json or {})
+    versions = (vp.get("dt_freeform") or {}).get("versions") or []
+    vid = str((body or {}).get("version_id") or "").strip()
+    if not vid:
+        raise HTTPException(status_code=400, detail="version_id required")
+    target = None
+    for r in versions:
+        if str(r.get("id")) == vid:
+            target = r
+            break
+    if not target or "prev_dt_config" not in target:
+        raise HTTPException(status_code=404, detail="version_not_found")
+    vp["dt_config"] = target.get("prev_dt_config") or {}
+    updated = await repo.update_ai_profile(ai_profile.id, vibe_profile_json=vp)
+    return APIResponse(success=True, data={"status": "rolled_back", "version_id": vid, "dt_config": (vp.get("dt_config") or {})})
 
 
 @router.post("/me/subpersona-classify-preview", response_model=APIResponse[dict])

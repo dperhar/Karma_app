@@ -104,15 +104,20 @@ class GeminiService:
                     }
                 return {"success": True, "content": "This is a mock response."}
 
-            # Resolve per-request overrides
-            model_name = (overrides or {}).get("model") or "gemini-2.5-pro"
-            # Normalize model names for proxy compatibility
-            if "hubai" in self.base_url:
-                aliases = {
-                    "gemini-1.5-flash": "gemini-2.0-flash-lite",
-                    "gemini-2.5-pro": "gemini-2.0-flash-lite",
-                }
-                model_name = aliases.get(model_name, model_name)
+            # Resolve per-request overrides with environment defaults
+            preferred_model = settings.GEMINI_MODEL_PROD if not settings.IS_DEVELOP else settings.GEMINI_MODEL_DEV
+            model_name = (overrides or {}).get("model") or preferred_model or "gemini-2.5-pro"
+            # Normalize model names for proxy compatibility, but keep a set of candidates to try
+            proxy = "hubai" in self.base_url
+            proxy_model_candidates = []
+            if proxy:
+                # Try a few likely models exposed by the proxy in order
+                proxy_model_candidates = [
+                    model_name,
+                    "gemini-2.0-flash-lite",
+                    "gemini-pro",
+                    "gemini-1.5-pro",
+                ]
             try:
                 temperature = float((overrides or {}).get("temperature", self.model.generation_config.get("temperature", 0.95)))
             except Exception:
@@ -131,7 +136,7 @@ class GeminiService:
                 pass
 
             # Prefer REST call for deterministic behavior, honoring base URL and auth scheme
-            async def _rest_call() -> Dict[str, Any]:
+            async def _rest_call_with_model(model_attempt: str, temp: float, max_tokens: int) -> Dict[str, Any]:
                 headers = {"Content-Type": "application/json"}
                 # Auth header selection
                 scheme = (settings.GEMINI_AUTH_SCHEME or "auto").lower()
@@ -142,27 +147,39 @@ class GeminiService:
                     headers["Authorization"] = f"Bearer {self.api_key}"
                 else:
                     headers["X-goog-api-key"] = self.api_key
+                # Force JSON mode by wrapping prompt; Gemini sometimes returns code fences regardless of mime type
+                prompt_wrapped = (
+                    "Return ONLY a single valid JSON object. Do not include code fences or any prose before/after.\n" + prompt
+                )
                 body = {
-                    "contents": [{"parts": [{"text": prompt}]}],
+                    "contents": [{"parts": [{"text": prompt_wrapped}]}],
                     "generationConfig": {
-                        "temperature": temperature,
-                        "maxOutputTokens": max_output_tokens,
+                        "temperature": temp,
+                        "maxOutputTokens": max_tokens,
                         # Hint Gemini REST to return strict JSON
                         "responseMimeType": "application/json",
                     },
+                    # Relax safety to avoid empty blocks while we post-process anyway
+                    "safetySettings": [
+                        {"category": "HARM_CATEGORY_SEXUAL", "threshold": "BLOCK_ONLY_HIGH"},
+                        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+                        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+                        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"}
+                    ],
                 }
                 # Route selection: Google uses models/*:generateContent, some proxies expose OpenAI-like /chat/completions
                 if use_proxy:
                     # OpenAI-compatible proxy
                     rest_url = f"{self.base_url}/{settings.GEMINI_API_VERSION}/chat/completions"
                     body = {
-                        "model": model_name,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": temperature,
-                        "max_tokens": max_output_tokens,
+                        "model": model_attempt,
+                        "messages": [{"role": "user", "content": prompt_wrapped}],
+                        "temperature": temp,
+                        "max_tokens": max_tokens,
+                        "response_format": {"type": "json_object"},
                     }
                 else:
-                    rest_url = f"{self.base_url}/{self.api_version}/models/{model_name}:generateContent"
+                    rest_url = f"{self.base_url}/{self.api_version}/models/{model_attempt}:generateContent"
                 resp = requests.post(rest_url, json=body, headers=headers, timeout=60)
                 if resp.status_code == 200:
                     data = resp.json()
@@ -176,6 +193,21 @@ class GeminiService:
                                 if t:
                                     text_segments.append(t)
                         content_text = "".join(text_segments).strip()
+                        # If empty due to safety block, surface a reason
+                        if not content_text:
+                            block_reason = (data.get("promptFeedback", {}) or {}).get("blockReason")
+                            if block_reason:
+                                return {"success": False, "error": f"Blocked: {block_reason}", "status": 200}
+                        # Defensive: if Gemini still returns code fences, strip them here
+                        if content_text.startswith("```"):
+                            try:
+                                fence_end = content_text.rfind("```")
+                                inner = content_text[3:fence_end] if fence_end != -1 else content_text[3:]
+                                if inner.lower().startswith("json"):
+                                    inner = inner[4:]
+                                content_text = inner.strip()
+                            except Exception:
+                                pass
                     else:
                         # Parse OpenAI-like proxy response
                         choices = data.get("choices") or []
@@ -194,17 +226,31 @@ class GeminiService:
                 logger.error("Gemini REST error %s: %s", resp.status_code, resp.text[:500])
                 return {"success": False, "error": resp.text, "status": resp.status_code}
 
+            # Retry strategy with model fallbacks and safer decoding
+            model_candidates = [
+                (model_name, temperature, max_output_tokens),
+            ]
+            if settings.GEMINI_ENABLE_FALLBACKS:
+                model_candidates += [
+                    ("gemini-1.5-pro", 0.4, min(768, max_output_tokens)),
+                    ("gemini-1.5-flash", 0.3, min(640, max_output_tokens)),
+                ]
+            # If proxy, prepend alternative proxy model ids to try
+            if proxy and proxy_model_candidates:
+                model_candidates = [
+                    (mn, temperature, max_output_tokens) for mn in proxy_model_candidates
+                ] + model_candidates
             attempts = self.max_retries
             for attempt in range(1, attempts + 1):
-                # Concurrency guard
-                if _SEMAPHORE is not None:
-                    async with _SEMAPHORE:
-                        result = await _rest_call()
-                else:
-                    result = await _rest_call()
+                for m_name, temp_try, max_tok_try in model_candidates:
+                    if _SEMAPHORE is not None:
+                        async with _SEMAPHORE:
+                            result = await _rest_call_with_model(m_name, temp_try, max_tok_try)
+                    else:
+                        result = await _rest_call_with_model(m_name, temp_try, max_tok_try)
 
-                if result.get("success"):
-                    return result
+                    if result.get("success") and (result.get("content") or "").strip():
+                        return result
 
                 status = int(result.get("status") or 0)
                 body_err = result.get("error", "")
@@ -233,11 +279,11 @@ class GeminiService:
             try:
                 # Recreate SDK model with overrides to apply temperature/tokens
                 local_model = genai.GenerativeModel(
-                    model_name=model_name,
+                    model_name=(model_candidates[-1][0] or model_name),
                     generation_config={
-                        "temperature": temperature,
+                        "temperature": model_candidates[-1][1],
                         "response_mime_type": "application/json",
-                        "max_output_tokens": max_output_tokens,
+                        "max_output_tokens": model_candidates[-1][2],
                     },
                 )
                 if _SEMAPHORE is not None:

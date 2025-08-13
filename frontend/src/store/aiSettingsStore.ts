@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-type ModelKey = 'gpt-5' | 'gemini-2.5-pro' | 'gemini-1.5-flash' | 'claude-opus-4';
+type ModelKey = 'gpt-5' | 'gemini-2.5-pro' | 'gemini-1.5-flash' | 'gemini-2.0-flash-lite' | 'gemini-1.5-pro' | 'claude-opus-4';
 
 export type AISettings = {
   model: ModelKey;
@@ -36,6 +36,8 @@ export const useAISettingsStore = create<AISettingsState>((set) => ({
 export const modelCapabilities: Record<ModelKey, { supportsTemperature: boolean; supportsMaxTokens: boolean }> = {
   'gpt-5': { supportsTemperature: true, supportsMaxTokens: true },
   'gemini-2.5-pro': { supportsTemperature: true, supportsMaxTokens: true },
+  'gemini-1.5-pro': { supportsTemperature: true, supportsMaxTokens: true },
+  'gemini-2.0-flash-lite': { supportsTemperature: true, supportsMaxTokens: true },
   'claude-opus-4': { supportsTemperature: true, supportsMaxTokens: true },
 };
 
