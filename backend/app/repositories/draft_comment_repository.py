@@ -157,3 +157,17 @@ class DraftCommentRepository(BaseRepository):
             except SQLAlchemyError as e:
                 self.logger.error("Error getting recent posted drafts: %s", str(e), exc_info=True)
                 raise
+
+    async def delete_all_for_user(self, user_id: str) -> int:
+        """Delete all draft comments for a user and return number of rows deleted."""
+        from sqlalchemy import delete
+        async with self.get_session() as session:
+            try:
+                stmt = delete(DraftComment).where(DraftComment.user_id == user_id)
+                result = await session.execute(stmt)
+                await session.commit()
+                return int(getattr(result, "rowcount", 0) or 0)
+            except SQLAlchemyError as e:
+                await session.rollback()
+                self.logger.error("Error deleting drafts for user %s: %s", user_id, str(e), exc_info=True)
+                raise

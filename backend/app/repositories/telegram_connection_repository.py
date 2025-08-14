@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, desc
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.models.telegram_connection import TelegramConnection
@@ -62,3 +62,25 @@ class TelegramConnectionRepository(BaseRepository):
             )
             await session.execute(stmt)
             await session.commit() 
+
+    async def get_latest_valid_connection(self) -> Optional[TelegramConnection]:
+        """Return the most recently validated active Telegram connection across all users.
+
+        Used by dev auth fallback to select the active account when no session cookie is present.
+        """
+        async with self.get_session() as session:
+            try:
+                query = (
+                    select(TelegramConnection)
+                    .where(
+                        TelegramConnection.is_active.is_(True),
+                        TelegramConnection.validation_status == "VALID",
+                        TelegramConnection.session_string_encrypted.is_not(None),
+                    )
+                    .order_by(desc(TelegramConnection.last_validation_at))
+                )
+                result = await session.execute(query)
+                return result.unique().scalars().first()
+            except SQLAlchemyError as e:
+                self.logger.error("Error selecting latest valid connection: %s", str(e), exc_info=True)
+                raise

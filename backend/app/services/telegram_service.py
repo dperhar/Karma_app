@@ -273,6 +273,7 @@ class TelegramService(BaseService):
         self,
         chat_entity: Union[TelethonUser, TelethonChat, TelethonChannel],
         user_id: str,
+        client: Optional[TelegramClient] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Create chat dictionary from Telethon entity.
@@ -293,6 +294,7 @@ class TelegramService(BaseService):
                 chat_data.update({
                     "type": "private",
                     "title": full_name or "Unknown User",
+                    "comments_enabled": False,
                 })
                 
             elif isinstance(chat_entity, TelethonChat):
@@ -300,14 +302,33 @@ class TelegramService(BaseService):
                     "type": "group", 
                     "title": chat_entity.title or "Unnamed Group",
                     "member_count": getattr(chat_entity, "participants_count", None),
+                    # Groups/supergroups allow replies
+                    "comments_enabled": True,
                 })
                 
             elif isinstance(chat_entity, TelethonChannel):
                 is_broadcast = getattr(chat_entity, "broadcast", False)
+                comments_enabled = True
+                if is_broadcast:
+                    # For broadcast channels, comments are enabled only if a linked discussion chat exists
+                    try:
+                        from telethon.tl import functions
+                        # Ensure we have a client
+                        if client is None:
+                            client = await self.get_or_create_client(user_id)
+                        if client:
+                            full = await client(functions.channels.GetFullChannelRequest(channel=chat_entity))
+                            linked_chat_id = getattr(full.full_chat, "linked_chat_id", None)
+                            comments_enabled = bool(linked_chat_id)
+                        else:
+                            comments_enabled = False
+                    except Exception:
+                        comments_enabled = False
                 chat_data.update({
                     "type": "channel" if is_broadcast else "supergroup",
                     "title": chat_entity.title or "Unnamed Channel",
                     "member_count": getattr(chat_entity, "participants_count", None),
+                    "comments_enabled": True if not is_broadcast else comments_enabled,
                 })
             else:
                 self.logger.warning(f"Unknown entity type: {type(chat_entity)}")
@@ -337,8 +358,13 @@ class TelegramService(BaseService):
             return {"success": False, "error": "No Telegram client"}
 
         try:
-            # Resolve channel entity
-            entity = await client.get_entity(channel_telegram_id)
+            # Resolve channel entity robustly using PeerChannel (works for short and -100 prefixed ids)
+            from telethon.tl import types
+            try:
+                entity = await client.get_entity(types.PeerChannel(int(channel_telegram_id)))
+            except Exception:
+                # Fallback: try raw id lookup
+                entity = await client.get_entity(channel_telegram_id)
 
             # Try to find linked discussion group and post into that thread
             try:
@@ -386,8 +412,17 @@ class TelegramService(BaseService):
             except Exception as e_disc:
                 self.logger.info("No linked discussion or failed to use it: %s", str(e_disc)[:160])
 
-            # Fallback: if it's a group/supergroup, reply directly
-            sent = await client.send_message(entity, comment_text, reply_to=post_telegram_id)
+            # Fallback: if it's a group/supergroup, reply directly (attempt to join if required)
+            try:
+                sent = await client.send_message(entity, comment_text, reply_to=post_telegram_id)
+            except Exception:
+                try:
+                    from telethon.tl import functions as _f
+                    await client(_f.channels.JoinChannelRequest(entity))
+                    sent = await client.send_message(entity, comment_text, reply_to=post_telegram_id)
+                except Exception as e_join2:
+                    self.logger.error("Direct reply failed even after join attempt: %s", str(e_join2))
+                    raise
             self.logger.info(
                 "Posted comment via direct reply: channel=%s post=%s msg_id=%s",
                 channel_telegram_id,

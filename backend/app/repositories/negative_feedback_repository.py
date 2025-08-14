@@ -123,3 +123,17 @@ class NegativeFeedbackRepository(BaseRepository):
                 await session.rollback()
                 self.logger.error("Error deleting negative feedback %s: %s", feedback_id, str(e), exc_info=True)
                 raise 
+
+    async def delete_all_for_user(self, user_id: str) -> int:
+        """Delete all negative feedback rows for a user. Returns number deleted."""
+        from sqlalchemy import delete
+        async with self.get_session() as session:
+            try:
+                stmt = delete(NegativeFeedback).where(NegativeFeedback.user_id == user_id)
+                result = await session.execute(stmt)
+                await session.commit()
+                return int(getattr(result, "rowcount", 0) or 0)
+            except SQLAlchemyError as e:
+                await session.rollback()
+                self.logger.error("Error deleting negative feedback for user %s: %s", user_id, str(e), exc_info=True)
+                raise

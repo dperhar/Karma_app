@@ -50,7 +50,7 @@ export class PostService extends ApiClient {
   async getPosts(
     initDataRaw: string,
     page: number = 1,
-    limit: number = 50,
+    limit: number = 20,
     source: 'channels' | 'groups' | 'both' = 'channels'
   ): Promise<APIResponse<PostsResponse>> {
     console.log('getPosts called with page:', page, 'limit:', limit);
@@ -68,6 +68,24 @@ export class PostService extends ApiClient {
     } catch (error) {
       console.error('Failed to get posts:', error);
       throw error;
+    }
+  }
+
+  async queueGenerateForPage(
+    initDataRaw: string,
+    page: number,
+    limit: number,
+    source: 'channels' | 'groups' | 'both'
+  ): Promise<APIResponse<{ message: string }>> {
+    try {
+      // Use GET to avoid preflight/CORS issues in dev
+      return await this.request<APIResponse<{ message: string }>>(
+        `${this.endpoint}/generate-page?page=${page}&limit=${limit}&source=${source}`,
+        { method: 'GET' },
+        initDataRaw
+      );
+    } catch (e) {
+      throw e;
     }
   }
 

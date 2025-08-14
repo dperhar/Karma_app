@@ -2,6 +2,7 @@
 
 from typing import Optional
 from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel
 
 from app.dependencies import get_current_user
 from app.schemas.base import APIResponse
@@ -10,6 +11,9 @@ from app.services.feed_service import FeedService
 from app.core.dependencies import container
 
 router = APIRouter()
+class SimpleMessage(BaseModel):
+    message: str
+
 
 
 def get_feed_service() -> FeedService:
@@ -59,3 +63,39 @@ async def get_feed(
     except Exception:
         pass
     return APIResponse(success=True, data=feed, message="Feed retrieved successfully") 
+
+
+@router.post("/generate-page", response_model=APIResponse[SimpleMessage])
+async def generate_feed_page_drafts(
+    current_user=Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    source: str = Query("channels"),
+):
+    """Queue generation of drafts for a specific feed page.
+
+    Frontend should call this when user navigates to page > 1 or changes `source` away from default.
+    Keeps API thin and defers work to Celery.
+    """
+    from app.tasks.tasks import generate_drafts_for_feed_page
+    try:
+        generate_drafts_for_feed_page.delay(user_id=current_user.id, page=page, limit=limit, source=source)
+        return APIResponse(success=True, data=SimpleMessage(message="queued"), message="generation_queued")
+    except Exception as e:
+        return APIResponse(success=False, data=SimpleMessage(message="failed"), message=str(e))
+
+
+# GET alias to avoid client preflight issues in dev and allow easy queueing from UI
+@router.get("/generate-page", response_model=APIResponse[SimpleMessage])
+async def generate_feed_page_drafts_get(
+    current_user=Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    source: str = Query("channels"),
+):
+    from app.tasks.tasks import generate_drafts_for_feed_page
+    try:
+        generate_drafts_for_feed_page.delay(user_id=current_user.id, page=page, limit=limit, source=source)
+        return APIResponse(success=True, data=SimpleMessage(message="queued"), message="generation_queued")
+    except Exception as e:
+        return APIResponse(success=False, data=SimpleMessage(message="failed"), message=str(e))

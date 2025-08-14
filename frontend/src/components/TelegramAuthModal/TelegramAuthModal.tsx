@@ -71,34 +71,19 @@ export const TelegramAuthModal: React.FC<TelegramAuthModalProps> = ({
       const envUpdated = updateTelegramEnvironment(authData);
       
       if (envUpdated) {
-        // Set persistent session cookie to maintain authentication state
-        const sessionId = `auth_${Date.now()}_${loginStatus.user_id}`;
-        const cookieExpiry = new Date();
-        cookieExpiry.setDate(cookieExpiry.getDate() + 30); // 30 days persistence
-        
-        document.cookie = `karma_session=${sessionId}; path=/; expires=${cookieExpiry.toUTCString()}; SameSite=Lax; Secure=${window.location.protocol === 'https:'}`;
-        
-        // Store authentication data in localStorage for persistence across browser restarts
-        const authData = {
-          sessionId,
-          userId: loginStatus.user_id,
-          authenticatedAt: Date.now(),
-          expiresAt: cookieExpiry.getTime(),
-        };
-        localStorage.setItem('karma_auth', JSON.stringify(authData));
-        
-        console.log('✅ Persistent authentication set up:', {
-          sessionId,
-          userId: loginStatus.user_id,
-          expiresIn: '30 days'
-        });
-        
-        // Small delay to ensure environment is updated before closing modal
+        // Dev: rely on server cookie; only keep a light marker for header override
+        try {
+          const expiry = Date.now() + 30 * 24 * 60 * 60 * 1000;
+          localStorage.setItem('karma_auth', JSON.stringify({
+            userId: loginStatus.user_id,
+            authenticatedAt: Date.now(),
+            expiresAt: expiry,
+          }));
+        } catch {}
         const timer = setTimeout(() => {
           onSuccess?.();
           onClose();
         }, 500);
-        
         return () => clearTimeout(timer);
       } else {
         console.error('Failed to update environment, keeping modal open');

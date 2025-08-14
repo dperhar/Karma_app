@@ -5,6 +5,7 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body
+from pydantic import BaseModel
 
 from app.dependencies import get_current_user, get_optional_user, logger
 from app.schemas.base import APIResponse, MessageResponse
@@ -12,7 +13,7 @@ from app.schemas.ai_profile import AIProfileResponse, AIProfileUpdate
 from app.schemas.ai_settings import AISettings, AISettingsUpdate
 from app.schemas.user import UserResponse, UserUpdate
 from app.core.dependencies import container
-from app.tasks.tasks import analyze_vibe_profile, capture_context_dry_run, DEFAULT_DT_CONFIG, dt_ingest_freeform, dt_preview_freeform
+from app.tasks.tasks import analyze_vibe_profile, capture_context_dry_run, DEFAULT_DT_CONFIG, dt_ingest_freeform, dt_preview_freeform, preview_comment
 from app.schemas.context_analysis import ContextApproveRequest
 from app.core.config import settings
 
@@ -83,6 +84,70 @@ async def get_my_ai_profile(
     return APIResponse(success=True, data=payload)
 
 
+class PreviewRequest(BaseModel):
+    post_text: str
+
+
+@router.post("/me/preview-comment", response_model=APIResponse[dict])
+async def preview_comment_for_user(
+    body: PreviewRequest,
+    current_user: Optional[UserResponse] = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """Queue a single preview generation; result will be pushed via WS as 'preview_comment_ready'."""
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    try:
+        preview_comment.delay(user_id=current_user.id, post_text=body.post_text)
+        return APIResponse(success=True, data={"status": "queued"})
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="queue_unavailable") from e
+
+
+@router.post("/me/dt-config/freeform/auto-apply", response_model=APIResponse[dict])
+async def dt_config_freeform_auto_apply(
+    body: dict = Body(...),
+    current_user: Optional[UserResponse] = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """Auto‑apply a freeform with an LLM‑assisted, guarded decision.
+
+    Body: { content: str, aggressiveness?: 'conservative'|'balanced'|'bold' }
+    Queues a Celery task and returns immediately.
+    """
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    if not settings.DT_FREEFORM_ENABLED or not settings.DT_AUTO_APPLY_ENABLED:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="DT auto-apply is disabled")
+
+    content = str((body or {}).get("content") or "")
+    aggressiveness = str((body or {}).get("aggressiveness") or "conservative").lower()
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="content is required")
+    if len(content) > settings.DT_FREEFORM_MAX_CHARS:
+        content = content[: settings.DT_FREEFORM_MAX_CHARS]
+
+    try:
+        from app.tasks.tasks import dt_auto_apply_freeform
+        dt_auto_apply_freeform.delay(user_id=current_user.id, content=content, aggressiveness=aggressiveness)
+    except Exception:
+        raise HTTPException(status_code=503, detail="queue_unavailable")
+    return APIResponse(success=True, data={"status": "queued"})
+
+
+@router.post("/me/dt-config/freeform/seed-from-cache", response_model=APIResponse[dict])
+async def dt_seed_freeform_from_cache(
+    current_user: Optional[UserResponse] = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """Queue a lightweight reseed from cached messages; result via WS `dt_freeform_seeded`."""
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    try:
+        from app.tasks.tasks import dt_seed_freeform_from_cache
+        dt_seed_freeform_from_cache.delay(user_id=current_user.id, limit=300)
+    except Exception:
+        raise HTTPException(status_code=503, detail="queue_unavailable")
+    return APIResponse(success=True, data={"status": "queued"})
+
+
 @router.get("/me/ai-settings", response_model=APIResponse[AISettings])
 async def get_my_ai_settings(
     current_user: Optional[UserResponse] = Depends(get_optional_user),
@@ -105,11 +170,14 @@ async def get_my_ai_settings(
         return APIResponse(success=True, data=AISettings())
 
     # For now, use defaults; can be extended to read persisted values later
+    # Provider default: proxy when GEMINI_BASE_URL is set, else google
+    default_provider = "proxy" if settings.GEMINI_BASE_URL else "google"
+    provider = (getattr(getattr(ai_profile, "vibe_profile_json", {}), "get", lambda *_: None)("gen_provider") or default_provider)
     settings_payload = AISettings(
         model="gemini-2.5-pro",
         temperature=0.95,
-        max_output_tokens=512,
-        provider=(getattr(getattr(ai_profile, "vibe_profile_json", {}), "get", lambda *_: None)("gen_provider") or "google"),
+        max_output_tokens=4096,
+        provider=provider,
     )
     return APIResponse(success=True, data=settings_payload)
 
@@ -157,7 +225,7 @@ async def update_my_ai_settings(
         max_output_tokens=(
             settings_update.max_output_tokens
             if settings_update.max_output_tokens is not None
-            else int(gen_overrides.get("max_output_tokens", 512))
+            else int(gen_overrides.get("max_output_tokens", 4096))
         ),
         provider=(settings_update.provider or vp.get("gen_provider") or "google"),
     )
@@ -325,6 +393,87 @@ async def dt_config_freeform_last(
         "dt_config": vp.get("dt_config") or {},
     })
 
+
+@router.get("/me/dt-config/freeform/seed-from-profile", response_model=APIResponse[dict])
+async def dt_seed_freeform_from_profile(
+    current_user: Optional[UserResponse] = Depends(get_current_user),
+) -> APIResponse[dict]:
+    """Build a starter freeform string from the user's existing AI profile (no LLM).
+
+    This is synchronous and lightweight. Intended to prefill the Freeform editor with
+    a human-readable summary of the current Digital Twin so users can edit and apply.
+    """
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    from app.repositories.ai_profile_repository import AIProfileRepository
+    repo = container.resolve(AIProfileRepository)
+    ai_profile = await repo.get_ai_profile_by_user(current_user.id)
+    if not ai_profile:
+        raise HTTPException(status_code=404, detail="AI profile not found")
+
+    vp = dict(getattr(ai_profile, "vibe_profile_json", {}) or {})
+
+    def _arr(v):
+        return v if isinstance(v, list) else []
+
+    # Compose a concise, editable freeform from current profile
+    tone = (
+        (vp.get("tone") or "")
+        or (((vp.get("dt_config") or {}).get("persona") or {}).get("voice") or {}).get("tone")
+        or ""
+    )
+    lex = (((vp.get("dt_config") or {}).get("persona") or {}).get("voice") or {}).get("lexicon") or {}
+    sys_words = ", ".join(_arr(lex.get("system"))[:12])
+    psy_words = ", ".join(_arr(lex.get("psychology"))[:12])
+    dir_words = ", ".join(_arr(lex.get("direct"))[:12])
+    stop_ph = ", ".join((_arr(((vp.get("dt_config") or {}).get("anti_generic") or {}).get("stop_phrases")))[:12])
+    subp = (((vp.get("dt_config") or {}).get("dynamic_filters") or {}).get("sub_personalities") or {})
+    subp_list = ", ".join(list(subp.keys())[:8]) if isinstance(subp, dict) else ""
+    sig_phr = [p if isinstance(p, str) else (p or {}).get("text") for p in _arr(vp.get("signature_phrases"))]
+    sig_phr = ", ".join([s for s in sig_phr if s][:10])
+    tensions = [a.get("name") for a in _arr(((vp.get("core_tensions") or {}).get("axes"))) if isinstance(a, dict) and a.get("name")]
+    tensions = ", ".join(tensions[:6])
+    rq = ((((vp.get("dt_config") or {}).get("generation_controls") or {}).get("rhetoric") or {}).get("question_ratio_target"))
+
+    lines: list[str] = []
+    lines.append("Persona Voice:")
+    if tone:
+        lines.append(f"- tone: {tone}")
+    if sys_words:
+        lines.append(f"- lexicon.system: {sys_words}")
+    if psy_words:
+        lines.append(f"- lexicon.psychology: {psy_words}")
+    if dir_words:
+        lines.append(f"- lexicon.direct: {dir_words}")
+    if stop_ph:
+        lines.append(f"- banned_openers: {stop_ph}")
+    lines.append("")
+    lines.append("Sub-personalities:")
+    lines.append(f"- {subp_list or '—'}")
+    lines.append("")
+    lines.append("Core tensions:")
+    lines.append(f"- {tensions or '—'}")
+    lines.append("")
+    lines.append("Style controls:")
+    if rq is not None:
+        try:
+            lines.append(f"- question_ratio_target: {float(rq)}")
+        except Exception:
+            pass
+    lines.append("")
+    if sig_phr:
+        lines.append("Signature phrases:")
+        lines.append(f"- {sig_phr}")
+
+    freeform = "\n".join([ln for ln in lines if ln is not None])
+    payload = {
+        "freeform": freeform,
+        "last_analyzed_at": getattr(ai_profile, "last_analyzed_at", None),
+        "tokens_estimate": min(len(freeform) // 4, 20000),
+        "source": "ai_profile",
+    }
+    return APIResponse(success=True, data=payload)
 
 @router.post("/me/dt-config/rollback", response_model=APIResponse[dict])
 async def dt_config_rollback(

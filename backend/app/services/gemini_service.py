@@ -23,7 +23,12 @@ except Exception:
 class GeminiService:
     def __init__(self):
         raw_key = os.getenv("GEMINI_API_KEY", "")
-        self.api_key = raw_key.strip()
+        raw_google = os.getenv("GEMINI_API_KEY_GOOGLE")
+        raw_proxy = os.getenv("GEMINI_API_KEY_PROXY")
+        # Back-compat: single key works for both; specific keys override per provider
+        self.api_key = (raw_key or raw_google or raw_proxy or "").strip()
+        self.api_key_google = (raw_google or raw_key or "").strip()
+        self.api_key_proxy = (raw_proxy or raw_key or "").strip()
         # Base URL selection: Google default or proxy from settings
         base_url = (settings.GEMINI_BASE_URL or "https://generativelanguage.googleapis.com").rstrip("/")
         api_version = settings.GEMINI_API_VERSION or "v1beta"
@@ -34,22 +39,30 @@ class GeminiService:
         self.backoff_base = float(os.getenv("GEMINI_BACKOFF_BASE", "1.8"))
         self.min_delay_ms = int(os.getenv("GEMINI_MIN_DELAY_MS", "150"))
         self.jitter_ms = int(os.getenv("GEMINI_JITTER_MS", "200"))
-        if not self.api_key:
-            logger.warning("GEMINI_API_KEY not found in environment variables. Using mock mode.")
+        if not (self.api_key_google or self.api_key_proxy):
+            logger.warning("No GEMINI API key found (GEMINI_API_KEY / _GOOGLE / _PROXY). Using mock mode.")
             self.mock_mode = True
         else:
             try:
-                logger.info(f"Gemini API key loaded (length={len(self.api_key)}). Initializing client...")
-                genai.configure(api_key=self.api_key)
-                # Library client kept as a fallback
-                self.model = genai.GenerativeModel(
-                    model_name='gemini-2.5-pro',
-                    generation_config={
-                        "temperature": 0.95,
-                        "response_mime_type": "application/json",
-                    },
-                )
-                self.chat = self.model.start_chat(history=[])
+                # Initialize SDK path only if Google key is available
+                if self.api_key_google:
+                    logger.info(
+                        f"Gemini Google API key loaded (length={len(self.api_key_google)}). Initializing client..."
+                    )
+                    genai.configure(api_key=self.api_key_google)
+                    # Library client kept as a fallback
+                    self.model = genai.GenerativeModel(
+                        model_name='gemini-2.5-pro',
+                        generation_config={
+                            "temperature": 0.95,
+                            "response_mime_type": "application/json",
+                        },
+                    )
+                    self.chat = self.model.start_chat(history=[])
+                else:
+                    # REST only (proxy) – keep placeholders
+                    self.model = None  # type: ignore[assignment]
+                    self.chat = None   # type: ignore[assignment]
                 self.mock_mode = False
             except Exception as e:
                 logger.error(f"Failed to initialize Gemini client: {e}")
@@ -123,9 +136,9 @@ class GeminiService:
             except Exception:
                 temperature = 0.95
             try:
-                max_output_tokens = int((overrides or {}).get("max_output_tokens", 512))
+                max_output_tokens = int((overrides or {}).get("max_output_tokens", 4096))
             except Exception:
-                max_output_tokens = 512
+                max_output_tokens = 4096
 
             # Small pre-call delay to shape burstiness
             try:
@@ -138,15 +151,27 @@ class GeminiService:
             # Prefer REST call for deterministic behavior, honoring base URL and auth scheme
             async def _rest_call_with_model(model_attempt: str, temp: float, max_tokens: int) -> Dict[str, Any]:
                 headers = {"Content-Type": "application/json"}
-                # Auth header selection
+                # Provider selection precedence:
+                # 1) Explicit override from caller (UI/user)
+                # 2) Environment inference (auth scheme/base URL)
+                provider_override = (overrides or {}).get("provider")
                 scheme = (settings.GEMINI_AUTH_SCHEME or "auto").lower()
-                # Allow per-request provider override through gen_overrides
-                provider = (overrides or {}).get("provider")
-                use_proxy = bool(provider == "proxy") or (scheme == "bearer") or (scheme == "auto" and "hubai" in self.base_url)
-                if use_proxy:
-                    headers["Authorization"] = f"Bearer {self.api_key}"
+                if provider_override == "google":
+                    use_proxy = False
+                elif provider_override == "proxy":
+                    use_proxy = True
                 else:
-                    headers["X-goog-api-key"] = self.api_key
+                    use_proxy = (scheme == "bearer") or (scheme == "auto" and "hubai" in self.base_url)
+                if use_proxy:
+                    key = self.api_key_proxy or self.api_key
+                    if not key:
+                        return {"success": False, "error": "Missing proxy API key"}
+                    headers["Authorization"] = f"Bearer {key}"
+                else:
+                    key = self.api_key_google or self.api_key
+                    if not key:
+                        return {"success": False, "error": "Missing Google API key"}
+                    headers["X-goog-api-key"] = key
                 # Force JSON mode by wrapping prompt; Gemini sometimes returns code fences regardless of mime type
                 prompt_wrapped = (
                     "Return ONLY a single valid JSON object. Do not include code fences or any prose before/after.\n" + prompt

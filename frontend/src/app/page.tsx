@@ -36,10 +36,11 @@ export default function Home() {
   
   const { fetchUser, user, isLoading: userLoading, error: userError } = useUserStore();
   const { fetchChats, chats, isLoading: chatsLoading, error: chatsError } = useChatStore();
-  const { posts, fetchPosts, currentPage, totalPages } = usePostStore();
+  const { posts, fetchPosts, currentPage, totalPages, reset } = usePostStore();
   const [feedSource, setFeedSource] = useState<'channels' | 'groups' | 'both'>('channels');
   const { drafts, fetchDrafts, updateDraft, approveDraft, postDraft, regenerateDraft, generateDraftComment, upsertDraft } = useCommentStore();
-  const { lastMessage } = useWebSocket({ userId: useUserStore.getState().user?.id, initDataRaw: 'mock_init_data_for_telethon' });
+  // Use cookie-backed session; omit initDataRaw to avoid dev-mode bypass logs
+  const { lastMessage } = useWebSocket({ userId: useUserStore.getState().user?.id });
 
   const [selectedChat, setSelectedChat] = useState<TelegramChat | null>(null);
   const [editingDrafts, setEditingDrafts] = useState<Record<string, string>>({});
@@ -97,14 +98,15 @@ export default function Home() {
       try {
         console.log('[Page] loadData started');
         
-        const mockInitDataRaw = "mock_init_data_for_telethon";
-        
-        await fetchUser(mockInitDataRaw);
+        // Use cookie-based session; do not pass mock init data
+        await fetchUser();
         const userData = useUserStore.getState().user;
         const limit = userData?.telegram_chats_load_limit || DEFAULT_CHAT_LOAD_LIMIT;
-        await fetchChats(mockInitDataRaw, limit);
-          await fetchPosts(mockInitDataRaw, 1, 20, feedSource);
-        await fetchDrafts(mockInitDataRaw);
+        await fetchChats(undefined as any, limit);
+        // Reset feed before fetching to avoid append artifacts
+        reset();
+        await fetchPosts(undefined as any, 1, 20, feedSource);
+        await fetchDrafts(undefined as any);
         
         // Log current state after fetch
         const chatState = useChatStore.getState();
@@ -177,7 +179,7 @@ export default function Home() {
     return Array.from(map.values());
   }, [posts]);
 
-  // Draft items to render on main page (show drafts even if no matching post found)
+  // Draft items to render on main page (always show new drafts, aligned first)
   const draftItems = useMemo(() => {
     // Keep only the latest draft per original_message_id
     const latestByMsgId = new Map<string, DraftComment>();
@@ -194,38 +196,34 @@ export default function Home() {
       if (!prev) { latestByMsgId.set(key, d); continue; }
       const prevTs = toTs(prev);
       const curTs = toTs(d);
-      // Prefer newer by timestamp; on tie prefer current
-      if (curTs >= prevTs) {
-        latestByMsgId.set(key, d);
-      }
+      if (curTs >= prevTs) latestByMsgId.set(key, d);
     }
 
-    // Prefer aligning to the current page's posts so channel names and context are present
-    const alignedRaw = uniquePosts
+    // 1) Aligned to posts currently loaded on the page (provides rich channel context)
+    const alignedSet = new Set<string>();
+    const aligned = uniquePosts
       .map((p) => {
         const d = latestByMsgId.get(String(p.id));
-        return d ? ({ post: p, draft: d } as { draft: DraftComment; post: Post }) : null;
+        if (!d) return null;
+        alignedSet.add(String(d.id));
+        return { draft: d, post: p } as { draft: DraftComment; post: Post };
       })
       .filter(Boolean) as { draft: DraftComment; post: Post }[];
-    // Deduplicate by draft id in case of accidental duplicates
-    const seen = new Set<string>();
-    const aligned = alignedRaw.filter(({ draft }) => {
-      if (seen.has(draft.id)) return false;
-      seen.add(draft.id);
-      return true;
-    });
-    if (aligned.length > 0) {
-      return aligned;
-    }
 
-    // Fallback: previous behavior (for pages without matched drafts)
-    const items = Array.from(latestByMsgId.values()).map((draft) => {
-      const matchedPost = uniquePosts.find((p) => String(p.id) === String(draft.original_message_id));
-      return { draft, post: matchedPost } as { draft: DraftComment; post: Post | undefined };
-    });
-    return items.sort(
+    // 2) Unaligned drafts (whose posts are not in the current page) – show them too
+    const unaligned = Array.from(latestByMsgId.values())
+      .filter((d) => !alignedSet.has(String(d.id)))
+      .map((d) => {
+        const matchedPost = uniquePosts.find((p) => String(p.id) === String(d.original_message_id));
+        return { draft: d, post: matchedPost } as { draft: DraftComment; post: Post | undefined };
+      });
+
+    // 3) Merge and sort by freshness of the draft
+    const merged = [...aligned, ...unaligned].sort(
       (a, b) => new Date(b.draft.updated_at || b.draft.created_at).getTime() - new Date(a.draft.updated_at || a.draft.created_at).getTime()
     );
+
+    return merged;
   }, [posts, drafts]);
 
   // Posts on current page that don't have a draft yet
@@ -264,15 +262,15 @@ export default function Home() {
         }
       }
     }
-    await updateDraft(draftId, text ?? '', 'mock_init_data_for_telethon', Object.keys(gp).length ? gp : undefined);
+    await updateDraft(draftId, text ?? '', undefined as any, Object.keys(gp).length ? gp : undefined);
   };
 
   const handleApprove = async (draftId: string) => {
-    await approveDraft(draftId, 'mock_init_data_for_telethon');
+    await approveDraft(draftId, undefined as any);
   };
 
   const handlePost = async (draftId: string) => {
-    await postDraft(draftId, 'mock_init_data_for_telethon');
+    await postDraft(draftId, undefined as any);
   };
 
   // Local inline removed; we use components/ContextBubble.tsx
@@ -286,7 +284,7 @@ export default function Home() {
       draft.id,
       payload,
       feedback,
-      'mock_init_data_for_telethon'
+      undefined as any
     );
     setRegenFeedback((prev) => ({ ...prev, [draft.id]: '' }));
     // Clear any local edit override so refreshed draft text is visible
@@ -300,7 +298,7 @@ export default function Home() {
   const handleSend = async (draftId: string) => {
     // Persist current edits (text + any staged context) before sending
     await handleSaveEdit(draftId);
-    await postDraft(draftId, 'mock_init_data_for_telethon');
+    await postDraft(draftId, undefined as any);
   };
 
   // Handle Telegram authentication success
@@ -309,8 +307,7 @@ export default function Home() {
     setShowAuthModal(false);
     
     // Reload chats with real authentication
-    const mockInitDataRaw = "mock_init_data_for_telethon";
-    await fetchChats(mockInitDataRaw, user?.telegram_chats_load_limit || DEFAULT_CHAT_LOAD_LIMIT);
+    await fetchChats(undefined as any, user?.telegram_chats_load_limit || DEFAULT_CHAT_LOAD_LIMIT);
   };
 
   // Handle connect to Telegram button
@@ -327,7 +324,7 @@ export default function Home() {
     
     if (isSessionAuthenticated) {
       console.log('[Page] Session authenticated, calling fetchChats with mock initDataRaw');
-      await fetchChats("mock_init_data_for_telethon", 20);
+      await fetchChats(undefined as any, 20);
     } else {
       console.log('[Page] No session authentication available');
     }
@@ -355,6 +352,25 @@ export default function Home() {
         </div>
 
         <div className="mb-6">
+          {/* Hard refetch */}
+          <div className="flex items-center justify-end mb-3">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                try {
+                  // Reset UI state first
+                  reset();
+                  // Normalize chat types, then trigger a message sync, then reload page 1
+                  await fetch('/api/v1/telegram/chats/normalize-types', { method: 'POST' });
+                  await fetch('/api/v1/telegram/messages/sync', { method: 'POST' });
+                } catch {}
+                await fetchPosts(undefined as any, 1, 20, feedSource);
+              }}
+            >
+              Hard refetch
+            </Button>
+          </div>
           {/* Drafts matched to posts */}
           <div className="space-y-6">
             {draftItems.map(({ post, draft }) => (
@@ -388,7 +404,7 @@ export default function Home() {
                   <div className="flex justify-end">
                     <button
                       className="btn btn-sm btn-outline"
-                      onClick={() => generateDraftComment(post.telegram_id, post.channel_telegram_id || 0, 'mock_init_data_for_telethon')}
+                      onClick={() => generateDraftComment(post.telegram_id, post.channel_telegram_id || 0, undefined as any)}
                     >
                       Generate draft
                     </button>
@@ -403,7 +419,7 @@ export default function Home() {
         <Pager
           currentPage={currentPage}
           totalPages={totalPages}
-          onPage={(p) => fetchPosts('mock_init_data_for_telethon', p, 20, feedSource)}
+          onPage={(p) => fetchPosts(undefined as any, p, 20, feedSource)}
         />
 
         {selectedChat && (
@@ -435,7 +451,7 @@ export default function Home() {
       <TelegramAuthModal
         isOpen={showAuthModal}
         onClose={() => setShowAuthModal(false)}
-        initDataRaw="mock_init_data_for_telethon"
+        initDataRaw={"mock_init_data_for_dev"}
         onSuccess={handleTelegramAuthSuccess}
       />
     </Page>

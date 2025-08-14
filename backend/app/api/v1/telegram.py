@@ -9,7 +9,7 @@ import logging
 
 from app.dependencies import get_current_user, get_optional_user  
 from app.schemas.base import APIResponse
-from app.schemas.user import UserResponse
+from app.schemas.user import UserResponse, UserCreate
 from app.core.dependencies import container
 from app.services.auth_service import TelegramMessengerAuthService
 from app.core.config import settings
@@ -64,24 +64,54 @@ async def check_qr_login(
         result = await auth_service.check_qr_login(request.token, user_id)
         
         if result.get("status") == "success" and result.get("user_id"):
-            db_user_id = result.get("db_user_id")
-            if db_user_id:
-                new_session_id = uuid.uuid4().hex
-                redis_service = container.resolve(RedisService)
-                redis_service.save_session(
-                    f"web_session:{new_session_id}",
-                    {"user_id": db_user_id},
-                    expire=settings.SESSION_EXPIRY_SECONDS,
-                )
-                response.set_cookie(
-                    key=settings.SESSION_COOKIE_NAME,
-                    value=new_session_id,
-                    max_age=settings.SESSION_EXPIRY_SECONDS,
-                    httponly=True,
-                    secure=not settings.IS_DEVELOP,
-                    samesite="lax",
-                    path="/",
-                )
+            from app.services.user_service import UserService
+            user_service = container.resolve(UserService)
+            tg_id = int(result.get("user_id"))
+            session_str = result.get("session_string")
+
+            # If current_user exists but belongs to a different telegram_id, switch to the correct user
+            target_user = None
+            try:
+                if current_user and current_user.telegram_id and current_user.telegram_id != tg_id:
+                    target_user = await user_service.get_user_by_telegram_id(tg_id)
+                    if not target_user:
+                        target_user = await user_service.create_user(UserCreate(telegram_id=tg_id))
+                elif current_user and current_user.telegram_id == tg_id:
+                    target_user = current_user
+                else:
+                    target_user = await user_service.get_user_by_telegram_id(tg_id)
+                    if not target_user:
+                        target_user = await user_service.create_user(UserCreate(telegram_id=tg_id))
+                # Persist session string under target user
+                if session_str and target_user:
+                    await user_service.update_user_tg_session(target_user.id, session_str)
+                # Issue backend session cookie for target user
+                if target_user:
+                    new_session_id = uuid.uuid4().hex
+                    redis_service = container.resolve(RedisService)
+                    redis_service.save_session(
+                        f"web_session:{new_session_id}",
+                        {"user_id": target_user.id},
+                        expire=settings.SESSION_EXPIRY_SECONDS,
+                    )
+                    response.set_cookie(
+                        key=settings.SESSION_COOKIE_NAME,
+                        value=new_session_id,
+                        max_age=settings.SESSION_EXPIRY_SECONDS,
+                        httponly=True,
+                        secure=not settings.IS_DEVELOP,
+                        samesite="lax",
+                        path="/",
+                    )
+                    result["db_user_id"] = str(target_user.id)
+                    # Trigger reset-and-seed for the new active session
+                    try:
+                        from app.tasks.tasks import reset_and_seed_user_data
+                        reset_and_seed_user_data.delay(user_id=str(target_user.id), chats_limit=target_user.telegram_chats_load_limit or 20, per_chat_limit=target_user.telegram_messages_load_limit or 50, source="channels")
+                    except Exception:
+                        pass
+            except Exception as e_bind:
+                logger.error(f"Failed to bind/switch user on QR login: {e_bind}", exc_info=True)
         
         # Convert user_id to string if it exists (Telegram returns integer)  
         if result.get("user_id"):
@@ -131,24 +161,51 @@ async def verify_qr_2fa(
 
         # Set session cookie if authentication is successful
         if result.get("status") == "success" and result.get("user_id"):
-            db_user_id = result.get("db_user_id")
-            if db_user_id:
-                new_session_id = uuid.uuid4().hex
-                redis_service = container.resolve(RedisService)
-                redis_service.save_session(
-                    f"web_session:{new_session_id}",
-                    {"user_id": db_user_id},
-                    expire=settings.SESSION_EXPIRY_SECONDS,
-                )
-                response.set_cookie(
-                    key=settings.SESSION_COOKIE_NAME,
-                    value=new_session_id,
-                    max_age=settings.SESSION_EXPIRY_SECONDS,
-                    httponly=True,
-                    secure=not settings.IS_DEVELOP,
-                    samesite="lax",
-                    path="/",
-                )
+            # Bind to the correct user: if current_user has different telegram_id, switch
+            try:
+                from app.services.user_service import UserService
+                user_service = container.resolve(UserService)
+                tg_id = int(result.get("user_id"))
+                session_str = result.get("session_string")
+                target_user = None
+                if current_user and current_user.telegram_id and current_user.telegram_id != tg_id:
+                    target_user = await user_service.get_user_by_telegram_id(tg_id)
+                    if not target_user:
+                        target_user = await user_service.create_user(UserCreate(telegram_id=tg_id))
+                elif current_user and current_user.telegram_id == tg_id:
+                    target_user = current_user
+                else:
+                    target_user = await user_service.get_user_by_telegram_id(tg_id)
+                    if not target_user:
+                        target_user = await user_service.create_user(UserCreate(telegram_id=tg_id))
+                if session_str and target_user:
+                    await user_service.update_user_tg_session(target_user.id, session_str)
+                if target_user:
+                    new_session_id = uuid.uuid4().hex
+                    redis_service = container.resolve(RedisService)
+                    redis_service.save_session(
+                        f"web_session:{new_session_id}",
+                        {"user_id": target_user.id},
+                        expire=settings.SESSION_EXPIRY_SECONDS,
+                    )
+                    response.set_cookie(
+                        key=settings.SESSION_COOKIE_NAME,
+                        value=new_session_id,
+                        max_age=settings.SESSION_EXPIRY_SECONDS,
+                        httponly=True,
+                        secure=not settings.IS_DEVELOP,
+                        samesite="lax",
+                        path="/",
+                    )
+                    result["db_user_id"] = str(target_user.id)
+                # Trigger reset-and-seed after successful 2FA
+                try:
+                    from app.tasks.tasks import reset_and_seed_user_data
+                    reset_and_seed_user_data.delay(user_id=str(target_user.id), chats_limit=target_user.telegram_chats_load_limit or 20, per_chat_limit=target_user.telegram_messages_load_limit or 50, source="channels")
+                except Exception:
+                    pass
+            except Exception as e_bind:
+                logger.error(f"Failed to bind/switch user on 2FA: {e_bind}", exc_info=True)
 
         logger.info(f"2FA verification result for user from {client_ip}: {result.get('status')}")
         
@@ -274,6 +331,20 @@ async def backfill_messages(
         logger.error("Failed to queue backfill: %s", e)
         return APIResponse(success=False, data={"status": "failed"}, message="Failed to queue backfill")
 
+
+@router.post("/reset-and-seed", response_model=APIResponse[dict])
+async def reset_and_seed(
+    current_user: UserResponse = Depends(get_current_user),
+    source: str = Query("channels"),
+):
+    """Purge user's telegram data and reseed minimal baseline for the active session."""
+    try:
+        from app.tasks.tasks import reset_and_seed_user_data
+        reset_and_seed_user_data.delay(user_id=str(current_user.id), chats_limit=current_user.telegram_chats_load_limit or 20, per_chat_limit=current_user.telegram_messages_load_limit or 50, source=source)
+        return APIResponse(success=True, data={"status": "queued"}, message="Reset and seed queued")
+    except Exception as e:
+        return APIResponse(success=False, data={"status": "failed"}, message=str(e))
+
 @router.get("/chats/list")
 async def get_chats(
     limit: int = Query(default=50, ge=1, le=100),
@@ -296,6 +367,14 @@ async def get_chats(
             limit=limit,
             offset=offset
         )
+        # Keep only chats where commenting is possible for channels; include groups/supergroups and DMs
+        def _allow(chat: dict) -> bool:
+            t = str(chat.get("type") or "")
+            if t == "channel":
+                return bool(chat.get("comments_enabled", False))
+            # groups/supergroups/private are fine
+            return True
+        chats_data = [c for c in chats_data or [] if _allow(c)]
         
         if not chats_data:
             # Check if user has valid Telegram session
@@ -423,3 +502,34 @@ async def normalize_chat_types(
         return APIResponse(success=True, data={"task_id": task.id}, message="Normalization queued")
     except Exception as e:
         return APIResponse(success=False, data=None, message=f"Failed to queue normalization: {e}")
+
+
+# --- Dev helper: explicitly toggle comments_enabled for a chat ---
+@router.post("/chats/set-comments-enabled")
+async def dev_set_comments_enabled(
+    telegram_id: int = Query(..., description="Telegram chat/channel id (can be negative -100 form or short id)"),
+    enabled: bool = Query(...),
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """DEV-ONLY: Flip comments_enabled for a saved chat for the current user.
+
+    This is a synchronous, light DB update to quickly correct misclassified channels.
+    Only enabled when IS_DEVELOP=true.
+    """
+    if not settings.IS_DEVELOP:
+        return APIResponse(success=False, data=None, message="forbidden in production")
+    try:
+        from app.repositories.chat_repository import ChatRepository
+        repo = container.resolve(ChatRepository)
+        # Try both raw id and normalized -100 variant
+        updated = await repo.set_comments_enabled(current_user.id, int(telegram_id), enabled)
+        if not updated and str(abs(telegram_id)).startswith("100"):
+            short = int(str(abs(telegram_id))[3:])
+            updated = await repo.set_comments_enabled(current_user.id, short, enabled)
+        if not updated and len(str(abs(telegram_id))) <= 10:
+            # Try long form from short id
+            long = int(f"100{int(telegram_id)}") * -1
+            updated = await repo.set_comments_enabled(current_user.id, long, enabled)
+        return APIResponse(success=bool(updated), data={"telegram_id": telegram_id, "enabled": enabled}, message=("updated" if updated else "not_found"))
+    except Exception as e:
+        return APIResponse(success=False, data=None, message=str(e))
