@@ -227,8 +227,8 @@ class TelegramMessengerAuthService:
                                 logger.warning(f"Failed to update user data from Telegram: {e}")
                                 # Continue with the flow even if user update fails
                             
-                            # Pass db_user_id back for session creation
-                            return {"requires_2fa": False, "user_id": me.id, "status": "success", "db_user_id": current_user_id}
+                            # Pass db_user_id back for session creation and include session_string for callers that need it
+                            return {"requires_2fa": False, "user_id": me.id, "status": "success", "db_user_id": current_user_id, "session_string": session_string}
 
                         return {
                             "requires_2fa": False,

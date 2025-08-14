@@ -8,8 +8,7 @@ type Option = { label: string; value: string };
 
 const MODELS: Option[] = [
   { label: 'Gemini 2.5 Pro', value: 'gemini-2.5-pro' },
-  { label: 'Gemini 2.0 Flash Lite', value: 'gemini-2.0-flash-lite' },
-  { label: 'Gemini 1.5 Pro', value: 'gemini-1.5-pro' },
+  { label: 'Gemini 2.5 Flash', value: 'gemini-2.5-flash' },
 ];
 
 export const AIControlSidebar: React.FC = () => {
@@ -25,12 +24,12 @@ export const AIControlSidebar: React.FC = () => {
         const me = await userService.getCurrentUser();
         if (!me?.success || !me?.data?.id) return;
 
-        const res = await userService.getAISettings();
+    const res = await userService.getAISettings(undefined as any);
         if (res?.success && res?.data) {
           setSettings({
             model: (res.data.model || 'gemini-2.5-pro') as any,
             temperature: typeof res.data.temperature === 'number' ? res.data.temperature : 0.2,
-            maxOutputTokens: typeof res.data.max_output_tokens === 'number' ? res.data.max_output_tokens : 512,
+            maxOutputTokens: typeof res.data.max_output_tokens === 'number' ? res.data.max_output_tokens : 4096,
             provider: (res.data.provider === 'proxy' ? 'proxy' : 'google') as any,
           });
         }
@@ -147,24 +146,25 @@ export const AIControlSidebar: React.FC = () => {
           <label className="block text-xs text-gray-400 mb-1">Provider</label>
           <div className="flex gap-2">
             <button
-              className={`px-2 py-1 rounded text-sm ${settings.provider === 'google' ? 'bg-blue-600 text-white' : 'bg-black/20 border border-white/10 text-gray-200'}`}
-              onClick={async () => {
-                setSettings({ provider: 'google' as any });
-                await persist({ provider: 'google' });
-              }}
-            >
-              Google
-            </button>
-            <button
               className={`px-2 py-1 rounded text-sm ${settings.provider === 'proxy' ? 'bg-blue-600 text-white' : 'bg-black/20 border border-white/10 text-gray-200'}`}
               onClick={async () => {
                 setSettings({ provider: 'proxy' as any });
                 await persist({ provider: 'proxy' });
               }}
             >
-              Proxy
+              Proxy (default)
+            </button>
+            <button
+              className={`px-2 py-1 rounded text-sm ${settings.provider === 'google' ? 'bg-blue-600 text-white' : 'bg-black/20 border border-white/10 text-gray-200'}`}
+              onClick={async () => {
+                setSettings({ provider: 'google' as any });
+                await persist({ provider: 'google' });
+              }}
+            >
+              Google (direct)
             </button>
           </div>
+          <p className="text-[10px] text-gray-500 mt-1">Proxy uses API key from .env via Bearer; Google uses X-goog key and v1beta.</p>
         </div>
 
         <div>

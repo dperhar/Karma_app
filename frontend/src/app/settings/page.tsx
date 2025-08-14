@@ -157,7 +157,11 @@ export default function SettingsPage() {
                 <div className="flex flex-col">
                   <p className="text-base-content text-opacity-70">
                     {userData?.has_valid_tg_session ? (
-                      <span>Connected as: {userData.first_name} {userData.last_name}</span>
+                      <span>
+                        Connected as: {userData.first_name || ''}
+                        {userData.last_name ? ` ${userData.last_name}` : ''}
+                        {userData.username ? ` (@${userData.username})` : ''}
+                      </span>
                     ) : (
                       <span>Not connected to Telegram</span>
                     )}

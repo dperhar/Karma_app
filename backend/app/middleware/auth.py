@@ -71,13 +71,42 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             logger.error(f"🔧 AuthMiddleware - Session lookup error (continuing): {e}", exc_info=True)
 
-        # Development mode fallback should always run independently
+        # Development mode: allow overriding current user by header X-Dev-Telegram-Id
+        if not user and settings.IS_DEVELOP:
+            try:
+                tg_override = request.headers.get("X-Dev-Telegram-Id")
+                if tg_override:
+                    user_service = container.resolve(UserService)
+                    user = await user_service.get_user_by_telegram_id(int(tg_override))
+                    if user:
+                        logger.info(f"🔧 AuthMiddleware - Using X-Dev-Telegram-Id override: {tg_override}")
+                    else:
+                        # Dev convenience: create user placeholder to avoid falling back to wrong account
+                        from app.schemas.user import UserCreate
+                        try:
+                            created = await user_service.create_user(UserCreate(telegram_id=int(tg_override)))
+                            if created:
+                                user = created
+                                logger.info(f"🔧 AuthMiddleware - Created dev user for telegram_id: {tg_override}")
+                        except Exception as _e_create:
+                            logger.error(f"🔧 AuthMiddleware - Failed to create dev user for tg {tg_override}: {_e_create}")
+            except Exception as e:
+                logger.error(f"🔧 AuthMiddleware - Dev header override error: {e}", exc_info=True)
+
+        # Development mode fallback should use the latest authenticated user with a valid session
         if not user and settings.IS_DEVELOP and request.url.path.startswith("/api/v1/"):
             try:
                 logger.info(f"🔧 AuthMiddleware - Using development fallback for: {request.url.path}")
                 user_service = container.resolve(UserService)
-                user = await user_service.get_user_by_telegram_id(109005276)
-                logger.info(f"🔧 AuthMiddleware - Development user loaded: {user.id if user else None}")
+                # Prefer most recently authenticated valid session instead of hardcoded telegram_id
+                latest = await user_service.get_latest_user_with_valid_session()
+                if latest:
+                    user = latest
+                    logger.info(f"🔧 AuthMiddleware - Dev fallback selected user: {user.id}")
+                else:
+                    # Fallback to legacy hardcoded account only if nothing else exists
+                    user = await user_service.get_user_by_telegram_id(109005276)
+                    logger.info(f"🔧 AuthMiddleware - Legacy dev user loaded: {user.id if user else None}")
             except Exception as e:
                 logger.error(f"🔧 AuthMiddleware - Dev fallback error: {e}", exc_info=True)
 

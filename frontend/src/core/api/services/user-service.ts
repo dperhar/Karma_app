@@ -179,6 +179,22 @@ export class UserService extends ApiClient {
     );
   }
 
+  async dtFreeformSeedFromProfile(initDataRaw?: string) {
+    return this.request<APIResponse<{ freeform: string; last_analyzed_at?: string; tokens_estimate?: number; source: string }>>(
+      `/users/me/dt-config/freeform/seed-from-profile`,
+      { method: 'GET' },
+      initDataRaw
+    );
+  }
+
+  async dtFreeformSeedFromCache(initDataRaw?: string) {
+    return this.request<APIResponse<{ status: string }>>(
+      `/users/me/dt-config/freeform/seed-from-cache`,
+      { method: 'POST' },
+      initDataRaw
+    );
+  }
+
   async dtFreeformRollback(versionId: string, initDataRaw?: string) {
     return this.request<APIResponse<any>>(
       `/users/me/dt-config/rollback`,
@@ -186,6 +202,18 @@ export class UserService extends ApiClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ version_id: versionId }),
+      },
+      initDataRaw
+    );
+  }
+
+  async previewComment(postText: string, initDataRaw?: string) {
+    return this.request<APIResponse<{ status: string }>>(
+      `/users/me/preview-comment`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ post_text: postText }),
       },
       initDataRaw
     );

@@ -38,19 +38,16 @@ class ChatRepository(BaseRepository):
                     existing_chat = result.unique().scalar_one_or_none()
 
                     if existing_chat:
-                        # Update existing chat and cautiously set comments_enabled if unknown
+                        # Update existing chat, but do not override comments_enabled implicitly
                         for key, value in chat.__dict__.items():
                             if key != "id" and not key.startswith("_"):
+                                if key == "comments_enabled":
+                                    # Skip implicit update; use explicit setter to change this flag
+                                    continue
                                 setattr(existing_chat, key, value)
-                        # If comments_enabled is None/False and we detect a channel, default to True
-                        if existing_chat.comments_enabled is None:
-                            existing_chat.comments_enabled = True
                         result_chats.append(existing_chat)
                     else:
                         # Create new chat
-                        # Default comments_enabled True for channels to ensure feed
-                        if getattr(chat, "comments_enabled", None) is None:
-                            chat.comments_enabled = True
                         session.add(chat)
                         result_chats.append(chat)
 
@@ -215,4 +212,18 @@ class ChatRepository(BaseRepository):
                     f"Error setting comments_enabled for chat {telegram_id}: {e!s}",
                     exc_info=True,
                 )
+                raise
+
+    async def delete_all_for_user(self, user_id: str) -> int:
+        """Delete all chats for a user and return number of rows deleted."""
+        from sqlalchemy import delete
+        async with self.get_session() as session:
+            try:
+                stmt = delete(TelegramMessengerChat).where(TelegramMessengerChat.user_id == user_id)
+                result = await session.execute(stmt)
+                await session.commit()
+                return int(getattr(result, "rowcount", 0) or 0)
+            except SQLAlchemyError as e:
+                await session.rollback()
+                self.logger.error(f"Error deleting chats for user {user_id}: {e!s}", exc_info=True)
                 raise

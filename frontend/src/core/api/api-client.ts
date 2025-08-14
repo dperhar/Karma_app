@@ -46,6 +46,19 @@ export class ApiClient {
       }
     }
 
+    // Dev-only: attach persistent Telegram user id so backend can select correct user without cookies
+    if (this.isDev && typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('karma_auth');
+        if (raw) {
+          const auth = JSON.parse(raw);
+          if (auth && auth.userId) {
+            headers['X-Dev-Telegram-Id'] = String(auth.userId);
+          }
+        }
+      } catch {}
+    }
+
     // Add initDataRaw to headers if available
     if (initDataRaw) {
       headers['X-Telegram-Init-Data'] = initDataRaw;

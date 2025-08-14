@@ -81,6 +81,7 @@ class Settings:
     # Feature flags
     DT_FREEFORM_ENABLED: bool = os.getenv("DT_FREEFORM_ENABLED", "false").lower() == "true"
     DT_FREEFORM_MAX_CHARS: int = int(os.getenv("DT_FREEFORM_MAX_CHARS", "15000"))
+    DT_AUTO_APPLY_ENABLED: bool = os.getenv("DT_AUTO_APPLY_ENABLED", "true").lower() == "true"
 
     # Centrifugo WebSocket
     CENTRIFUGO_API_KEY: str = os.getenv("CENTRIFUGO_API_KEY", "dummy-centrifugo-key")

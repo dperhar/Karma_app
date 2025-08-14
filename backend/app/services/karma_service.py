@@ -65,23 +65,18 @@ class KarmaService(BaseService):
                 self.logger.error(f"User not found: {user_id}")
                 return None
 
-            # Ensure we default to Gemini 2.5 Pro unless explicitly set otherwise
+            # Resolve model to use, but do not persist enum to avoid DB enum mismatch in dev
             try:
                 preferred_value = str(getattr(getattr(user, "preferred_ai_model", None), "value", "") or "")
-                if not preferred_value or "gemini" not in preferred_value.lower():
-                    from app.models.ai_request import AIRequestModel
-                    updated = await self.user_repository.update_user(
-                        user.id, preferred_ai_model=AIRequestModel.GEMINI_2_5_PRO
-                    )
-                    if updated:
-                        user = updated
             except Exception:
-                pass
+                preferred_value = ""
 
-            # Check if post is relevant to persona interests
-            if not self._is_post_relevant(post_data, user):
-                self.logger.info(f"Post not relevant to persona interests: {post_data.get('text', '')[:100]}")
-                return None
+            # Respect force_generate flag (feed-page or regeneration)
+            if not post_data.get("force_generate"):
+                # Check if post is relevant to persona interests
+                if not self._is_post_relevant(post_data, user):
+                    self.logger.info(f"Post not relevant to persona interests: {post_data.get('text', '')[:100]}")
+                    return None
 
             # Generate AI comment
             draft_text, context_summary = await self._generate_ai_comment(post_data, user, context_data)
@@ -106,18 +101,9 @@ class KarmaService(BaseService):
 
             # Create draft comment
             # Resolve model used string for record; force-align to Gemini 2.5 Pro if user pref missing
-            model_used = (
-                str(getattr(getattr(user, "preferred_ai_model", None), "value", "") or "")
-            )
-            if "gemini" not in model_used:
-                try:
-                    from app.models.ai_request import AIRequestModel
-                    updated = await self.user_repository.update_user(
-                        user.id, preferred_ai_model=AIRequestModel.GEMINI_2_5_PRO
-                    )
-                    model_used = str(getattr(getattr(updated, "preferred_ai_model", None), "value", "gemini-2.5-pro") or "gemini-2.5-pro")
-                except Exception:
-                    model_used = "gemini-2.5-pro"
+            model_used = str(getattr(getattr(user, "preferred_ai_model", None), "value", "") or "")
+            if not model_used or "gemini" not in model_used.lower():
+                model_used = "gemini-2.5-pro"
 
             draft_data = DraftCommentCreate(
                 original_message_id=original_message_id,
@@ -131,6 +117,8 @@ class KarmaService(BaseService):
                     "model": model_used,
                     "persona_name": user.persona_name,
                     "post_channel": post_data.get('channel', {}).get('title', 'Unknown'),
+                    "channel_telegram_id": post_data.get('channel_telegram_id'),
+                    "original_message_telegram_id": post_data.get('original_message_telegram_id'),
                     "generated_at": datetime.now().isoformat()
                 }
             )
@@ -216,6 +204,58 @@ class KarmaService(BaseService):
                 post_id = gp.get("post_telegram_id") or gp.get("original_message_telegram_id")
             except Exception:
                 pass
+
+            # Fallback: resolve missing ids from DB relations (original_message -> chat)
+            if not channel_id or not post_id:
+                try:
+                    from app.core.dependencies import container as _container
+                    from app.repositories.message_repository import MessageRepository as _MsgRepo
+                    from app.repositories.chat_repository import ChatRepository as _ChatRepo
+
+                    msg_repo = _container.resolve(_MsgRepo)
+                    chat_repo = _container.resolve(_ChatRepo)
+
+                    msg = None
+                    try:
+                        if getattr(draft, "original_message_id", None):
+                            msg = await msg_repo.get_message(str(draft.original_message_id))
+                    except Exception:
+                        msg = None
+
+                    # Recover post telegram id from message row
+                    if msg and not post_id:
+                        try:
+                            post_id = int(getattr(msg, "telegram_id", 0) or 0) or None
+                        except Exception:
+                            post_id = None
+
+                    # Recover channel telegram id from chat row
+                    if msg and not channel_id:
+                        try:
+                            chat = await chat_repo.get_chat(str(getattr(msg, "chat_id", "")))
+                            if chat:
+                                channel_id = int(getattr(chat, "telegram_id", 0) or 0) or None
+                        except Exception:
+                            channel_id = None
+
+                    # Persist recovered ids for next time
+                    if channel_id or post_id:
+                        try:
+                            gp2 = dict(gp) if isinstance(gp, dict) else {}
+                            if channel_id:
+                                gp2["channel_telegram_id"] = int(channel_id)
+                            if post_id:
+                                gp2["post_telegram_id"] = int(post_id)
+                            await self.draft_comment_repository.update_draft_comment(
+                                draft_id,
+                                generation_params=gp2 or None,
+                            )
+                            gp = gp2
+                        except Exception:
+                            pass
+                except Exception:
+                    # Ignore fallback errors and proceed with whatever we have
+                    pass
 
             result = {"success": False, "error": "missing ids"}
             if channel_id and post_id:

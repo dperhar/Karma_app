@@ -8,7 +8,7 @@ import os
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
@@ -166,6 +166,61 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Fallback CORS guard: ensure ACAO headers are present even on error paths
+@app.middleware("http")
+async def ensure_cors_headers(request: Request, call_next):
+    origin = request.headers.get("origin")
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Convert uncaught exceptions to JSON with CORS headers (dev-friendly)
+        from starlette.responses import JSONResponse
+        response = JSONResponse({"error": "internal_error"}, status_code=500)
+    try:
+        allowed = set([
+            settings.FRONTEND_URL,
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:3001",
+            "http://127.0.0.1:3001",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "null",
+        ])
+        if not origin or origin in allowed:
+            response.headers["Access-Control-Allow-Origin"] = origin or "*"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Expose-Headers"] = "Content-Type, Authorization, X-Telegram-Init-Data"
+            # Preserve/merge Vary header
+            vary = response.headers.get("Vary")
+            response.headers["Vary"] = "Origin" if not vary else (vary if "Origin" in vary else f"{vary}, Origin")
+    except Exception:
+        pass
+    return response
+
+# OPTIONS handler for preflight in development
+@app.options("/{rest_of_path:path}")
+async def options_preflight(rest_of_path: str, request: Request):
+    response = Response(status_code=204)
+    origin = request.headers.get("origin")
+    allowed = {
+        settings.FRONTEND_URL,
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "null",
+    }
+    if not origin or origin in allowed:
+        response.headers["Access-Control-Allow-Origin"] = origin or "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Telegram-Init-Data"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Vary"] = "Origin"
+    return response
+
 @app.get("/api/v1/health")
 def health_check():
     return {"status": "ok"}
@@ -189,21 +244,7 @@ try:
 except Exception as _e_media:
     logger.debug("Media mount skipped: %s", _e_media)
 
-# Ensure media responses include appropriate CORS headers for the frontend origin
-@app.middleware("http")
-async def add_media_cors_headers(request, call_next):
-    response = await call_next(request)
-    try:
-        path = str(request.url.path)
-        if path.startswith("/media/"):
-            origin = request.headers.get("origin")
-            # Be permissive for media in development to avoid blocked images
-            response.headers["Access-Control-Allow-Origin"] = origin or "*"
-            if origin:
-                response.headers["Vary"] = "Origin"
-    except Exception:
-        pass
-    return response
+# Media responses inherit headers from ensure_cors_headers above
 
 # Health check endpoint
 @app.get("/")

@@ -127,6 +127,46 @@ class UserService(BaseService):
             user_responses.append(UserResponse.model_validate(user_dict))
         return user_responses
 
+    async def get_latest_user_with_valid_session(self) -> Optional[UserResponse]:
+        """Return the most recently authenticated user with a valid Telegram session.
+
+        Used as a development fallback when no session cookie is present.
+        """
+        # Prefer connection freshness over user timestamp to avoid stale account stickiness
+        try:
+            from app.repositories.telegram_connection_repository import TelegramConnectionRepository
+            conn_repo = TelegramConnectionRepository()
+            conn = await conn_repo.get_latest_valid_connection()
+            if conn:
+                user = await self.user_repository.get_user(conn.user_id)
+                if user:
+                    user_dict = user.__dict__.copy()
+                    user_dict['has_valid_tg_session'] = user.has_valid_tg_session()
+                    return UserResponse.model_validate(user_dict)
+        except Exception:
+            pass
+        # Fallback to last_telegram_auth_at if no connection ordering available
+        users = await self.user_repository.get_users()
+        if not users:
+            return None
+        try:
+            users_sorted = sorted(
+                users,
+                key=lambda u: (u.last_telegram_auth_at is not None, u.last_telegram_auth_at),
+                reverse=True,
+            )
+        except Exception:
+            users_sorted = list(users)
+        for u in users_sorted:
+            try:
+                if u.has_valid_tg_session():
+                    u_dict = u.__dict__.copy()
+                    u_dict['has_valid_tg_session'] = True
+                    return UserResponse.model_validate(u_dict)
+            except Exception:
+                continue
+        return None
+
     async def update_user_tg_session(
         self, user_id: str, session_string: str
     ) -> Optional[UserResponse]:

@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from typing import Any, Dict, Optional
+from datetime import datetime
 
 from app.core.dependencies import container
 import random
@@ -14,6 +15,7 @@ from app.repositories.chat_repository import ChatRepository
 from app.repositories.draft_comment_repository import DraftCommentRepository
 from app.repositories.message_repository import \
     MessageRepository as TelegramMessageRepository
+from app.repositories.message_repository import MessageRepository
 from app.repositories.negative_feedback_repository import \
     NegativeFeedbackRepository
 from app.repositories.user_repository import UserRepository
@@ -942,6 +944,11 @@ REPAIR & UNCERTAINTY
         new_vp["dt_freeform"] = dt_freeform
         updated = await ai_profile_repo.update_ai_profile(ai_profile.id, vibe_profile_json=new_vp)
         await websocket_service.send_user_notification(user_id, "dt_freeform_completed", {"dt_config": out_dt, "version_id": version_id})
+        # After Digital Twin upgrade, queue latest feed page drafts generation (20, channels)
+        try:
+            generate_drafts_for_feed_page.delay(user_id=user_id, page=1, limit=20, source="channels")
+        except Exception:
+            pass
     except Exception as e:
         await websocket_service.send_user_notification(user_id, "dt_freeform_failed", {"error": str(e)})
 
@@ -1093,6 +1100,208 @@ Use the same schema as in the main compiler spec.
     await push("dt_freeform_preview", {"parsed_dt_config": parsed.get("dt_config") or {}, "compiler_notes": parsed.get("compiler_notes") or {}, "evidence": parsed.get("evidence") or {}, "tokens_estimate": tokens_estimate})
 
 
+@celery_app.task(name="tasks.dt_auto_apply_freeform", queue="analysis")
+def dt_auto_apply_freeform(user_id: str, content: str, aggressiveness: str = "conservative"):
+    """Auto-apply compiled freeform with LLM-assisted decision and guardrails."""
+    asyncio.run(async_dt_auto_apply_freeform(user_id=user_id, content=content, aggressiveness=aggressiveness))
+
+
+async def async_dt_auto_apply_freeform(user_id: str, content: str, aggressiveness: str = "conservative"):
+    websocket_service = container.resolve(WebSocketService)
+    ai_profile_repo = container.resolve(AIProfileRepository)
+    gemini_service = container.resolve(GeminiService)
+    from app.core.config import settings
+
+    async def push(event: str, payload: Dict[str, Any]) -> None:
+        await websocket_service.send_user_notification(user_id, event, payload)
+
+    # 1) Compile proposed dt_config using the same robust path as preview/apply
+    try:
+        prev = await async_dt_preview_freeform.__wrapped__(user_id, content)  # type: ignore[attr-defined]
+    except Exception:
+        prev = None
+    # Fallback: call compiler inline if __wrapped__ not accessible
+    if prev is None:
+        try:
+            # Minimal duplicate of preview path (safe)
+            await push("dt_freeform_status", {"stage": "preview_llm_start"})
+            resp = await gemini_service.generate_content(
+                "SYSTEM: Return only JSON: {\"dt_config\": object, \"compiler_notes\": object}\nINPUT:\n" + content,
+                overrides={"max_output_tokens": 2048, "provider": "proxy" if settings.GEMINI_BASE_URL else None},
+            )
+            raw = (resp.get("content") or "").strip() if resp and resp.get("success") else ""
+            import re as _re
+            raw = _re.sub(r",\s*([}\]])", r"\1", raw)
+            parsed = json.loads(raw[raw.find("{"): raw.rfind("}")+1]) if raw else {}
+            proposed_dt = parsed.get("dt_config") or {}
+        except Exception:
+            proposed_dt = {}
+    else:
+        # Use a lightweight local heuristic compile as a safe default
+        try:
+            proposed_dt = _local_compile_freeform(content) or {}
+        except Exception:
+            proposed_dt = {}
+
+    # 2) Load current dt_config
+    prof = await ai_profile_repo.get_ai_profile_by_user(user_id)
+    base_vp: Dict[str, Any] = dict(getattr(prof, "vibe_profile_json", {}) or {}) if prof else {}
+    current_dt: Dict[str, Any] = dict(base_vp.get("dt_config") or {})
+
+    # 3) Compute deterministic impact vector
+    def _set_of(xs: Any) -> set[str]:
+        if isinstance(xs, list):
+            return set(str(x).lower() for x in xs if isinstance(x, (str, int, float)))
+        return set()
+    def _lex(v: Dict[str, Any]) -> Dict[str, set[str]]:
+        voice = (((v.get("persona") or {}).get("voice") or {})) if isinstance(v, dict) else {}
+        lex = (voice.get("lexicon") or {}) if isinstance(voice, dict) else {}
+        return {
+            "system": _set_of(lex.get("system")),
+            "psychology": _set_of(lex.get("psychology")),
+            "direct": _set_of(lex.get("direct")),
+        }
+    def _overlap(a: set[str], b: set[str]) -> float:
+        if not a and not b:
+            return 1.0
+        if not a or not b:
+            return 0.0
+        return len(a & b) / max(1, len(a | b))
+
+    cur_lex = _lex(current_dt); new_lex = _lex(proposed_dt)
+    voice_overlap = sum(_overlap(cur_lex[k], new_lex[k]) for k in ("system","psychology","direct")) / 3.0
+    cur_tone = str((((current_dt.get("persona") or {}).get("voice") or {}).get("tone") or "")).strip().lower()
+    new_tone = str((((proposed_dt.get("persona") or {}).get("voice") or {}).get("tone") or "")).strip().lower()
+    tone_changed = int(bool(new_tone) and new_tone != cur_tone)
+    cur_vals = _set_of([v.get("name") for v in (current_dt.get("values") or []) if isinstance(v, dict)])
+    new_vals = _set_of([v.get("name") for v in (proposed_dt.get("values") or []) if isinstance(v, dict)])
+    value_overlap = _overlap(cur_vals, new_vals)
+    cur_axes = _set_of([a.get("name") for a in ((current_dt.get("core_tensions") or {}).get("axes") or []) if isinstance(a, dict)])
+    new_axes = _set_of([a.get("name") for a in ((proposed_dt.get("core_tensions") or {}).get("axes") or []) if isinstance(a, dict)])
+    tensions_new = len(new_axes - cur_axes)
+    cur_subs = set(((current_dt.get("dynamic_filters") or {}).get("sub_personalities") or {}).keys())
+    new_subs = set(((proposed_dt.get("dynamic_filters") or {}).get("sub_personalities") or {}).keys())
+    subpersonas_new = len(new_subs - cur_subs)
+    cur_style = ((current_dt.get("style_dna") or {}).get("rhetoric") or {})
+    new_style = ((proposed_dt.get("style_dna") or {}).get("rhetoric") or {})
+    try:
+        qr_delta = abs(float(new_style.get("question_ratio", 0.0)) - float(cur_style.get("question_ratio", 0.0)))
+    except Exception:
+        qr_delta = 0.0
+    impact_vector = {
+        "voice_overlap": round(voice_overlap, 3),
+        "tone_changed": tone_changed,
+        "value_overlap": round(value_overlap, 3),
+        "tensions_new": tensions_new,
+        "subpersonas_new": subpersonas_new,
+        "rhetoric_qr_delta": round(qr_delta, 3),
+    }
+
+    # 4) LLM classification (strict JSON)
+    class_prompt = (
+        "Return ONLY JSON: {\n"
+        "  \"class\": \"PERSONA_SHIFT_MAJOR\"|\"PERSONA_SHIFT_MINOR\"|\"BEHAVIOR_ONLY\"|\"JUNK\",\n"
+        "  \"confidence\": number,\n"
+        "  \"mask\": string[],\n"
+        "  \"strategy\": \"merge\"|\"replace\",\n"
+        "  \"reasons\": string[]\n"
+        "}\n"
+        "Context: choose the least destructive apply plan.\n"
+        f"Impact: {json.dumps(impact_vector, ensure_ascii=False)}\n"
+        f"Aggressiveness: {aggressiveness}\n"
+        "Guidelines:\n- Prefer BEHAVIOR_ONLY when persona overlap high (>=0.6) and tone not changed.\n- PERSONA_SHIFT_MINOR when overlap in [0.4,0.6) or tone changed and values mostly overlap (>=0.6).\n- PERSONA_SHIFT_MAJOR only if overlap < 0.4 and tone changed and values overlap < 0.6.\n- mask values must be subset of [persona,dynamic_filters,state_model,core_tensions,style_dna,generation_controls,anti_generic].\n- strategy replace allowed ONLY for persona, in bold mode and confidence>=0.8; otherwise merge.\n"
+    )
+    try:
+        cls = await gemini_service.generate_content(class_prompt, overrides={"temperature": 0.2, "max_output_tokens": 256})
+        raw = (cls.get("content") or "").strip() if cls and cls.get("success") else ""
+        import re as _re
+        raw = _re.sub(r",\s*([}\]])", r"\1", raw)
+        decision = json.loads(raw[raw.find("{"): raw.rfind("}")+1]) if raw else {}
+    except Exception:
+        decision = {}
+    # 5) Guardrails and fallback
+    klass = str(decision.get("class") or "").upper()
+    conf = float(decision.get("confidence") or 0.0)
+    mask = [m for m in (decision.get("mask") or []) if m in {"persona","dynamic_filters","state_model","core_tensions","style_dna","generation_controls","anti_generic"}]
+    strategy = str(decision.get("strategy") or "merge")
+    if not mask:
+        if impact_vector["voice_overlap"] >= 0.6 and not impact_vector["tone_changed"]:
+            klass = "BEHAVIOR_ONLY"; mask = ["dynamic_filters","core_tensions","style_dna","anti_generic"]; strategy="merge"
+        else:
+            klass = "PERSONA_SHIFT_MINOR"; mask = ["dynamic_filters","core_tensions","style_dna","persona"]; strategy="merge"
+    # Persona replace guard
+    if "persona" in mask and strategy == "replace":
+        if aggressiveness != "bold" or conf < 0.8 or impact_vector["voice_overlap"] >= 0.4:
+            strategy = "merge"
+
+    # 6) Apply via existing merge engine
+    try:
+        await push("dt_freeform_decision", {"class": klass, "confidence": conf, "mask": mask, "strategy": strategy})
+    except Exception:
+        pass
+    # Reuse async_dt_ingest_freeform merging logic by calling it with chosen mask/strategy
+    await async_dt_ingest_freeform(user_id=user_id, content=content, apply_mask={k: True for k in mask}, strategy=strategy)
+
+
+@celery_app.task(name="tasks.dt_seed_freeform_from_cache", queue="analysis")
+def dt_seed_freeform_from_cache(user_id: str, limit: int = 300):
+    """Build a quick freeform seed from cached Telegram messages without running full analysis.
+
+    Emits websocket event `dt_freeform_seeded` with a compact seed for the editor.
+    """
+    asyncio.run(async_dt_seed_freeform_from_cache(user_id=user_id, limit=limit))
+
+
+async def async_dt_seed_freeform_from_cache(user_id: str, limit: int = 300):
+    websocket_service = container.resolve(WebSocketService)
+    message_repo = container.resolve(MessageRepository)
+
+    def _build_seed(texts: list[str]) -> str:
+        sample = "\n".join(texts[:200])
+        if not sample:
+            return ""
+        import re as _re
+        words = [w.lower() for w in _re.findall(r"[A-Za-zА-Яа-яЁё]{3,}", sample)]
+        system: list[str] = []
+        psychology: list[str] = []
+        direct: list[str] = []
+        for w in words:
+            if any(k in w for k in ["паттерн","систем","структур","динамик","метрик","процесс","модель","system","pattern","structure","metric","process","model"]):
+                if w not in system and len(system) < 12:
+                    system.append(w)
+            if any(k in w for k in ["тень","проекц","травм","вина","стыд","уязвим","эмоци","ifs","shadow","projection","trauma","shame","guilt","vulnerab","emotion"]):
+                if w not in psychology and len(psychology) < 12:
+                    psychology.append(w)
+            if any(k in w for k in ["разъеб","жестк","прямо","fuck","shit","damn","wtf"]):
+                if w not in direct and len(direct) < 12:
+                    direct.append(w)
+        lines = [
+            "Persona Voice:",
+            "- tone: ",
+            f"- lexicon.system: {', '.join(system)}",
+            f"- lexicon.psychology: {', '.join(psychology)}",
+            f"- lexicon.direct: {', '.join(direct)}",
+            "",
+            "Sub-personalities:",
+            "- —",
+            "",
+            "Core tensions:",
+            "- —",
+            "",
+            "Style controls:",
+            "- question_ratio_target: 0.6",
+            "",
+            "Signature phrases:",
+            "- —",
+        ]
+        return "\n".join(lines)
+
+    msgs = await message_repo.get_recent_user_messages(user_id=user_id, limit=limit)
+    texts = [m.text for m in msgs if getattr(m, "text", None)]
+    seed = _build_seed(texts)
+    await websocket_service.send_user_notification(user_id, "dt_freeform_seeded", {"freeform": seed, "source": "cache", "count": len(texts)})
+
+
 @celery_app.task(name="tasks.fetch_telegram_chats_task", queue="drafts")
 def fetch_telegram_chats_task(user_id: str, limit: int = 50, offset: int = 0):
     """
@@ -1119,7 +1328,8 @@ async def async_fetch_telegram_chats(user_id: str, limit: int, offset: int):
     client = None
     try:
         # GOOD: All Telegram API interactions happen in the Celery worker
-        client = await telegram_service.get_client(user_id)
+        # Ensure a usable client even if none exists yet for this user
+        client = await telegram_service.get_or_create_client(user_id)
         if not client:
             await websocket_service.send_user_notification(
                 user_id, "chats_fetch_failed", {"error": "Failed to create Telegram client"}
@@ -1354,7 +1564,23 @@ async def async_analyze_vibe_profile(
         payload.update(extra)
         await websocket_service.send_user_notification(user_id, "vibe_profile_status", payload)
 
+    # Helper to mirror lightweight status into User fields for fast UI hydration
+    async def _mirror_user_status(status: Optional[str] = None, when: Optional[datetime] = None) -> None:
+        try:
+            update: Dict[str, Any] = {}
+            if status is not None:
+                update["context_analysis_status"] = status
+            if when is not None:
+                update["last_context_analysis_at"] = when
+            if update:
+                await user_repo.update_user(user_id, **update)
+        except Exception:
+            # Non-critical; never break the analysis flow due to mirror failures
+            pass
+
     await websocket_service.send_user_notification(user_id, "vibe_profile_analyzing", {})
+    # Reflect "ANALYZING" status early so UI doesn't lag
+    await _mirror_user_status(status="ANALYZING")
     await notify("start", limit=messages_limit)
 
     client = None
@@ -1760,6 +1986,116 @@ async def async_analyze_vibe_profile(
         except Exception:
             core_tensions_obj = {"axes": []}
 
+        # DT-aware alignment/drift computation helpers (no LLM)
+        def _compute_alignment_and_drift(dt_cfg_local: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+            try:
+                persona = (dt_cfg_local.get("persona") or {}) if isinstance(dt_cfg_local, dict) else {}
+                voice = (persona.get("voice") or {}) if isinstance(persona, dict) else {}
+                lex = (voice.get("lexicon") or {}) if isinstance(voice, dict) else {}
+                sys_set = set([str(x).lower() for x in (lex.get("system") or []) if isinstance(x, (str,))])
+                psy_set = set([str(x).lower() for x in (lex.get("psychology") or []) if isinstance(x, (str,))])
+                dir_set = set([str(x).lower() for x in (lex.get("direct") or []) if isinstance(x, (str,))])
+                stop_phrases = set([(x or '').strip().lower() for x in ((dt_cfg_local.get("anti_generic") or {}).get("stop_phrases") or []) if isinstance(x, str)])
+                # Sub-personas
+                subp = ((dt_cfg_local.get("dynamic_filters") or {}).get("sub_personalities") or {}) if isinstance(dt_cfg_local, dict) else {}
+                # Rhetoric target
+                want_q = float(((dt_cfg_local.get("generation_controls") or {}).get("rhetoric") or {}).get("question_ratio_target", 0.6) or 0.6)
+                # Actual rhetoric from earlier stats
+                actual_q = float(sentence_types.get("question", 0.0))
+                # Simple tone alignment: overlap between tone keywords and user tokens
+                tone_text = str(voice.get("tone") or "").lower()
+                tone_tokens = set([t for t in tone_text.replace(',', ' ').split() if len(t) >= 3])
+                vocab = set([t for lst in tokens_lists for t in lst if len(t) >= 3])
+                tone_alignment = 0.0
+                try:
+                    if tone_tokens:
+                        tone_alignment = round(len(tone_tokens.intersection(vocab)) / max(len(tone_tokens), 1), 3)
+                except Exception:
+                    tone_alignment = 0.0
+                # Lexicon hit-rate per bucket (unique)
+                def _hit_rate(bucket: set[str]) -> float:
+                    if not bucket:
+                        return 0.0
+                    return round(len(bucket.intersection(vocab)) / max(len(bucket), 1), 3)
+                lexicon_hit_rate = {
+                    "system": _hit_rate(sys_set),
+                    "psychology": _hit_rate(psy_set),
+                    "direct": _hit_rate(dir_set),
+                }
+                # Rhetoric alignment
+                rhetoric_alignment = round(1.0 - min(1.0, abs(want_q - actual_q)), 3)
+                # Sub-persona activation scores via hint overlap
+                activation: Dict[str, float] = {}
+                try:
+                    for slug, cfg in (subp.items() if isinstance(subp, dict) else []):
+                        hints = set([str(x).lower() for x in (cfg or {}).get("semantic_hints", []) if isinstance(x, str)])
+                        if not hints:
+                            activation[slug] = 0.0
+                            continue
+                        score = len(hints.intersection(vocab)) / max(len(hints), 1)
+                        activation[slug] = round(float(score), 3)
+                except Exception:
+                    activation = {}
+                # Stop phrase violations
+                violations: list[str] = []
+                try:
+                    for t in cleaned[:200]:
+                        if not isinstance(t, str) or not t:
+                            continue
+                        first = t.strip().split()[:3]
+                        start = " ".join(first).lower()
+                        for s in stop_phrases:
+                            if start.startswith(s.lower()):
+                                violations.append(t[:160])
+                                break
+                except Exception:
+                    violations = []
+                # Core tensions evidence counts from earlier object
+                ct_evidence = []
+                try:
+                    for ax in (core_tensions_obj.get("axes") or []):
+                        ct_evidence.append({"name": ax.get("name"), "evidence_count": len(ax.get("evidence") or [])})
+                except Exception:
+                    ct_evidence = []
+                alignment = {
+                    "lexicon_hit_rate": lexicon_hit_rate,
+                    "tone_alignment": tone_alignment,
+                    "rhetoric_alignment": {"question": rhetoric_alignment},
+                    "persona_activation": activation,
+                    "core_tensions_support": ct_evidence,
+                    "stop_phrase_violations": {"count": len(violations), "examples": violations[:5]},
+                }
+                # Drift (simple deltas)
+                def _drift_delta(a: float, b: float) -> float:
+                    return round(float(a - b), 3)
+                tone_drift = _drift_delta(tone_alignment, 0.7)  # desire >= 0.7 alignment
+                rhetoric_drift = _drift_delta(rhetoric_alignment, 0.8)  # desire closeness >= 0.8
+                # Language mix drift: compare computed lang_dist vs dominant
+                dom_lang = "ru" if lang_dist.get("ru_cyrillic", 0) >= 0.5 else "en"
+                lang_target = 1.0 if dom_lang == "ru" else 0.0
+                language_mix_drift = round((lang_dist.get("ru_cyrillic", 0) - lang_target), 3)
+                # Outliers: top tokens not in lexicon buckets
+                from collections import Counter as _Ctr
+                top_vocab = [w for w, _ in _Ctr([w for lst in tokens_lists for w in lst]).most_common(80)]
+                all_lex = sys_set.union(psy_set).union(dir_set)
+                lexicon_outliers = [w for w in top_vocab if w not in all_lex and len(w) >= 4][:20]
+                drift = {
+                    "tone_drift": tone_drift,
+                    "rhetoric_drift": rhetoric_drift,
+                    "language_mix_drift": language_mix_drift,
+                    "lexicon_outliers": lexicon_outliers,
+                    "examples": (cleaned[:3] if cleaned else []),
+                }
+                priors = {
+                    "voice": voice,
+                    "generation_controls": (dt_cfg_local.get("generation_controls") or {}),
+                    "anti_generic": (dt_cfg_local.get("anti_generic") or {}),
+                    "sub_personalities": subp,
+                }
+                return alignment, drift, priors
+            except Exception:
+                return {}, {}, {}
+
         # Merge Digital Twin config into prompt as control hints (lightweight)
         try:
             ai_profile = await ai_profile_repo.get_ai_profile_by_user(user_id)
@@ -1889,9 +2225,11 @@ async def async_analyze_vibe_profile(
                     ai_profile_local.id,
                     vibe_profile_json=default_profile,
                     analysis_status=AnalysisStatus.OUTDATED,
-                    last_analyzed_at=__import__('datetime').datetime.utcnow(),
+                    last_analyzed_at=datetime.utcnow(),
                     messages_analyzed_count=str(0),
                 )
+                # Mirror OUTDATED status/time to user for immediate UI reflection
+                await _mirror_user_status(status="OUTDATED", when=datetime.utcnow())
                 await websocket_service.send_user_notification(user_id, "vibe_profile_completed", {"profile": default_profile})
                 await notify("done", status="OUTDATED")
             except Exception:
@@ -2073,6 +2411,7 @@ async def async_analyze_vibe_profile(
                     vibe_profile=vibe_profile,
                     messages_count=len(user_sent_messages),
                 )
+                await _mirror_user_status(status="COMPLETED", when=datetime.utcnow())
                 await websocket_service.send_user_notification(user_id, "vibe_profile_completed", {"profile": vibe_profile})
                 await notify("done", status="FIELDWISE")
                 return
@@ -2089,6 +2428,12 @@ async def async_analyze_vibe_profile(
             except Exception:
                 dom_lang = "en"
             vibe_profile = _build_default_vibe_profile(dom_lang)
+            # Attach alignment/drift/priors even in fallback
+            try:
+                align, drift, priors = _compute_alignment_and_drift(dt_cfg)
+                vibe_profile["alignment"] = align; vibe_profile["drift"] = drift; vibe_profile["priors"] = priors
+            except Exception:
+                pass
             # Merge topics with filtering, n-gram preference, and recency weighting before persisting
             try:
                 manual_topics = []
@@ -2313,6 +2658,7 @@ async def async_analyze_vibe_profile(
                     vibe_profile=vibe_profile,
                     messages_count=len(user_sent_messages),
                 )
+                await _mirror_user_status(status="COMPLETED", when=datetime.utcnow())
                 await websocket_service.send_user_notification(user_id, "vibe_profile_completed", {"profile": vibe_profile})
                 await notify("done", status="FIELDWISE_AFTER_PARSE_FAIL")
                 return
@@ -2437,6 +2783,11 @@ async def async_analyze_vibe_profile(
 
         _merge_style_markers(vibe_profile)
         _merge_digital_comm(vibe_profile)
+        try:
+            align, drift, priors = _compute_alignment_and_drift(dt_cfg)
+            vibe_profile["alignment"] = align; vibe_profile["drift"] = drift; vibe_profile["priors"] = priors
+        except Exception:
+            pass
         # Explicitly remove greetings/farewells if present
         try:
             if "digital_comm" in vibe_profile:
@@ -2536,6 +2887,7 @@ async def async_analyze_vibe_profile(
             vibe_profile=vibe_profile,
             messages_count=len(user_sent_messages),
         )
+        await _mirror_user_status(status="COMPLETED", when=datetime.utcnow())
         # Ensure user preferred model is synced to gemini-2.5-pro
         try:
             from app.models.ai_request import AIRequestModel
@@ -2550,18 +2902,22 @@ async def async_analyze_vibe_profile(
         await notify("done")
         logger.info(f"Successfully completed vibe profile analysis for user {user_id}.")
 
-        # Kick off immediate draft generation for recent channel posts so the feed is not empty
+        # Kick off immediate draft generation for the latest 20 feed posts (channels only)
         try:
-            generate_drafts_for_user_recent_posts.delay(user_id=user_id)
+            generate_drafts_for_feed_page.delay(user_id=user_id, page=1, limit=20, source="channels")
             logger.info(
-                "Queued generate_drafts_for_user_recent_posts for user %s right after analysis",
+                "Queued generate_drafts_for_feed_page(page=1, limit=20, source=channels) for user %s",
                 user_id,
             )
         except Exception as _e:
-            logger.error(f"Failed to queue initial drafts generation for user {user_id}: {_e}")
+            logger.error(f"Failed to queue initial feed-based drafts generation for user {user_id}: {_e}")
 
     except Exception as e:
         logger.error(f"Vibe profile analysis for user {user_id} failed: {e}", exc_info=True)
+        try:
+            await _mirror_user_status(status="FAILED")
+        except Exception:
+            pass
         await websocket_service.send_user_notification(
             user_id, "vibe_profile_failed", {"error": str(e)}
         )
@@ -2983,13 +3339,52 @@ async def async_generate_draft_for_post(
             "entities": _extract_named_entities_simple(_post_full)[:20],
         }
 
+        # Choose a primary anchor for steering and for content-aware fallback
+        anchor_choice: str = ''
+        try:
+            if anchors_post["quotes"]:
+                anchor_choice = f"«{anchors_post['quotes'][0].strip()}»"
+            elif anchors_post["entities"]:
+                anchor_choice = anchors_post["entities"][0].strip()
+            elif anchors_post["numbers"]:
+                anchor_choice = anchors_post["numbers"][0].strip()
+        except Exception:
+            anchor_choice = ''
+
+        # DT-aware priors for prompt steering
+        vp_json = ai_profile.vibe_profile_json or {}
+        rhet_target = float(((dt_cfg.get("generation_controls") or {}).get("rhetoric") or {}).get("question_ratio_target", 0.6) or 0.6)
+        voice_lex = (((dt_cfg.get("persona") or {}).get("voice") or {}).get("lexicon") or {}) if isinstance(dt_cfg, dict) else {}
+        lex_all: list[str] = []
+        try:
+            for bucket in ("system", "psychology", "direct"):
+                for w in (voice_lex.get(bucket) or [])[:8]:
+                    ws = str(w).strip()
+                    if ws and ws.lower() not in [x.lower() for x in lex_all]:
+                        lex_all.append(ws)
+        except Exception:
+            pass
+        stop_phrases_dt = []
+        try:
+            stop_phrases_dt = list(((dt_cfg.get("anti_generic") or {}).get("stop_phrases") or [])[:12])
+        except Exception:
+            stop_phrases_dt = []
+
+        # Pull user's strong system prompt (single source of voice)
+        try:
+            system_prompt_text = str(getattr(ai_profile, 'user_system_prompt', '') or '').strip()
+        except Exception:
+            system_prompt_text = ''
+
         prompt = f"""
         You are an AI assistant generating a Telegram comment for a user.
-        USER VIBE PROFILE: {json.dumps(ai_profile.vibe_profile_json, indent=2)}
+        SYSTEM_PROMPT (persona+style, highest priority): {system_prompt_text or '—'}
+        USER VIBE PROFILE: {json.dumps(vp_json, indent=2, ensure_ascii=False)}
         DT_CONFIG: {json.dumps(dt_cfg, indent=2, ensure_ascii=False)}
         PERSONA_DIRECTIVES: {json.dumps(persona_directives, indent=2, ensure_ascii=False)}
         POST TO COMMENT ON: {post_data.get('original_post_content')}
-        PRIOR_USER_COMMENTS (style hints, <=160 chars each): {nearest_snippets or 'None'}
+        PRIMARY_ANCHOR (must be referenced naturally): {anchor_choice or '—'}
+        PRIOR USER COMMENTS (style hints, <=160 chars each): {nearest_snippets or 'None'}
         CHANNEL CONTEXT (recent messages):
         {channel_context}
         
@@ -3006,10 +3401,11 @@ async def async_generate_draft_for_post(
           - HD filter ← {persona_directives.get('hd_filter')} with authority {persona_directives.get('authority')}
           - Trauma mode (if set) ← {persona_directives.get('trauma_mode')}
           - Sub-persona (if set) ← {persona_directives.get('sub_persona')} (apply style_mod if provided)
-        - If trauma_mode is set, prioritize its lexicon/behavior and keep the comment concise.
         - Enforce anchors: cite at least one concrete claim/number/named entity from the post.
         - Match the user's vibe PERFECTLY (tone, brevity, emoji level). Use their typical endings if natural.
-        - Avoid generic starters or filler phrases. Be specific and situated in the post.
+        - Preferred lexicon anchors (use at most 1 naturally): {', '.join(lex_all[:8]) if lex_all else '—'}
+        - Avoid generic starters: {', '.join(stop_phrases_dt[:8]) if stop_phrases_dt else '—'}
+        - Rhetoric preference: {('end with a short question if natural' if rhet_target >= 0.5 else 'prefer a concise declarative ending')}.
         - Output ONLY the comment text. No quotes, no markdown.
         - If environment is LOW_SAFE_LOW_DEPTH and no concrete anchor can be cited confidently, return exactly: __SKIP__
         """
@@ -3030,12 +3426,37 @@ async def async_generate_draft_for_post(
                     }
         except Exception:
             ai_overrides = {}
+        # Safe defaults for comment generation if not provided
+        if "temperature" not in ai_overrides:
+            ai_overrides["temperature"] = 0.6
+        if "max_output_tokens" not in ai_overrides:
+            ai_overrides["max_output_tokens"] = 640
+
+        # Determine provider preference: UI overrides env default
+        provider_pref: str = "proxy" if settings.GEMINI_BASE_URL else "google"
+        try:
+            vp_local2 = getattr(ai_profile, "vibe_profile_json", {}) or {}
+            gp = vp_local2.get("gen_provider")
+            if gp in ("google", "proxy"):
+                provider_pref = gp
+        except Exception:
+            pass
 
         candidates: list[tuple[str, float]] = []
         k = int((dt_cfg.get("generation_controls") or {}).get("num_candidates", 1))
         k = max(1, min(k, 3))
         for i in range(k):
-            resp = await gemini_service.generate_content(prompt, overrides={**ai_overrides, "provider": "proxy" if settings.GEMINI_BASE_URL else None})
+            local_overrides = {**ai_overrides}
+            # Prefer explicit 2.5 models if present in overrides
+            if "model" not in local_overrides:
+                try:
+                    vo = (ai_profile.vibe_profile_json or {}).get("gen_overrides", {}) if ai_profile else {}
+                    m = str((vo or {}).get("model") or "").strip()
+                    if m in {"gemini-2.5-pro", "gemini-2.5-flash"}:
+                        local_overrides["model"] = m
+                except Exception:
+                    pass
+            resp = await gemini_service.generate_content(prompt, overrides={**local_overrides, "provider": provider_pref})
             draft = (resp.get("content") or "").strip() if resp and resp.get("success") else ""
             if not draft:
                 continue
@@ -3073,6 +3494,14 @@ async def async_generate_draft_for_post(
             L = len(draft)
             if min_len <= L <= max_len:
                 score += 0.2
+            # Lexicon anchor usage bonus
+            try:
+                if lex_all:
+                    dl2 = draft.lower()
+                    if any(a.lower() in dl2 for a in lex_all[:8]):
+                        score += 0.2
+            except Exception:
+                pass
             # Environment appropriateness
             env = persona_directives.get('environment_quadrant')
             if env == 'LOW_SAFE_HIGH_DEPTH' and '!' not in draft:
@@ -3082,16 +3511,26 @@ async def async_generate_draft_for_post(
             candidates.append((draft, score))
 
         if not candidates:
-            return
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        best_text = candidates[0][0]
-        if best_text == '__SKIP__':
-            logger.info(f"Skipping draft due to toxic/low-depth environment for user {user_id}")
-            return
+            best_text = ''  # Force fallback path below
+        else:
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            best_text = candidates[0][0]
+            if best_text == '__SKIP__':
+                logger.info(f"Skipping draft due to toxic/low-depth environment for user {user_id}")
+                best_text = ''  # Force fallback path
 
         # Call LLM with protective try/except so we can fallback on failures
         try:
-            response = await gemini_service.generate_content(prompt, overrides={**ai_overrides, "provider": "proxy" if settings.GEMINI_BASE_URL else None})
+            local_overrides = {**ai_overrides}
+            if "model" not in local_overrides:
+                try:
+                    vo = (ai_profile.vibe_profile_json or {}).get("gen_overrides", {}) if ai_profile else {}
+                    m = str((vo or {}).get("model") or "").strip()
+                    if m in {"gemini-2.5-pro", "gemini-2.5-flash"}:
+                        local_overrides["model"] = m
+                except Exception:
+                    pass
+            response = await gemini_service.generate_content(prompt, overrides={**local_overrides, "provider": provider_pref})
         except Exception as e:
             # Normalize into response dict so the fallback below can trigger
             response = {"success": False, "error": str(e)}
@@ -3100,21 +3539,31 @@ async def async_generate_draft_for_post(
         if response and response.get("success"):
             content_text = (response.get("content") or "").strip()
 
-        # Graceful degrade: if any failure OR empty content, still create a minimal draft so feed stays useful
+        # Graceful degrade: if any failure OR empty content, still create a topical, content‑aware fallback
+        fallback_used: bool = False
+        fallback_reason: str = ""
         if (not response or not response.get("success")) or not content_text:
-            # Distinct fallback so the user sees change after regeneration
+            fallback_used = True
+            fallback_reason = "llm_error" if error_text else "llm_empty"
+            # Anchor‑aware fallback in user's language (ru by default)
             if rejected_draft_id:
-                variations = [
-                    "Окей, возьму другой угол. По сути — коротко и по делу.",
-                    "Попробую иначе: компактно и ближе к сути.",
-                    "Скажу по‑другому: лаконично, без воды.",
-                ]
+                if anchor_choice:
+                    variations = [
+                        f"Возьму другой угол. По {anchor_choice} — короче и по сути.",
+                        f"Скажу иначе. Опора здесь — {anchor_choice}.",
+                        f"Иначе: фокус на {anchor_choice}. Без воды.",
+                    ]
+                else:
+                    variations = [
+                        "Возьму другой угол. По сути — коротко и по делу.",
+                        "Скажу иначе: лаконично, без воды.",
+                    ]
                 draft_text = random.choice(variations)
             else:
-                draft_text = (
-                    "Круто. Вижу тему, которая мне близка. Подписываюсь на апдейт. "
-                    "(AI временно ограничен/недоступен, поэтому коротко.)"
-                )
+                if anchor_choice:
+                    draft_text = f"Коротко по делу: фокус на {anchor_choice}."
+                else:
+                    draft_text = "Коротко и по сути."
         else:
             draft_text = content_text
         # Unwrap accidental JSON objects like {"comment": "..."}
@@ -3156,6 +3605,16 @@ async def async_generate_draft_for_post(
 
         # Ensure we have a DB message id; resolve or create using channel_telegram_id + post_telegram_id
         gen_params: Dict[str, Any] = {}
+        # Persist helpful generation metadata for UI/debugging
+        try:
+            gen_params.update({
+                "anchor_primary": anchor_choice or None,
+                "provider": ("fallback" if fallback_used else "llm"),
+                "fallback_used": bool(fallback_used),
+                "fallback_reason": fallback_reason or None,
+            })
+        except Exception:
+            pass
         try:
             if channel_telegram_id and db_chat:
                 gen_params["channel_title"] = getattr(db_chat, "title", None)
@@ -3207,6 +3666,14 @@ async def async_generate_draft_for_post(
                     model_used = "gemini-2.5-pro"
             except Exception:
                 model_used = "gemini-2.5-pro"
+        # If user saved a generation override model (2.5 pro/flash), prefer it for ai_model_used tag
+        try:
+            vo2 = (ai_profile.vibe_profile_json or {}).get("gen_overrides", {}) if ai_profile else {}
+            mv = str((vo2 or {}).get("model") or "").strip()
+            if mv in {"gemini-2.5-pro", "gemini-2.5-flash"}:
+                model_used = mv
+        except Exception:
+            pass
 
         draft_create_data = DraftCommentCreate(
             original_message_id=post_data.get("original_message_id", "unknown"),
@@ -3353,25 +3820,29 @@ async def async_generate_drafts_for_user_recent_posts(user_id: str, dialogs_limi
         client = await telegram_service.get_client(user.id)
         if not client:
             return
-
         async for dialog in client.iter_dialogs(limit=dialogs_limit):
-            if not dialog.is_channel:
-                continue
+            from app.models.chat import TelegramMessengerChat, TelegramMessengerChatType
+            # Determine chat type for record creation
+            is_channel_entity = bool(getattr(dialog, 'is_channel', False))
+            entity = dialog.entity
+            is_broadcast = bool(getattr(entity, 'broadcast', False)) if is_channel_entity else False
+            if is_channel_entity:
+                chat_type = TelegramMessengerChatType.CHANNEL if is_broadcast else TelegramMessengerChatType.SUPERGROUP
+                title = getattr(entity, 'title', 'Unnamed Channel')
+            else:
+                chat_type = TelegramMessengerChatType.GROUP
+                title = getattr(entity, 'title', 'Unnamed Group')
 
             db_chat = await chat_repo.get_chat_by_telegram_id(dialog.id, user.id)
             if not db_chat:
-                # Create chat record on the fly so drafts can be generated immediately
-                from app.models.chat import TelegramMessengerChat, TelegramMessengerChatType
-                # Determine correct chat type: broadcast=True => CHANNEL, else SUPERGROUP
-                is_broadcast = bool(getattr(dialog.entity, "broadcast", False))
                 created_list = await chat_repo.create_or_update_chats(
                     [
                         TelegramMessengerChat(
                             telegram_id=int(dialog.id),
                             user_id=user.id,
-                            type=TelegramMessengerChatType.CHANNEL if is_broadcast else TelegramMessengerChatType.SUPERGROUP,
-                            title=getattr(dialog.entity, "title", "Unnamed Channel"),
-                            comments_enabled=True,
+                            type=chat_type,
+                            title=title,
+                            comments_enabled=True if chat_type != TelegramMessengerChatType.CHANNEL else bool(getattr(entity, 'linked_chat_id', None)),
                         )
                     ]
                 )
@@ -3380,50 +3851,347 @@ async def async_generate_drafts_for_user_recent_posts(user_id: str, dialogs_limi
                     continue
 
             async for message in client.iter_messages(dialog, limit=per_dialog_messages):
-                if not (getattr(message, "text", None) or getattr(message, "photo", None)):
-                    continue
+                    if not (getattr(message, "text", None) or getattr(message, "photo", None)):
+                        continue
 
-                media_type = None
-                media_url = None
-                try:
-                    if getattr(message, 'photo', None) is not None:
-                        media_type = 'photo'
-                        media_path = await telegram_service.download_message_photo(user.id, int(dialog.id), int(message.id))
-                        if media_path:
-                            media_url = media_path
-                except Exception:
-                    pass
-
-                saved = await message_repo.create_or_update_messages(
-                    [
-                        TelegramMessengerMessage(
-                            telegram_id=message.id,
-                            chat_id=db_chat.id,
-                            text=message.text,
-                            date=telegram_service._convert_to_naive_utc(message.date),
-                            media_type=media_type,
-                            file_id=media_url,
-                        )
-                    ]
-                )
-                db_message_id = saved[0].id
-                post_data = {
-                    "original_message_id": db_message_id,
-                    "original_post_content": message.text,
-                    "original_post_url": (
-                        f"https://t.me/{getattr(dialog.entity, 'username', None)}/{message.id}"
-                        if getattr(dialog.entity, "username", None) else None
-                    ),
-                    "channel_telegram_id": int(dialog.id),
-                    "force_generate": True,
-                }
-                generate_draft_for_post.delay(user_id=user.id, post_data=post_data)
+                    media_type = None
+                    media_url = None
+                    try:
+                        if getattr(message, 'photo', None) is not None:
+                            media_type = 'photo'
+                            media_path = await telegram_service.download_message_photo(user.id, int(dialog.id), int(message.id))
+                            if media_path:
+                                media_url = media_path
+                    except Exception:
+                        pass
+                    saved = await message_repo.create_or_update_messages(
+                        [
+                            TelegramMessengerMessage(
+                                telegram_id=message.id,
+                                chat_id=db_chat.id,
+                                text=message.text,
+                                date=telegram_service._convert_to_naive_utc(message.date),
+                                media_type=media_type,
+                                file_id=media_url,
+                            )
+                        ]
+                    )
+                    db_message_id = saved[0].id
+                    post_data = {
+                        "original_message_id": db_message_id,
+                        "original_post_content": message.text,
+                        "original_post_url": (
+                            f"https://t.me/{getattr(dialog.entity, 'username', None)}/{message.id}"
+                            if getattr(dialog.entity, "username", None) else None
+                        ),
+                        "channel_telegram_id": int(dialog.id),
+                        "force_generate": True,
+                    }
+                    # Queue drafts for channels and supergroups (and groups) so non-broadcast chats are included
+                    if chat_type in (TelegramMessengerChatType.CHANNEL, TelegramMessengerChatType.SUPERGROUP, TelegramMessengerChatType.GROUP):
+                        generate_draft_for_post.delay(user_id=user.id, post_data=post_data)
     except Exception as e:
         logger.error("Failed generate_drafts_for_user_recent_posts for user %s: %s", user_id, e)
     finally:
         if client:
             await telegram_service.disconnect_client(user.id)
 
+
+# New: feed-driven generation strictly bounded by feed page
+@celery_app.task(name="tasks.generate_drafts_for_feed_page", queue="drafts")
+def generate_drafts_for_feed_page(user_id: str, page: int = 1, limit: int = 20, source: str = "channels"):
+    """Queue generation for exactly the posts shown on a feed page.
+
+    - Fetches the feed slice via repository with the same parameters as the API.
+    - For each of the at-most `limit` posts, queue a per-post generation task.
+    - Skips posts that already have a DRAFT/EDITED/APPROVED/POSTED draft by this user.
+    - Regenerated (REJECTED) drafts are not counted and do not block regeneration.
+    """
+    logger.info(
+        "Starting generate_drafts_for_feed_page for user_id=%s page=%s limit=%s source=%s",
+        user_id,
+        page,
+        limit,
+        source,
+    )
+    asyncio.run(async_generate_drafts_for_feed_page(user_id=user_id, page=page, limit=limit, source=source))
+
+
+async def async_generate_drafts_for_feed_page(user_id: str, page: int = 1, limit: int = 20, source: str = "channels"):
+    from app.repositories.message_repository import MessageRepository
+    from app.repositories.draft_comment_repository import DraftCommentRepository
+    from app.repositories.chat_repository import ChatRepository
+    from app.core.dependencies import container
+    from app.models.draft_comment import DraftStatus
+    from app.services.domain.websocket_service import WebSocketService
+
+    message_repo = container.resolve(MessageRepository)
+    draft_repo = container.resolve(DraftCommentRepository)
+    chat_repo = container.resolve(ChatRepository)
+    websocket_service = container.resolve(WebSocketService)
+
+    try:
+        offset = max(page - 1, 0) * max(limit, 1)
+        feed_rows = await message_repo.get_feed_posts(user_id=user_id, limit=limit, offset=offset, source=source)
+        if not feed_rows:
+            # If user has no saved chats, fetch them first, then sync messages
+            try:
+                saved_chats = await chat_repo.get_user_chats(user_id=user_id, limit=1, offset=0)
+            except Exception:
+                saved_chats = []
+            try:
+                if not saved_chats:
+                    await async_fetch_telegram_chats(user_id=user_id, limit=50, offset=0)
+                await async_sync_messages_for_user(user_id=user_id, per_chat_limit=50, source=source)
+                feed_rows = await message_repo.get_feed_posts(user_id=user_id, limit=limit, offset=offset, source=source)
+            except Exception:
+                pass
+            if not feed_rows:
+                return
+
+        # Only consider the `limit` posts returned (latest N by service ordering)
+        for row in feed_rows[:limit]:
+            try:
+                message = row.get("post")
+                if not message:
+                    continue
+                # Skip if a non-rejected draft already exists for this message
+                existing = await draft_repo.get_drafts_by_message(str(message.id))
+                if any((d.user_id == user_id and d.status in {DraftStatus.DRAFT, DraftStatus.EDITED, DraftStatus.APPROVED, DraftStatus.POSTED}) for d in existing):
+                    continue
+
+                post_data: Dict[str, Any] = {
+                    "original_message_id": str(getattr(message, "id", "")),
+                    "original_post_content": getattr(message, "text", None),
+                    # Ensure these are always present so we can upsert the telegram_messenger_messages row before draft insert
+                    "channel_telegram_id": int(row.get("channel_telegram_id", 0) or 0),
+                    "original_message_telegram_id": int(getattr(message, "telegram_id", 0) or 0),
+                    # Force generation for feed-page requests to guarantee exactly N drafts for the slice
+                    "force_generate": True,
+                }
+                # Queue per-post generation
+                generate_draft_for_post.delay(user_id=user_id, post_data=post_data)
+                try:
+                    await websocket_service.send_user_notification(user_id, "draft_generation_queued", {"original_message_id": post_data["original_message_id"]})
+                except Exception:
+                    pass
+            except Exception:
+                continue
+    except Exception as e:
+        logger.error("generate_drafts_for_feed_page failed for user %s: %s", user_id, e)
+
+
+# Lightweight preview of a single comment using current Digital Twin settings
+@celery_app.task(name="tasks.preview_comment", queue="drafts")
+def preview_comment(user_id: str, post_text: str):
+    asyncio.run(async_preview_comment(user_id=user_id, post_text=post_text))
+
+
+async def async_preview_comment(user_id: str, post_text: str):
+    """Generate a single preview comment and broadcast via WS; cache in Redis for 5m.
+
+    This does not create any DB drafts. It is used for instant UX previews in the
+    Alignment tab and respects the user's current Digital Twin configuration.
+    """
+    from app.repositories.user_repository import UserRepository
+    from app.repositories.ai_profile_repository import AIProfileRepository
+    from app.services.domain.websocket_service import WebSocketService
+    from app.services.redis_service import RedisService
+    from app.services.gemini_service import GeminiService
+    from app.services.langchain_service import LangChainService
+
+    user_repo = container.resolve(UserRepository)
+    ai_repo = container.resolve(AIProfileRepository)
+    websocket_service = container.resolve(WebSocketService)
+    redis = container.resolve(RedisService)
+    gemini_service = container.resolve(GeminiService)
+    langchain_service = container.resolve(LangChainService)
+
+    user = await user_repo.get_user(user_id)
+    ai_profile = await ai_repo.get_ai_profile_by_user(user_id)
+    if not user:
+        return
+
+    # Merge dt_config
+    dt_cfg: Dict[str, Any] = DEFAULT_DT_CONFIG
+    try:
+        vp_local = getattr(ai_profile, "vibe_profile_json", None) or {}
+        merged = dict(DEFAULT_DT_CONFIG)
+        user_dt = vp_local.get("dt_config") or {}
+        if isinstance(user_dt, dict):
+            for k, v in user_dt.items():
+                merged[k] = v
+        dt_cfg = merged
+    except Exception:
+        dt_cfg = DEFAULT_DT_CONFIG
+
+    # Compute persona directives for steering (reuse local helper)
+    persona_directives = _compute_persona_directives(
+        post_text=post_text or "",
+        channel_title=None,
+        dt_cfg=dt_cfg,
+    )
+
+    vp_json = ai_profile.vibe_profile_json if ai_profile else {}
+    prompt = f"""
+        You are an AI assistant generating a Telegram comment for preview.
+        USER VIBE PROFILE: {json.dumps(vp_json or {}, ensure_ascii=False)}
+        DT_CONFIG: {json.dumps(dt_cfg, ensure_ascii=False)}
+        PERSONA_DIRECTIVES: {json.dumps(persona_directives, ensure_ascii=False)}
+        POST: {post_text}
+
+        Respond ONLY with a valid JSON object with two keys:
+        1. "comment_text": string — the final comment text.
+        2. "context_summary": string — one-sentence neutral summary of the post.
+    """
+
+    # Call Gemini path first; fallback to LangChain if needed
+    result: Dict[str, Any] = await gemini_service.generate_content(prompt)
+    text: str | None = None
+    context_summary: str | None = None
+    try:
+        if result and result.get("content"):
+            data = json.loads(result.get("content"))
+            text = data.get("comment_text")
+            context_summary = data.get("context_summary")
+    except Exception:
+        pass
+    if not text:  # rescue
+        alt = await langchain_service.generate_response(prompt)
+        if alt and alt.get("content"):
+            text = str(alt.get("content"))
+
+    payload = {"text": text or "", "context_summary": context_summary or ""}
+    try:
+        redis.set(f"preview:{user_id}", payload, expire=300)
+    except Exception:
+        pass
+    try:
+        await websocket_service.send_user_notification(user_id, "preview_comment_ready", payload)
+    except Exception:
+        pass
+
+# --- Reset/Seed single-session flow ---
+
+@celery_app.task(name="tasks.reset_and_seed_user_data", queue="drafts")
+def reset_and_seed_user_data(user_id: str, chats_limit: int = 20, per_chat_limit: int = 50, source: str = "channels"):
+    asyncio.run(async_reset_and_seed_user_data(user_id=user_id, chats_limit=chats_limit, per_chat_limit=per_chat_limit, source=source))
+
+
+async def async_reset_and_seed_user_data(user_id: str, chats_limit: int = 20, per_chat_limit: int = 50, source: str = "channels"):
+    from app.repositories.chat_repository import ChatRepository
+    from app.repositories.message_repository import MessageRepository
+    from app.repositories.draft_comment_repository import DraftCommentRepository
+    from app.services.domain.websocket_service import WebSocketService
+    from app.services.telegram_service import TelegramService
+    from app.core.dependencies import container
+
+    chat_repo = container.resolve(ChatRepository)
+    message_repo = container.resolve(MessageRepository)
+    draft_repo = container.resolve(DraftCommentRepository)
+    from app.repositories.negative_feedback_repository import NegativeFeedbackRepository
+    neg_repo = container.resolve(NegativeFeedbackRepository)
+    websocket_service = container.resolve(WebSocketService)
+    telegram_service = container.resolve(TelegramService)
+    client = None
+    try:
+        # Delete dependent rows first to satisfy FK (negative_feedback -> draft_comments)
+        neg_deleted = await neg_repo.delete_all_for_user(user_id)
+        drafts_deleted = await draft_repo.delete_all_for_user(user_id)
+        msgs_deleted = await message_repo.delete_all_for_user(user_id)
+        chats_deleted = await chat_repo.delete_all_for_user(user_id)
+        await websocket_service.send_user_notification(user_id, "purge_completed", {
+            "negative_feedback_deleted": neg_deleted,
+            "drafts_deleted": drafts_deleted,
+            "messages_deleted": msgs_deleted,
+            "chats_deleted": chats_deleted
+        })
+
+        client = await telegram_service.get_or_create_client(user_id)
+        if not client:
+            await websocket_service.send_user_notification(user_id, "seed_failed", {"stage": "client", "error": "no client"})
+            return
+        await async_fetch_telegram_chats(user_id, limit=chats_limit, offset=0)
+        await websocket_service.send_user_notification(user_id, "chats_seeded", {"limit": chats_limit})
+
+        # 3) Sync messages for saved chats directly
+        try:
+            await async_sync_messages_for_user(user_id=user_id, per_chat_limit=per_chat_limit, source=source)
+            await websocket_service.send_user_notification(user_id, "messages_seeded", {"per_chat_limit": per_chat_limit})
+        except Exception:
+            logger.exception("Message sync failed during reset/seed")
+
+        try:
+            generate_drafts_for_feed_page.delay(user_id=user_id, page=1, limit=20, source=source)
+        except Exception:
+            pass
+    except Exception as e:
+        await websocket_service.send_user_notification(user_id, "seed_failed", {"error": str(e)})
+        logger.error("reset_and_seed_user_data failed: %s", e, exc_info=True)
+    finally:
+        if client:
+            await telegram_service.disconnect_client(user_id)
+
+
+@celery_app.task(name="tasks.sync_messages_for_user", queue="drafts")
+def sync_messages_for_user(user_id: str, per_chat_limit: int = 50, source: str = "channels"):
+    asyncio.run(async_sync_messages_for_user(user_id=user_id, per_chat_limit=per_chat_limit, source=source))
+
+
+async def async_sync_messages_for_user(user_id: str, per_chat_limit: int = 50, source: str = "channels"):
+    from app.core.dependencies import container
+    from app.repositories.chat_repository import ChatRepository
+    from app.repositories.message_repository import MessageRepository
+    from app.models.chat import TelegramMessengerChatType
+    from app.models.telegram_message import TelegramMessengerMessage
+    from app.services.telegram_service import TelegramService
+
+    chat_repo = container.resolve(ChatRepository)
+    message_repo = container.resolve(MessageRepository)
+    telegram_service = container.resolve(TelegramService)
+
+    client = await telegram_service.get_or_create_client(user_id)
+    if not client:
+        return
+
+    # Fetch saved chats for the user and sync their last messages
+    saved = await chat_repo.get_user_chats(user_id=user_id, limit=10000, offset=0)
+    if not saved:
+        return
+
+    from telethon.tl import types
+    for chat in saved:
+        try:
+            # Sync messages for all saved chats to keep feed rich; filtering is applied later at read time
+            # Resolve entity kind based on chat type
+            if str(getattr(chat, "type", "")).endswith("CHANNEL") or str(getattr(chat, "type", "")).endswith("SUPERGROUP"):
+                entity = types.PeerChannel(int(chat.telegram_id))
+            else:
+                entity = types.PeerChat(int(chat.telegram_id))
+            # Grab last N messages
+            async for msg in client.iter_messages(entity, limit=per_chat_limit):
+                if not msg:
+                    continue
+                media_type = None
+                media_url = None
+                try:
+                    if getattr(msg, 'photo', None) is not None:
+                        media_type = 'photo'
+                        # non-blocking download skipped here to keep sync fast
+                except Exception:
+                    pass
+                await message_repo.create_or_update_messages([
+                    TelegramMessengerMessage(
+                        telegram_id=int(getattr(msg, 'id', 0)),
+                        chat_id=chat.id,
+                        text=getattr(msg, 'text', None),
+                        date=telegram_service._convert_to_naive_utc(getattr(msg, 'date', None)),
+                        media_type=media_type,
+                        file_id=media_url,
+                    )
+                ])
+        except Exception:
+            continue
 
 # --- Maintenance tasks ---
 
@@ -3449,6 +4217,7 @@ async def async_normalize_chat_types_for_user(user_id: str):
             return
 
         from app.models.chat import TelegramMessengerChat, TelegramMessengerChatType
+        from telethon.tl import functions
         from telethon.tl.types import Channel as TelethonChannel, Chat as TelethonChat, User as TelethonUser
 
         updates: list[TelegramMessengerChat] = []
@@ -3461,10 +4230,21 @@ async def async_normalize_chat_types_for_user(user_id: str):
             if isinstance(entity, TelethonChannel):
                 is_broadcast = bool(getattr(entity, "broadcast", False))
                 new_type = TelegramMessengerChatType.CHANNEL if is_broadcast else TelegramMessengerChatType.SUPERGROUP
+                # Recompute comments_enabled for broadcast channels via linked discussion
+                try:
+                    linked_chat_id = None
+                    if is_broadcast:
+                        full = await client(functions.channels.GetFullChannelRequest(channel=entity))
+                        linked_chat_id = getattr(full.full_chat, "linked_chat_id", None)
+                    desired_enabled = True if not is_broadcast else bool(linked_chat_id)
+                except Exception:
+                    desired_enabled = False if is_broadcast else True
             elif isinstance(entity, TelethonChat):
                 new_type = TelegramMessengerChatType.GROUP
+                desired_enabled = True
             elif isinstance(entity, TelethonUser):
                 new_type = TelegramMessengerChatType.PRIVATE
+                desired_enabled = False
             else:
                 continue
 
@@ -3478,6 +4258,13 @@ async def async_normalize_chat_types_for_user(user_id: str):
                         member_count=chat.member_count,
                     )
                 )
+
+            # Explicitly fix comments_enabled drift, using repository setter
+            try:
+                if getattr(chat, "comments_enabled", None) is not desired_enabled:
+                    await chat_repo.set_comments_enabled(user_id=user_id, telegram_id=int(chat.telegram_id), enabled=bool(desired_enabled))
+            except Exception:
+                pass
 
         if updates:
             await chat_repo.create_or_update_chats(updates)

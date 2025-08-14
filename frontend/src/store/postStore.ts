@@ -34,6 +34,13 @@ export const usePostStore = create<PostStore>((set, get) => ({
           totalPages: Math.ceil(response.data.total / response.data.limit),
           isLoading: false,
         });
+        // If user navigated to page>1 or switched source away from default 'channels',
+        // request background generation for this slice to fill missing drafts.
+        if (page > 1 || source !== 'channels') {
+          try {
+            await postService.queueGenerateForPage(initDataRaw, page, limit, source);
+          } catch {}
+        }
       } else {
         set({
           error: 'Failed to fetch posts',

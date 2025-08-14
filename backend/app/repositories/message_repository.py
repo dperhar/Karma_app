@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 from typing import Optional, List
 
-from sqlalchemy import join, select, desc, func
+from sqlalchemy import join, select, desc, func, and_, or_
 from sqlalchemy.orm import aliased
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -169,6 +169,32 @@ class MessageRepository(BaseRepository):
                 # Alias for DraftComment to handle the LEFT JOIN correctly for a specific user
                 user_draft = aliased(DraftComment)
 
+                # Build source filter with comments_enabled constraint for channels
+                if source == "channels":
+                    # Treat "channels" as any broadcast channel with discussion enabled OR any supergroup
+                    source_filter = or_(
+                        and_(
+                            TelegramMessengerChat.type == TelegramMessengerChatType.CHANNEL,
+                            TelegramMessengerChat.comments_enabled.is_(True),
+                        ),
+                        TelegramMessengerChat.type == TelegramMessengerChatType.SUPERGROUP,
+                    )
+                elif source == "groups":
+                    source_filter = TelegramMessengerChat.type.in_(
+                        [TelegramMessengerChatType.GROUP, TelegramMessengerChatType.SUPERGROUP]
+                    )
+                else:  # both
+                    source_filter = or_(
+                        and_(
+                            TelegramMessengerChat.type == TelegramMessengerChatType.CHANNEL,
+                            TelegramMessengerChat.comments_enabled.is_(True),
+                        ),
+                        TelegramMessengerChat.type.in_(
+                            [TelegramMessengerChatType.GROUP, TelegramMessengerChatType.SUPERGROUP]
+                        ),
+                    )
+
+                # Straight date-ordered feed (no per-chat balancing)
                 query = (
                     select(
                         TelegramMessengerMessage,
@@ -188,16 +214,7 @@ class MessageRepository(BaseRepository):
                     )
                     .where(
                         TelegramMessengerChat.user_id == user_id,
-                        (
-                            (TelegramMessengerChat.type == TelegramMessengerChatType.CHANNEL)
-                            if source == "channels"
-                            else (
-                                (TelegramMessengerChat.type.in_([TelegramMessengerChatType.GROUP, TelegramMessengerChatType.SUPERGROUP]))
-                                if source == "groups"
-                                else (TelegramMessengerChat.type.in_([TelegramMessengerChatType.CHANNEL, TelegramMessengerChatType.GROUP, TelegramMessengerChatType.SUPERGROUP]))
-                            )
-                        ),
-                        TelegramMessengerChat.comments_enabled.is_(True),
+                        source_filter,
                     )
                     .order_by(desc(TelegramMessengerMessage.date))
                     .limit(limit)
@@ -227,6 +244,30 @@ class MessageRepository(BaseRepository):
         """Return the total count of posts available for the user's feed (for pagination)."""
         async with self.get_session() as session:
             try:
+                if source == "channels":
+                    source_filter = or_(
+                        and_(
+                            TelegramMessengerChat.type == TelegramMessengerChatType.CHANNEL,
+                            TelegramMessengerChat.comments_enabled.is_(True),
+                        ),
+                        TelegramMessengerChat.type == TelegramMessengerChatType.SUPERGROUP,
+                    )
+                elif source == "groups":
+                    source_filter = TelegramMessengerChat.type.in_(
+                        [TelegramMessengerChatType.GROUP, TelegramMessengerChatType.SUPERGROUP]
+                    )
+                else:
+                    source_filter = or_(
+                        and_(
+                            TelegramMessengerChat.type == TelegramMessengerChatType.CHANNEL,
+                            TelegramMessengerChat.comments_enabled.is_(True),
+                        ),
+                        TelegramMessengerChat.type.in_(
+                            [TelegramMessengerChatType.GROUP, TelegramMessengerChatType.SUPERGROUP]
+                        ),
+                    )
+
+                # Total messages that qualify (for pagination of date-ordered feed)
                 query = (
                     select(func.count(TelegramMessengerMessage.id))
                     .join(
@@ -235,16 +276,7 @@ class MessageRepository(BaseRepository):
                     )
                     .where(
                         TelegramMessengerChat.user_id == user_id,
-                        (
-                            (TelegramMessengerChat.type == TelegramMessengerChatType.CHANNEL)
-                            if source == "channels"
-                            else (
-                                (TelegramMessengerChat.type.in_([TelegramMessengerChatType.GROUP, TelegramMessengerChatType.SUPERGROUP]))
-                                if source == "groups"
-                                else (TelegramMessengerChat.type.in_([TelegramMessengerChatType.CHANNEL, TelegramMessengerChatType.GROUP, TelegramMessengerChatType.SUPERGROUP]))
-                            )
-                        ),
-                        TelegramMessengerChat.comments_enabled.is_(True),
+                        source_filter,
                     )
                 )
                 result = await session.execute(query)
@@ -254,4 +286,54 @@ class MessageRepository(BaseRepository):
                 self.logger.error(
                     f"Error counting feed posts for user {user_id}: {e}", exc_info=True
                 )
+                raise
+
+    async def get_recent_user_messages(self, user_id: str, limit: int = 300) -> list[TelegramMessengerMessage]:
+        """Return recent cached Telegram messages authored by the given app user across all chats.
+
+        This does not hit Telegram APIs; it only reads our local DB cache. Suitable for
+        lightweight reseeding of Digital Twin freeform without a full analysis.
+        """
+        async with self.get_session() as session:
+            try:
+                # Join messages with chat_user to filter only messages sent by this user
+                query = (
+                    select(TelegramMessengerMessage)
+                    .join(
+                        TelegramMessengerChatUser,
+                        TelegramMessengerMessage.sender_id == TelegramMessengerChatUser.id,
+                    )
+                    .where(
+                        TelegramMessengerChatUser.user_id == user_id,
+                        TelegramMessengerMessage.text.is_not(None),
+                    )
+                    .order_by(desc(TelegramMessengerMessage.date))
+                    .limit(limit)
+                )
+                result = await session.execute(query)
+                rows = result.scalars().all()
+                return list(rows)
+            except SQLAlchemyError as e:
+                self.logger.error(
+                    f"Error getting recent user messages for user {user_id}: {e}", exc_info=True
+                )
+                raise
+
+    async def delete_all_for_user(self, user_id: str) -> int:
+        """Delete all Telegram messages for a user's chats.
+
+        Returns number of rows deleted.
+        """
+        from sqlalchemy import delete
+        async with self.get_session() as session:
+            try:
+                # Subquery to select chat ids belonging to the user
+                chat_ids_query = select(TelegramMessengerChat.id).where(TelegramMessengerChat.user_id == user_id)
+                stmt = delete(TelegramMessengerMessage).where(TelegramMessengerMessage.chat_id.in_(chat_ids_query))
+                result = await session.execute(stmt)
+                await session.commit()
+                return int(getattr(result, "rowcount", 0) or 0)
+            except SQLAlchemyError as e:
+                await session.rollback()
+                self.logger.error(f"Error deleting messages for user {user_id}: {e}", exc_info=True)
                 raise
