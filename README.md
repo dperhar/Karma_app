@@ -1,36 +1,56 @@
 # Karma App
 
-## 🔒 Security & Environment Protection
+**Karma App** is an AI-powered Telegram comment automation tool that creates a "Digital Twin" of users by analyzing their message history and generates draft comments in their personal voice for posts from subscribed channels.
 
-This project has **100% protection** against accidental `.env` file commits:
+---
 
-### 1. Git Hook Protection
-- **Pre-commit hook** automatically blocks any commit containing `.env` files
-- Hook is located at `.git/hooks/pre-commit`
-- Scans for patterns: `.env`, `.env.*`, `frontend/.env`, `backend/.env`
+## Key Features
+### 1. Digital Twin / "Vibe Profile" Generation
+- Fetches last 200+ user messages (3-year scan, includes supergroups and replies)
+- Analyzes: tone, verbosity, emoji usage, common phrases, topics, punctuation patterns, language mix
+- Outputs structured JSON profile used to style all future comment generations
+### 2. AI Comment Drafting
+- Monitors user's subscribed Telegram channels for new posts
+- Filters posts by relevance to user's declared interests
+- Generates persona-matching draft comments via LLM prompts- Supports "Not My Vibe" negative feedback loop for iterative improvement
+### 3. Draft Lifecycle Management
+DRAFT → EDITED → APPROVED → POSTED / FAILED
+- User can review, edit, approve, or regenerate drafts before posting
+- Full audit trail with generation metadata and failure reasons
+### 4. Real-Time Notifications
+- WebSocket updates for analysis progress, new draft availability, posting status
 
-### 2. .gitignore Protection  
-- Comprehensive `.env` patterns in `.gitignore`
-- Covers all environment file variations
+---
 
-### 3. Template Files
-- Use `.env.example` files for sharing configuration templates
-- **Never commit actual `.env` files with sensitive data**
+## Technical Highlights
+## Core Architecture
 
-### Setup Instructions
-1. Copy `.env.example` to `.env`
-2. Fill in your actual values
-3. The git hook will prevent accidental commits
+| Layer | Technology | Role |
+|-------|------------|------|
+| **Frontend** | Next.js, TypeScript, Telegram Mini Apps SDK | User interface inside Telegram |
+| **Backend** | FastAPI, Celery, PostgreSQL, Redis | API gateway + async task processing |
+| **AI** | Gemini 2.5 Pro (primary), OpenAI (fallback) | Vibe profile analysis & comment generation |
+| **Telegram** | Telethon (user account API) | Message scraping & comment posting |
 
-### If Hook Blocks Your Commit
-```bash
-# Remove .env files from staging
-git reset HEAD .env
-git reset HEAD frontend/.env
+### Architecture Pattern: Hyper-Lean Task-Oriented
+- **FastAPI** acts as thin, stateless API gateway
+- **Celery workers** handle all heavy operations:  
+- LLM API calls  
+- Telegram API interactions  
+- Multi-step database operations
+- Strict separation prevents API timeouts and enables horizontal scaling
+### Security
+- Encrypted Telegram session strings at rest (AES-256)
+- 6-month web session expiry (configurable)
+- HTTPOnly secure cookies
+- No hardcoded secrets (environment-based config)
+### Development Experience
+- **Docker-first workflow**: Optimized multi-stage builds
+- - **Hot-reload enabled**: Backend (Uvicorn), Frontend (Next.js), Celery (Watchdog)
+- **96% faster rebuilds**: 13 min → 2.8s with layer caching
+- **Mock mode**: Development without real Telegram/AI API keys
 
-# Or remove from git entirely
-git rm --cached .env
-```
+---
 
 ## 🏗️ Refactoring History
 
