@@ -1,5 +1,8 @@
 # Ignore future .env files for security
 # Existing .env files are preserved
+.env
+.env.*
+!.env.example
 .env.new
 .env.production
 .env.staging
